@@ -1,6 +1,7 @@
 # Local authentication, private responses, and exploratory downloads.
 /.secrets/
 /scratch/
+/.data/
 
 # Python generated files and local environments.
 __pycache__/

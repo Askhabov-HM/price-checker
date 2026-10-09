@@ -1,31 +1,60 @@
 # Price Checker
 
+Локальное приложение для отслеживания цен Randewoo на варианты **1,5 мл**.
+Работает без AI, платных API и Python-зависимостей.
+
 Repository: [Askhabov-HM/price-checker](https://github.com/Askhabov-HM/price-checker).
 
-Prototype scripts for tracking Randewoo perfume prices, initially for 1.5 ml
-variants. Price collection uses ordinary HTTP requests and does not require AI.
+## Запуск на Windows
 
-## Requirements
+Требуются **Python 3.10+** и **curl** в PATH. В Windows используется `curl.exe`.
 
-- Python 3.10 or newer.
-- `curl` available on PATH. On Windows the scripts use `curl.exe`.
+Дважды нажмите **start.cmd**. Приложение запустится в фоне и откроется в браузере:
 
-Only the Python standard library is used; no Python packages need installing.
+**http://127.0.0.1:8000**
 
-## Public product price
+Или запустите в терминале:
 
 ```powershell
-python scripts/probe_randewoo.py --output scratch/icon-first-observation.json
+python -X utf8 run.py
 ```
 
-An optional positional argument selects another Randewoo product URL. The script
-requires exactly one 1.5 ml offer and records its SKU, price, and availability.
-Prices are stored as integer kopecks.
+В этом режиме Ctrl+C останавливает приложение. Закрытие вкладки браузера само
+по себе не останавливает фоновую работу, запущенную через start.cmd.
+Для остановки фонового приложения дважды нажмите **stop.cmd**.
 
-## Authorized cart
+## Возможности
 
-Create `.secrets/randewoo-session.json` locally with the following structure,
-replacing the placeholders with values from your own Randewoo session:
+- Корзина и избранное из аккаунта Randewoo, включая все страницы избранного.
+- Независимый список «Наблюдение»: добавление ссылки или звёздочка у товара.
+- Только варианты 1,5 мл. Разные концентрации одного аромата имеют отдельные
+  артикулы, строки и историю.
+- Текущая цена, изменение в рублях и процентах, минимум за всю историю, наличие.
+- График каждого варианта за неделю, месяц, 90 дней или всё время.
+- Обзор стоимости списка: по одному доступному пробнику каждого варианта.
+  Это не итог заказа с учётом количества, доставки, баллов или промокодов.
+- Поиск, сортировка, фильтры снижения/роста/минимума цены, экспорт CSV для Excel.
+- Журнал проверок и ежедневная локальная резервная копия SQLite.
+
+Время по умолчанию: **00:30, 09:00, 14:00, 20:00 по Москве**. Его можно изменить
+или поставить проверки на паузу в настройках. После сна/перезапуска выполняется
+одна проверка за последний пропущенный интервал; исторические цены за время
+выключения компьютера не восстанавливаются.
+
+**Компьютер должен быть включён, подключён к интернету и не спать.**
+Сбор работает, пока запущено приложение. Графики содержат только реальные
+проверки: при одной точке линия не выдумывается. Ошибки и недоступные варианты
+не становятся нулевой ценой. Обзор показывает сумму доступных вариантов и явно
+указывает, сколько позиций в неё вошло. При изменении состава набора линия
+прерывается, даже если количество товаров осталось прежним.
+
+В корзине можно переключить **публичную цену на сайте** и **цену варианта в
+корзине аккаунта**. Эти истории хранятся отдельно. Основной тип цены для всех
+списков — публичная цена на сайте.
+
+## Авторизация
+
+Сессия хранится только локально в `.secrets/randewoo-session.json`:
 
 ```json
 {
@@ -34,28 +63,52 @@ replacing the placeholders with values from your own Randewoo session:
 }
 ```
 
-Then run:
+Значения берутся из собственного запроса `/cart` в Chrome DevTools → Network.
+Обновить их можно в настройках приложения. Секреты не возвращаются интерфейсу,
+не выводятся в логи и не передаются curl через аргументы процесса. Сессия может
+истечь; приложение сообщает об этом и сохраняет предыдущие списки. Публичные
+цены уже известных товаров продолжают проверяться без входа.
+
+Приложение слушает только `127.0.0.1`. Изменения требуют токен текущей локальной
+страницы. Веб-интерфейс не предоставляет доступ к файлам сессии или базы.
+
+## Данные
+
+- `.data/prices.sqlite3` — общая база товаров, вариантов, списков и наблюдений.
+- `.data/backups/` — по одной резервной копии базы за день.
+- `.secrets/` — авторизация и приватные ответы технических проверок.
+- `scratch/` — первоначальные снимки и исследовательские файлы.
+
+Эти каталоги исключены из Git. Сохранённые ранее реальные снимки из `scratch/`
+импортируются один раз при создании базы; синтетические данные в рабочую базу
+не добавляются. Удаление товара из списка сохраняет его историю в базе.
+
+Локальная копия не защищает от поломки диска компьютера: для длительного
+хранения копируйте бэкапы на другое устройство или в своё хранилище.
+
+## Автозапуск при входе в Windows
+
+При желании выполните один раз:
 
 ```powershell
-python scripts/probe_randewoo_cart.py --output scratch/cart-first-observation.json
+powershell -NoProfile -ExecutionPolicy Bypass -File .\enable-autostart.ps1
 ```
 
-The script verifies that the session is authorized and reads the cart without
-modifying its contents. It records the cart variants and flags those matching
-1.5 ml. An unauthorized response or unexpected format causes a failure instead
-of an empty snapshot. Cart prices and public product prices are recorded with
-different price contexts.
+Создаётся задача `PriceChecker-price-checker` для текущего пользователя.
+Приложение запускается без окна консоли и без открытия вкладки браузера.
+Отключить автозапуск можно в Планировщике заданий Windows.
 
-Session credentials are passed to curl through stdin and are not printed.
-The `.secrets/` and `scratch/` directories are excluded from Git. Authentication
-may expire; automatic session refresh is not implemented.
+## Проверки и обслуживание
 
-## Planned application
+```powershell
+python -X utf8 -m unittest discover -s tests -v
+python -X utf8 run.py --once
+python -X utf8 run.py --no-browser --port 8001
+```
 
-- Run on a server and check prices four times daily on a configurable schedule.
-- Keep favorites, cart, and manually tracked items as lists sharing products,
-  variants, and price history.
-- Store observations in a database and display tables and price charts.
+Тесты используют временные базы и фикстуры; они не обращаются к реальному
+аккаунту. `--once` выполняет настоящий сбор цен и завершает работу. Запуск
+второго экземпляра сборщика с той же базой автоматически блокируется.
 
-The current repository contains feasibility probes. Favorites import, a
-scheduler, a database, a web interface, and server deployment are not implemented.
+Исходные диагностические скрипты остались в `scripts/probe_randewoo.py` и
+`scripts/probe_randewoo_cart.py`.
