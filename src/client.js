@@ -1,0 +1,194 @@
+import {readFileSync} from 'node:fs';
+import {spawn} from 'node:child_process';
+import {load} from 'cheerio';
+import {AuthError, FetchError, ValidationError} from './errors.js';
+
+const ORIGIN = 'https://randewoo.ru';
+// A Unicode boundary is required: JavaScript's \b does not treat Cyrillic as letters.
+export const VOLUME = /(?<![\d.,])1[.,]5\s*(?:мл|ml)(?![\p{L}\p{N}_])/iu;
+
+export function productUrl(value) {
+  if (typeof value !== 'string') throw new ValidationError('Нужна ссылка на товар https://randewoo.ru/product/…');
+  value = value.trim();
+  if (/[\\\r\n]/.test(value)) throw new ValidationError('Нужна ссылка на товар https://randewoo.ru/product/…');
+  let url;
+  try {url = new URL(value, ORIGIN);} catch {throw new ValidationError('Нужна ссылка на товар https://randewoo.ru/product/…');}
+  // Check the raw authority as well: URL normalizes an explicit :443 port away.
+  const authority = /^(?:https?:)?\/\/([^/?#]+)/i.exec(value)?.[1];
+  if (url.origin !== ORIGIN || url.username || url.password || (authority && authority !== 'randewoo.ru') || !/^\/product\/[^/]+\/?$/.test(url.pathname)) {
+    throw new ValidationError('Нужна ссылка на товар https://randewoo.ru/product/…');
+  }
+  return ORIGIN + url.pathname.replace(/\/+$/, '');
+}
+
+export function money(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') throw new FetchError('Сайт вернул некорректную цену');
+  const match = /^(\d+)(?:\.(\d{1,2})0*)?$/.exec(String(value));
+  if (!match) throw new FetchError('Сайт вернул некорректную цену');
+  const result = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
+  if (!Number.isSafeInteger(result) || result <= 0) throw new FetchError('Сайт вернул некорректную цену');
+  return result;
+}
+
+export function quote(value) {
+  if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new ValidationError('Некорректные заголовки сессии');
+  return '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
+}
+
+function* objects(value) {
+  if (value && typeof value === 'object') {
+    if (!Array.isArray(value)) yield value;
+    for (const child of Object.values(value)) yield* objects(child);
+  }
+}
+
+export function parseProducts(html, url) {
+  const $ = load(html);
+  const nodes = [];
+  $('script[type="application/ld+json"]').each((_, element) => {
+    try {nodes.push(...objects(JSON.parse($(element).text())));} catch { /* Ignore unrelated invalid metadata. */ }
+  });
+  const parent = nodes.find(node => node['@type'] === 'Product');
+  const brand = typeof parent?.brand === 'object' ? parent.brand?.name || '' : String(parent?.brand || '');
+  let title = parent?.name || '';
+  if (brand && title.startsWith(brand)) title = title.slice(brand.length).trim();
+  const cards = new Map($('li[data-product-sku][data-variant]').toArray().map(element => [$(element).attr('data-product-sku'), element]));
+  const offers = new Map(nodes.filter(node => node['@type'] === 'Offer' && node.sku != null && VOLUME.test(node.name || '')).map(offer => [String(offer.sku), offer]));
+  const image = $('meta[property="og:image"]').first().attr('content') || '';
+  const result = [];
+  for (const [sku, offer] of offers) {
+    if (offer.priceCurrency !== 'RUB') throw new FetchError('Сайт вернул цену в другой валюте');
+    const card = $(cards.get(sku));
+    result.push({sku, brand: brand || card.attr('data-brand') || '', name: title || card.attr('data-name') || offer.name,
+      url: productUrl(url), variant: card.attr('data-variant') || offer.name, volume_ml: '1.5',
+      price_kopecks: money(offer.price), original_price_kopecks: null,
+      in_stock: String(offer.availability || '').endsWith('/InStock'), image, status: 'ok'});
+  }
+  if (result.length) return result;
+  if (!parent) throw new FetchError('Не удалось распознать карточку товара');
+  return [{sku: null, brand, name: title, url: productUrl(url), variant: 'Вариант 1,5 мл не найден', volume_ml: '1.5',
+    price_kopecks: null, original_price_kopecks: null, in_stock: false, image, status: 'missing'}];
+}
+
+export function parseFavorites(html) {
+  const $ = load(html), items = [], pages = new Set();
+  $('.b-cabinetProductList__productsItem').each((_, element) => {
+    const card = $(element), href = card.find('a[href^="/product/"]').first().attr('href');
+    const parentId = Number(card.find('[data-product-id]').first().attr('data-product-id'));
+    if (href && Number.isSafeInteger(parentId) && parentId > 0) items.push({url: productUrl(href), parent_id: parentId,
+      brand: card.find('.s-productItem__brand').text().trim(), name: card.find('.s-productItem__titleLink').text().trim(),
+      image: card.find('img').first().attr('src') || ''});
+  });
+  $('a[href^="/cabinet/favorites?"]').each((_, element) => {
+    const value = new URL($(element).attr('href'), ORIGIN).searchParams.get('page');
+    if (/^\d+$/.test(value || '') && Number(value) > 0) pages.add(Number(value));
+  });
+  return {items, pages};
+}
+
+export function authorizedUser(html) {
+  const match = /gon\.user\s*=\s*/.exec(html);
+  let user;
+  if (match) {
+    // Read one JSON object without evaluating any website JavaScript.
+    const rest = html.slice(match.index + match[0].length);
+    let depth = 0, quoted = false, escaped = false;
+    for (let i = 0; i < rest.length; i++) {
+      const char = rest[i];
+      if (quoted) {if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false;}
+      else if (char === '"') quoted = true;
+      else if (char === '{') depth++;
+      else if (char === '}' && --depth === 0) {try {user = JSON.parse(rest.slice(0, i + 1));} catch {} break;}
+    }
+  }
+  if (user?.is_authorized !== true) throw new AuthError('Сессия истекла: обновите вход в Randewoo');
+  return {favorites_count: user.favorite_products_count};
+}
+
+export class Randewoo {
+  constructor(sessionPath) {this.sessionPath = sessionPath; this.children = new Set(); this.closed = false;}
+  close() {this.closed = true; for (const child of this.children) child.kill();}
+
+  session() {
+    try {
+      const session = JSON.parse(readFileSync(this.sessionPath, 'utf8'));
+      if (!session.cookie || !session.user_agent) throw new Error();
+      quote(session.cookie); quote(session.user_agent);
+      return session;
+    } catch {throw new AuthError('Добавьте действующую сессию Randewoo в настройках');}
+  }
+
+  async get(path, {authorized = false, json = false} = {}) {
+    if (this.closed) throw new FetchError('Приложение останавливается');
+    if (typeof path !== 'string' || !/^\/(?!\/)/.test(path) || /[\r\n\\]/.test(path)) throw new ValidationError('Недопустимый адрес запроса');
+    const allowed = path.split('?')[0];
+    if (!['/cart', '/favorites', '/cabinet/favorites', '/front_api/cart/new_cart'].includes(allowed) && !/^\/product\/[^/]+$/.test(allowed)) throw new ValidationError('Запрос не относится к спискам или товарам');
+    const config = ['url = ' + quote(ORIGIN + path), 'silent', 'show-error', 'max-time = 30', 'proto = "=https"', 'write-out = "\\nPRICE_CHECKER_STATUS:%{http_code}"'];
+    if (authorized) {
+      const session = this.session();
+      config.push('cookie = ' + quote(session.cookie), 'user-agent = ' + quote(session.user_agent));
+    } else config.push('user-agent = "PriceChecker/1.0"');
+    config.push('header = ' + quote('Accept: ' + (json ? 'application/json' : 'text/html')));
+    if (path.startsWith('/favorites')) config.push('header = "Content-Type: application/json"');
+    // curl remains a transport only; authentication travels through stdin, never argv.
+    const body = await new Promise((resolve, reject) => {
+      const child = spawn(process.platform === 'win32' ? 'curl.exe' : 'curl', ['-q', '--config', '-'], {windowsHide: true, stdio: ['pipe', 'pipe', 'ignore']});
+      this.children.add(child);
+      const chunks = []; let bytes = 0, failed = false;
+      const fail = message => {if (!failed) {failed = true; child.kill(); reject(new FetchError(message));}};
+      const timer = setTimeout(() => fail('Не удалось связаться с Randewoo'), 40000);
+      child.stdout.on('data', chunk => {bytes += chunk.length; if (bytes > 20 * 1024 * 1024) fail('Слишком большой ответ Randewoo'); else chunks.push(chunk);});
+      child.stdin.on('error', () => {});
+      child.on('error', error => {clearTimeout(timer); fail(error.code === 'ENOENT' ? 'Не найдена программа curl' : 'Ошибка соединения с Randewoo');});
+      child.on('close', code => {this.children.delete(child); clearTimeout(timer); if (!failed) code === 0 ? resolve(Buffer.concat(chunks).toString('utf8')) : fail('Ошибка соединения с Randewoo');});
+      child.stdin.end(config.join('\n'));
+    });
+    const marker = '\nPRICE_CHECKER_STATUS:', index = body.lastIndexOf(marker);
+    const status = index < 0 ? 'неизвестен' : body.slice(index + marker.length);
+    if (status !== '200') {
+      if (authorized && ['301', '302', '303', '401'].includes(status)) throw new AuthError('Сессия истекла: обновите вход в Randewoo');
+      throw new FetchError('Randewoo вернул HTTP ' + status);
+    }
+    const payload = body.slice(0, index);
+    if (!json) return payload;
+    try {return JSON.parse(payload);} catch {throw new FetchError('Неожиданный формат ответа Randewoo');}
+  }
+
+  async authorizedUser() {return authorizedUser(await this.get('/cart', {authorized: true}));}
+
+  async cart() {
+    const data = await this.get('/front_api/cart/new_cart', {authorized: true, json: true});
+    if (!Array.isArray(data?.items)) throw new FetchError('Не удалось распознать корзину; предыдущий список сохранён');
+    return data.items.map(item => {
+      try {
+        const p = item.product;
+        if (!p || p.sku == null || typeof p.subtitle !== 'string' || !Number.isSafeInteger(item.count) || item.count < 1 || typeof p.can_buy !== 'boolean') throw new Error();
+        return {url: productUrl(p.href), sku: String(p.sku), brand: p.brand_title, name: p.title, variant: p.subtitle,
+          quantity: item.count, matches_target_volume: VOLUME.test(p.subtitle), price_kopecks: money(p.price),
+          original_price_kopecks: p.price_original == null ? null : money(p.price_original), in_stock: p.can_buy};
+      } catch {throw new FetchError('Изменился формат товара корзины; список сохранён');}
+    });
+  }
+
+  async favorites() {
+    const stats = await this.get('/favorites', {authorized: true, json: true});
+    if (!Array.isArray(stats?.ids) || stats.ids.some(id => !Number.isSafeInteger(id))) throw new FetchError('Не удалось распознать избранное; предыдущий список сохранён');
+    const expected = new Set(stats.ids), results = new Map(), pending = new Set([1]), visited = new Set();
+    while (pending.size) {
+      const number = Math.min(...pending); pending.delete(number);
+      if (visited.has(number)) continue;
+      if (number > 100 || visited.size >= 100) throw new FetchError('Слишком много страниц избранного');
+      const page = parseFavorites(await this.get('/cabinet/favorites' + (number > 1 ? '?page=' + number : ''), {authorized: true}));
+      visited.add(number);
+      for (const item of page.items) if (expected.has(item.parent_id)) results.set(item.parent_id, item);
+      for (const pageNumber of page.pages) if (!visited.has(pageNumber)) pending.add(pageNumber);
+    }
+    if (results.size !== expected.size) throw new FetchError('Избранное получено не полностью; предыдущий список сохранён');
+    return [...results.values()];
+  }
+
+  async products(url) {
+    url = productUrl(url);
+    return parseProducts(await this.get(new URL(url).pathname), url);
+  }
+}

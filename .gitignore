@@ -3,11 +3,10 @@
 /scratch/
 /.data/
 
-# Python generated files and local environments.
-__pycache__/
-*.py[cod]
-.venv/
-venv/
+# Node.js dependencies and local npm logs.
+node_modules/
+npm-debug.log*
+coverage/
 
 # Required local secret exclusions.
 .env

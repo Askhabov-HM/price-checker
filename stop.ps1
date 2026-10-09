@@ -1,12 +1,24 @@
 $ErrorActionPreference = 'Stop'
-$pidFile = Join-Path $PSScriptRoot '.data/server.pid'
-if (-not (Test-Path -LiteralPath $pidFile)) { Write-Output 'Price Checker is not running.'; exit 0 }
-$trackerPid = [int](Get-Content -LiteralPath $pidFile)
+$metadataFile = Join-Path $PSScriptRoot '.data/server.json'
+if (-not (Test-Path -LiteralPath $metadataFile)) { Write-Output 'Price Checker is not running.'; exit 0 }
+$metadata = Get-Content -LiteralPath $metadataFile -Raw | ConvertFrom-Json
+$trackerPid = [int]$metadata.pid
 $trackerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $trackerPid"
-$scriptPath = Join-Path $PSScriptRoot 'run.py'
+$scriptPath = Join-Path $PSScriptRoot 'run.js'
 if ($null -eq $trackerProcess) { Write-Output 'Price Checker is not running.'; exit 0 }
-if ($trackerProcess.Name -notin @('python.exe', 'pythonw.exe') -or -not $trackerProcess.CommandLine.Contains('"' + $scriptPath + '"')) {
+if ($trackerProcess.Name -ne 'node.exe' -or -not $trackerProcess.CommandLine.Contains($scriptPath)) {
     throw 'The recorded process does not match this application; no process was stopped.'
 }
-Stop-Process -Id $trackerPid
-Write-Output 'Price Checker stopped. Prices remain in the database.'
+$appUrl = 'http://127.0.0.1:' + [int]$metadata.port
+$status = Invoke-RestMethod -Uri "$appUrl/api/status" -TimeoutSec 3
+if ($status.runtime -ne 'node.js') { throw 'Unexpected application on the recorded port; nothing was stopped.' }
+Invoke-RestMethod -Uri "$appUrl/api/shutdown" -Method Post -ContentType 'application/json' `
+    -Headers @{'X-CSRF-Token' = $status.csrf_token} -Body '{}' -TimeoutSec 5 | Out-Null
+for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    if ($null -eq (Get-Process -Id $trackerPid -ErrorAction SilentlyContinue)) {
+        Write-Output 'Price Checker stopped. Prices remain in the database.'
+        exit 0
+    }
+    Start-Sleep -Milliseconds 100
+}
+throw 'The application is still shutting down. Check .data/server-error.log.'
