@@ -1,0 +1,29 @@
+# Local authentication, private responses, and exploratory downloads.
+/.secrets/
+/scratch/
+
+# Python generated files and local environments.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Required local secret exclusions.
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.*
+secret.*
+credentials.*
+config.local.*
+*.local
+terraform.tfstate
+terraform.tfstate.*
+*.tfvars
