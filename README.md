@@ -1,5 +1,7 @@
 # Price Checker
 
+Repository: [Askhabov-HM/price-checker](https://github.com/Askhabov-HM/price-checker).
+
 Prototype scripts for tracking Randewoo perfume prices, initially for 1.5 ml
 variants. Price collection uses ordinary HTTP requests and does not require AI.
 
