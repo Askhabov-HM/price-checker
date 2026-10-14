@@ -25,6 +25,21 @@ test('local UI, dashboard, history, assets, and Excel CSV are served', async t =
   assert.deepEqual([...csv.subarray(0, 3)], [239, 187, 191]); assert.match(csv.toString('utf8'), /150,00/);
   assert.equal(csv.toString('utf8').trim().split('\n').length, 2);
 });
+
+test('CSV distinguishes a failed attempt from the date of the last known price', async t => {
+  const {base, tracker, id} = await setup(t);
+  const priceAt = tracker.db.rows('cart')[0].price_at;
+  tracker.db.observation(id, {status: 'error', message: 'Network; unavailable'}, 'public');
+  const csv = await (await fetch(base + '/api/export?list=cart')).text();
+  const lines = csv.trim().split('\r\n');
+  assert.match(lines[0], /Статус проверки;Цена получена UTC;Сообщение/);
+  assert.match(lines[1], /;150,00;;Неизвестно;/);
+  assert.ok(lines[1].includes(`;Ошибка проверки;${priceAt};"Network; unavailable"`));
+  const dashboard = await (await fetch(base + '/api/dashboard?list=cart')).json();
+  assert.equal(dashboard.items[0].status, 'error');
+  assert.equal(dashboard.items[0].price, 15000);
+  assert.equal(dashboard.items[0].delta, null);
+});
 test('CSRF and origin validation protect changes; valid watch requests persist', async t => {
   const {base, post, id, tracker} = await setup(t);
   assert.equal((await fetch(base + '/api/watch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, active: true})})).status, 403);

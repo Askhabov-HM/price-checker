@@ -51,6 +51,41 @@ test('expired authentication preserves lists while public prices still update', 
   assert.equal(result.errors, 1); assert.equal(tracker.db.rows('cart').length, 1); assert.equal(tracker.db.rows('cart')[0].price, 12300);
   assert.equal(tracker.db.setting('auth_status'), 'expired');
 });
+
+for (const failure of ['authentication', 'cart']) test(`${failure} failures mark account prices stale while public prices update`, async t => {
+  const {tracker} = setup(t, {
+    authorizedUser: async () => {if (failure === 'authentication') throw new AuthError('Session expired'); return {};},
+    cart: async () => {throw new FetchError('Cart failed');}, favorites: async () => [],
+    products: async () => [item({price_kopecks: 12300})]
+  });
+  const id = tracker.db.variant(item()), stamp = '2026-10-01T10:00:00+00:00';
+  tracker.db.syncList('cart', [[id, 2]], stamp);
+  tracker.db.observation(id, item({price_kopecks: 10000}), 'cart', null, stamp);
+  const result = await tracker.refreshNow('test'), row = tracker.db.rows('cart', 'cart')[0];
+  assert.equal(result.errors, 1); assert.equal(row.status, 'error'); assert.equal(row.price, 10000);
+  assert.equal(row.price_at, stamp); assert.equal(row.delta, null); assert.equal(row.quantity, 2);
+  assert.equal(tracker.db.rows('cart')[0].price, 12300);
+  const history = tracker.db.listHistory('cart', 'cart', 0);
+  assert.equal(history.at(-1).priced_count, 0); assert.equal(history.at(-1).price, null);
+  tracker.client.authorizedUser = async () => ({});
+  tracker.client.cart = async () => [item({matches_target_volume: true, quantity: 2, price_kopecks: 9000})];
+  await tracker.refreshNow('test');
+  assert.equal(tracker.db.rows('cart', 'cart')[0].status, 'ok');
+  assert.equal(tracker.db.rows('cart', 'cart')[0].price, 9000);
+});
+
+test('a public sample inferred from another cart size cannot reuse an old account price', async t => {
+  const {tracker} = setup(t, {authorizedUser: async () => ({}), favorites: async () => [],
+    cart: async () => [item({sku: '999', variant: 'EDP 50 ml', matches_target_volume: false, quantity: 1})],
+    products: async () => [item()]});
+  const id = tracker.db.variant(item());
+  tracker.db.syncList('cart', [[id, 1]], '2026-10-01T00:00:00+00:00');
+  tracker.db.observation(id, item({price_kopecks: 10000}), 'cart', null, '2026-10-01T10:00:00+00:00');
+  await tracker.refreshNow('test');
+  assert.equal(tracker.db.rows('cart')[0].price, 15000);
+  assert.equal(tracker.db.rows('cart', 'cart')[0].price, null);
+  assert.equal(tracker.db.rows('cart', 'cart')[0].status, 'missing');
+});
 test('one parent product is requested once and exact cart SKU stays separate from favorite concentrations', async t => {
   let calls = 0;
   const {tracker} = setup(t, {authorizedUser: async () => ({}),

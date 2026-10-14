@@ -27,6 +27,29 @@ test('money uses integer kopecks and rejects malformed and unsafe values', () =>
   for (const value of [0, -1, 'NaN', Infinity, true, null, '12.345', '', Number.MAX_VALUE]) assert.throws(() => money(value), FetchError);
 });
 test('foreign currency is rejected', () => {assert.throws(() => parseProducts(document([{...offer('Brand 1,5мл'), priceCurrency: 'USD'}]), url), FetchError);});
+test('only offers belonging to the requested product are collected', () => {
+  const html = '<script type="application/ld+json">' + JSON.stringify([
+    {'@type': 'Product', url: '/product/recommendation', name: 'Other', brand: 'OtherBrand', offers: [offer('Other 1,5мл', 900, '999')]},
+    {'@type': 'Product', url, name: 'Brand Fragrance', brand: 'Brand', offers: [offer('Fragrance 1,5мл', 100, '123')]}
+  ]) + '</script>';
+  const rows = parseProducts(html, url);
+  assert.deepEqual(rows.map(row => [row.sku, row.brand, row.name, row.price_kopecks]), [['123', 'Brand', 'Fragrance', 10000]]);
+  assert.throws(() => parseProducts(html, 'https://randewoo.ru/product/unknown'), FetchError);
+});
+test('recommendations cannot supply a missing volume for the main product', () => {
+  const html = document([offer('Brand 50мл')]) + document([offer('Other 1,5мл', 900, '999')]);
+  const rows = parseProducts(html, url);
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'missing'); assert.equal(rows[0].price_kopecks, null);
+});
+test('graph references and aggregate offers stay scoped to the main product', () => {
+  const html = '<script type="application/ld+json">' + JSON.stringify({'@graph': [
+    {'@type': ['Product'], '@id': '#product', name: 'Brand Fragrance', brand: 'Brand', offers: {'@id': '#offers'}},
+    {'@type': 'AggregateOffer', '@id': '#offers', offers: [{'@id': '#sample'}]},
+    {...offer('Brand 1,5мл'), '@id': '#sample'},
+    offer('Other 1,5мл', 900, '999')
+  ]}) + '</script>';
+  assert.deepEqual(parseProducts(html, url).map(row => row.sku), ['123']);
+});
 test('only canonical Randewoo product URLs are accepted', () => {
   assert.equal(productUrl('/product/icon?x=1#fragment'), 'https://randewoo.ru/product/icon');
   for (const value of ['https://evil.example/product/a', 'https://randewoo.ru@evil.example/product/a', 'file:///product/a', 'https://randewoo.ru:443/product/a', 'https://randewoo.ru/cart', null]) assert.throws(() => productUrl(value), ValidationError);

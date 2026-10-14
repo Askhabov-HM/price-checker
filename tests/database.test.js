@@ -70,6 +70,62 @@ test('manual checks at different times are not combined into one artificial obse
   db.observation(id, item({price_kopecks: 20000}), 'public', null, '2026-10-03T10:00:00+00:00');
   assert.deepEqual(db.listHistory('cart', 'public', 0).map(point => point.price), [15000, 20000]);
 });
+
+test('checks in the same second retain both measurements and the latest price', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  const stamp = '2026-10-02T10:00:00+00:00';
+  db.observation(id, item(), 'public', db.startCheck('manual', stamp), stamp);
+  db.observation(id, item({price_kopecks: 10000}), 'public', db.startCheck('manual', stamp), stamp);
+  const row = db.rows('cart')[0];
+  assert.equal(row.price, 10000); assert.equal(row.delta, -5000);
+  assert.equal(db.detail(id, 'public', 0).points.length, 2);
+  assert.deepEqual(db.listHistory('cart', 'public', 0).map(point => point.price), [15000, 10000]);
+});
+
+test('manual readings in the same second never double a variant in the total', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  const stamp = '2026-10-02T10:00:00+00:00';
+  db.observation(id, item(), 'public', null, stamp);
+  db.observation(id, item({price_kopecks: 10000}), 'public', null, stamp);
+  assert.equal(db.detail(id, 'public', 0).points.length, 2);
+  const point = db.listHistory('cart', 'public', 0)[0];
+  assert.equal(point.price, 10000); assert.equal(point.priced_count, 1);
+});
+
+test('removing a member during a check excludes its price from that snapshot', t => {
+  const {db, id, joinList} = setup(t);
+  const second = db.variant(item({url: 'https://randewoo.ru/product/another', sku: '456'}));
+  joinList('watching', [id, second]);
+  const check = db.startCheck('manual');
+  db.observation(id, item(), 'public', check, '2026-10-02T10:00:00+00:00');
+  db.syncList('watching', [[second, 1]], '2026-10-02T10:01:00+00:00');
+  db.observation(second, item({price_kopecks: 20000}), 'public', check, '2026-10-02T10:02:00+00:00');
+  const point = db.listHistory('watching', 'public', 0)[0];
+  assert.equal(point.price, 20000); assert.equal(point.known_total, 20000);
+  assert.equal(point.count, 1); assert.equal(point.priced_count, 1); assert.equal(point.complete, true);
+});
+
+test('rejoining during a check cannot reuse a price from the previous membership', t => {
+  const {db, id, joinList} = setup(t);
+  const second = db.variant(item({url: 'https://randewoo.ru/product/another', sku: '456'}));
+  joinList('watching', [id, second]);
+  const check = db.startCheck('manual');
+  db.observation(id, item(), 'public', check, '2026-10-02T10:00:00+00:00');
+  db.syncList('watching', [[second, 1]], '2026-10-02T10:01:00+00:00');
+  db.syncList('watching', [[id, 1], [second, 1]], '2026-10-02T10:02:00+00:00');
+  db.observation(second, item({price_kopecks: 20000}), 'public', check, '2026-10-02T10:03:00+00:00');
+  const point = db.listHistory('watching', 'public', 0)[0];
+  assert.equal(point.price, null); assert.equal(point.known_total, 20000); assert.equal(point.priced_count, 1);
+});
+
+test('a failed check does not repeat the previous price drop', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  db.observation(id, item(), 'public', null, '2026-10-02T10:00:00+00:00');
+  db.observation(id, item({price_kopecks: 10000}), 'public', null, '2026-10-02T11:00:00+00:00');
+  db.observation(id, {status: 'error'}, 'public', null, '2026-10-02T12:00:00+00:00');
+  const row = db.rows('cart')[0];
+  assert.equal(row.price, 10000); assert.equal(row.previous_price, 15000); assert.equal(row.delta, null);
+});
 test('backup is readable, complete, and can replace the daily backup', async t => {
   const {db, id, root} = setup(t); db.observation(id, item(), 'public');
   const path = await db.backup(join(root, 'backups'));
@@ -95,8 +151,10 @@ test('the original Python schema and IDs migrate without losing prices', t => {
   db.syncList('cart', [[34, 1]], '2026-10-01T00:00:00+00:00');
   db.observation(34, item(), 'public', null, '2026-10-02T10:00:00+00:00');
   const second = db.variant(item({url: 'https://randewoo.ru/product/legacy', sku: 'new-sku'}));
-  assert.notEqual(second, 34); assert.equal(db.rows('cart')[0].price, 12345);
+  assert.notEqual(second, 34); assert.equal(db.rows('cart')[0].price, 15000);
   assert.equal(db.get('SELECT price FROM observations WHERE id=56').price, 12345);
+  assert.equal(db.detail(34, 'public', 0).points.length, 2);
+  assert.equal(db.get('PRAGMA integrity_check').integrity_check, 'ok');
   assert.deepEqual(db.all('PRAGMA foreign_key_check'), []);
 });
 test('unknown lists and prototype property names are rejected', t => {
