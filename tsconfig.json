@@ -6,6 +6,8 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -14,5 +16,5 @@
     "types": ["vite/client", "node", "@testing-library/jest-dom"],
     "paths": {"@/*": ["./frontend/src/*"]}
   },
-  "include": ["frontend/src", "vite.config.ts", "playwright.config.ts", "e2e/**/*.ts"]
+  "include": ["frontend/src", "vite.config.ts", "playwright.config.ts"]
 }

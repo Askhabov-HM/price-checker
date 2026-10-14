@@ -3,7 +3,7 @@ import {AppShell} from '@/components/app-shell';
 import {Dashboard} from '@/pages/dashboard';
 import type {ChangePeriod, Filter, Period, PriceContext, Sort} from '@/lib/types';
 
-export function validateSearch(search: Record<string, unknown>) {
+function validateSearch(search: Record<string, unknown>) {
   return {
     context: (search.context === 'cart' ? 'cart' : 'public') as PriceContext,
     q: typeof search.q === 'string' ? search.q : '',

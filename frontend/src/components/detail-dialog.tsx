@@ -17,7 +17,7 @@ function Root({children, ...props}: DetailState & {children: ReactNode}) {
 }
 function Content({children}: {children: ReactNode}) {
   const {data, context, pending, error} = useDetail();
-  return <DialogContent id="product-dialog" className="product-dialog max-h-[90vh] overflow-y-auto p-0 sm:max-w-[850px]">
+  return <DialogContent id="product-dialog" className="max-h-[90vh] overflow-y-auto p-0 sm:max-w-[850px]">
     <DialogHeader className="dialog-top"><div className="eyebrow" id="detail-brand">{data?.product.brand || 'История цены'}</div><DialogTitle id="detail-name">{data?.product.name || 'Загружаем товар…'}</DialogTitle><DialogDescription id="detail-label">{data ? `${data.product.label} · ${data.product.sku ? 'арт. ' + data.product.sku : 'нет артикула'} · ${context === 'cart' ? 'цена варианта в корзине' : 'публичная цена на сайте'}` : 'Загрузка истории выбранного варианта'}</DialogDescription></DialogHeader>
     {error ? <p role="alert" className="notice">{error.message}</p> : pending ? <p role="status" className="dialog-loading">Загружаем историю…</p> : children}
   </DialogContent>;

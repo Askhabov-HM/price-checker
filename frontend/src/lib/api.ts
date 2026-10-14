@@ -3,7 +3,7 @@ import type {DashboardData, DetailData, ListId, Period, PriceContext, Status} fr
 
 export const queryClient = new QueryClient({defaultOptions: {queries: {retry: 1, staleTime: 1000}, mutations: {retry: false}}});
 
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || 'Не удалось выполнить запрос');
