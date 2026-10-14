@@ -1,0 +1,30 @@
+import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
+import {act, render, screen, waitFor} from '@testing-library/react';
+import {afterEach, expect, it, vi} from 'vitest';
+import {DetailDialog} from './detail-dialog';
+import type {DetailData, Period} from '@/lib/types';
+
+afterEach(() => vi.unstubAllGlobals());
+it('late responses cannot overwrite the selected product or period, or reopen a closed dialog', async () => {
+  const pending: {path: string; resolve: (value: Response) => void}[] = [];
+  vi.stubGlobal('fetch', vi.fn((path: string) => new Promise<Response>(resolve => pending.push({path, resolve}))));
+  const client = new QueryClient({defaultOptions: {queries: {retry: false}}});
+  const tree = (id: number | null, days: Period) => <QueryClientProvider client={client}><DetailDialog.Root id={id} context="public" days={days} onClose={() => {}} onPeriod={() => {}}><DetailDialog.Content><DetailDialog.Toolbar /><DetailDialog.History /></DetailDialog.Content></DetailDialog.Root></QueryClientProvider>;
+  const detail = (id: number): DetailData => ({product: {id, brand: 'Brand', name: `Fragrance ${id}`, label: 'EDP', sku: String(id), url: 'https://randewoo.ru/product/test'}, context: 'public', points: []});
+  const response = (id: number) => new Response(JSON.stringify(detail(id)), {headers: {'Content-Type': 'application/json'}});
+  const view = render(tree(1, 30));
+  await waitFor(() => expect(pending).toHaveLength(1));
+  view.rerender(tree(2, 7));
+  await waitFor(() => expect(pending).toHaveLength(2));
+  expect(pending[1].path).toContain('/2?context=public&days=7');
+  await act(async () => pending[1].resolve(response(2)));
+  expect(await screen.findByRole('heading', {name: 'Fragrance 2'})).toBeInTheDocument();
+  await act(async () => pending[0].resolve(response(1)));
+  expect(screen.getByRole('heading', {name: 'Fragrance 2'})).toBeInTheDocument();
+  view.rerender(tree(3, 30));
+  await waitFor(() => expect(pending).toHaveLength(3));
+  view.rerender(tree(null, 30));
+  await act(async () => pending[2].resolve(response(3)));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  client.clear();
+});

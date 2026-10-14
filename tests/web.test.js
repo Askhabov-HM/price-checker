@@ -16,8 +16,13 @@ async function setup(t, options) {
 }
 test('local UI, dashboard, history, assets, and Excel CSV are served', async t => {
   const {base, id} = await setup(t);
-  const page = await fetch(base); assert.equal(page.status, 200); assert.match(await page.text(), /Price Checker/);
-  for (const path of ['/app.js', '/styles.css']) assert.equal((await fetch(base + path)).status, 200);
+  const page = await fetch(base); assert.equal(page.status, 200);
+  const html = await page.text(); assert.match(html, /Price Checker/);
+  const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map(match => match[1]);
+  assert.ok(assets.some(path => path.endsWith('.js'))); assert.ok(assets.some(path => path.endsWith('.css')));
+  for (const path of assets) assert.equal((await fetch(base + path)).status, 200);
+  for (const path of ['/cart', '/favorites', '/watching']) assert.equal(await (await fetch(base + path)).text(), html);
+  for (const path of ['/assets/missing.js', '/src/web.js', '/package.json', '/api/unknown', '/.secrets/randewoo-session.json']) assert.equal((await fetch(base + path)).status, 404);
   const dashboard = await (await fetch(base + '/api/dashboard?list=cart')).json();
   assert.equal(dashboard.items[0].price, 15000); assert.equal(dashboard.counts.cart, 1);
   assert.equal((await (await fetch(base + '/api/product/' + id + '?days=0')).json()).points.length, 1);

@@ -5,6 +5,17 @@ import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {chromium} from 'playwright-core';
 import {startLab,setScenario,SCENARIOS} from './test-lab/fixture.js';
+import {ensureFrontend} from './build-frontend.js';
+
+await ensureFrontend();
+
+async function chartProof(page,id,count) {
+  await page.waitForFunction(({id,count}) => document.querySelectorAll('#'+id+' .recharts-line-dot').length===count,{id,count});
+  return page.locator('#'+id).evaluate(element => ({
+    points: [...element.querySelectorAll('.recharts-line-dot')].map(dot => ({x:Number(dot.getAttribute('cx')),y:Number(dot.getAttribute('cy'))})),
+    segments: [...element.querySelectorAll('.recharts-line-curve')].flatMap(path => [...(path.getAttribute('d') || '').matchAll(/L/g)].map(() => true))
+  }));
+}
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));
 const run = 'run-'+randomUUID().slice(0,8), directory = join(repository,'.data/test-lab'), root = join(directory,'runs',run);
@@ -21,24 +32,6 @@ const results = [], errors = [];
 try {
   browser = await chromium.launch({executablePath:browserPath,headless:true});
   const context = await browser.newContext({viewport:{width:1440,height:1100},locale:'ru-RU',timezoneId:'Europe/Moscow'});
-  // Observe real canvas drawing calls without replacing rendering or application data.
-  await context.addInitScript(() => {
-    window.chartProof = {};
-    const prototype = CanvasRenderingContext2D.prototype;
-    const scale = prototype.scale, arc = prototype.arc, begin = prototype.beginPath;
-    const move = prototype.moveTo, line = prototype.lineTo, stroke = prototype.stroke;
-    const key = ctx => ctx.canvas.id || (ctx.canvas.dataset.spark ? 'spark-'+ctx.canvas.dataset.spark : '');
-    prototype.scale = function(...args) {const id=key(this); if(id)window.chartProof[id]={generation:(window.chartProof[id]?.generation||0)+1,points:[],segments:[]}; return scale.apply(this,args);};
-    prototype.arc = function(x,y,...args) {const proof=window.chartProof[key(this)]; if(proof)proof.points.push({x,y}); this.proofPath=[]; return arc.call(this,x,y,...args);};
-    prototype.beginPath = function(...args) {this.proofPath=[]; return begin.apply(this,args);};
-    prototype.moveTo = function(x,y) {this.proofPath=[{x,y}]; return move.call(this,x,y);};
-    prototype.lineTo = function(x,y) {this.proofPath?.push({x,y}); return line.call(this,x,y);};
-    prototype.stroke = function(...args) {
-      const proof=window.chartProof[key(this)];
-      if(proof && this.proofPath?.length===2 && !this.getLineDash().length && this.lineWidth>=1.8)proof.segments.push([...this.proofPath]);
-      return stroke.apply(this,args);
-    };
-  });
   const page = await context.newPage();
   page.on('pageerror',error=>errors.push(error.message));
   page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
@@ -52,8 +45,8 @@ try {
     const count = Number(index)+1;
     await page.locator('#refresh-button').click();
     // Wait for the application's own polling to refresh the rendered table and charts.
-    await page.waitForFunction(expected=>typeof state!=='undefined' && state.data?.status.checks[0]?.id===expected
-      && !state.data.status.running && state.data.items.length===2,count,{timeout:25000});
+    await page.waitForFunction(expected=>document.querySelector('[data-dashboard]')?.getAttribute('data-check-id')===String(expected)
+      && document.querySelector('[data-dashboard]')?.getAttribute('data-running')==='false' && document.querySelectorAll('#product-rows tr[data-id]').length===2,count,{timeout:25000});
     const data=await (await fetch(lab.url+'/api/dashboard?list=cart')).json();
     const primary=data.items.find(row=>row.sku==='TEST-EDP-15');primaryId=primary.id;
     assert.equal(data.items.length,2);assert.equal(primary.price,scenario.public);
@@ -71,7 +64,7 @@ try {
     }
     const total=scenario.error?null:scenario.unavailable?60000:scenario.public+60000;
     expectedTotals.push(total);expectedPublic.push(scenario.error?null:scenario.public);expectedCart.push(scenario.cart);
-    const overview=await page.evaluate(()=>window.chartProof['overview-chart']);
+    const overview=await chartProof(page,'overview-chart',expectedTotals.filter(price=>price!==null).length);
     assert.equal(overview.points.length,expectedTotals.filter(price=>price!==null).length);
     if(['drop','rise','unchanged'].includes(name)) {
       const [previous,current]=overview.points.slice(-2);
@@ -80,19 +73,15 @@ try {
     assert.equal(overview.segments.length,Math.min(Number(index),3));
     const prefix=String(count).padStart(2,'0')+'-'+name;
     await page.screenshot({path:join(root,'screenshots',prefix+'-overview.png'),fullPage:true});
-    const previousGeneration=await page.evaluate(()=>window.chartProof['detail-chart']?.generation||0);
     await row.click(); await page.locator('#product-dialog').waitFor({state:'visible'});
     await page.waitForFunction(expected=>document.querySelectorAll('#detail-history tr').length===expected,count);
     const detail=await (await fetch(lab.url+`/api/product/${primary.id}?days=0`)).json();
     assert.deepEqual(detail.points.map(point=>point.price),expectedPublic);
-    await page.waitForFunction(({generation,points})=>window.chartProof['detail-chart']?.generation>generation
-      && window.chartProof['detail-chart'].points.length===points,
-      {generation:previousGeneration,points:expectedPublic.filter(price=>price!==null).length});
-    const detailProof=await page.evaluate(()=>window.chartProof['detail-chart']);
+    const detailProof=await chartProof(page,'detail-chart',expectedPublic.filter(price=>price!==null).length);
     assert.equal(detailProof.points.length,expectedPublic.filter(price=>price!==null).length);
     assert.equal(detailProof.segments.length,Math.min(Number(index),5));
     await page.screenshot({path:join(root,'screenshots',prefix+'-detail.png'),fullPage:true});
-    await page.locator('[data-close="product-dialog"]').click();
+    await page.locator('#product-dialog [data-slot="dialog-close"]').click();
     await page.locator('#price-context').selectOption('cart');
     await page.waitForFunction(value=>document.querySelector('#metric-total').textContent.includes(value),
       new Intl.NumberFormat('ru-RU').format((scenario.unavailable?55000:scenario.cart+55000)/100));
@@ -120,7 +109,7 @@ try {
     assert.equal((await (await fetch(restarted.url+'/api/status')).json()).checks.length,8);
   } finally {await restarted.close();}
   writeFileSync(join(root,'report.json'),JSON.stringify({passed:true,run,browser:browserPath,checks:8,observations:32,restart_preserved:true,results},null,2));
-  writeFileSync(join(root,'report.md'),`# Проверка тестовой базы и графиков\n\nВсе 8 сценариев прошли в настоящем браузере. Проверены HTTP-загрузка, парсинг, SQLite, таблицы, проценты, суммы, линии и точки Canvas, отдельные цены корзины, сохранение после перезапуска.\n\n| Сценарий | На сайте, ₽ | В корзине, ₽ | Изменение, ₽ | Сумма, ₽ | Минимум, ₽ |\n|---|---:|---:|---:|---:|---:|\n${results.map(row=>`| ${row.label} | ${row.public_price} | ${row.cart_price} | ${row.delta??'—'} | ${row.total??'—'} | ${row.minimum} |`).join('\n')}\n\nИсходные цены: source.sqlite3. Сохранённая история: history.sqlite3. Скриншоты: screenshots/. Проверки: 8; записей истории: 32.\n`);
+  writeFileSync(join(root,'report.md'),`# Проверка тестовой базы и графиков\n\nВсе 8 сценариев прошли в настоящем браузере. Проверены HTTP-загрузка, парсинг, SQLite, таблицы, проценты, суммы, линии и точки SVG, отдельные цены корзины, сохранение после перезапуска.\n\n| Сценарий | На сайте, ₽ | В корзине, ₽ | Изменение, ₽ | Сумма, ₽ | Минимум, ₽ |\n|---|---:|---:|---:|---:|---:|\n${results.map(row=>`| ${row.label} | ${row.public_price} | ${row.cart_price} | ${row.delta??'—'} | ${row.total??'—'} | ${row.minimum} |`).join('\n')}\n\nИсходные цены: source.sqlite3. Сохранённая история: history.sqlite3. Скриншоты: screenshots/. Проверки: 8; записей истории: 32.\n`);
   writeFileSync(join(directory,'active.json'),JSON.stringify({run},null,2));
   console.log(`PASS: ${join(root,'report.md')}\nStart this saved test database: npm run lab`);
 } catch(error) {

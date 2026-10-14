@@ -7,6 +7,10 @@
 node_modules/
 npm-debug.log*
 coverage/
+dist/
+playwright-report/
+test-results/
+.vitest/
 
 # Required local secret exclusions.
 .env

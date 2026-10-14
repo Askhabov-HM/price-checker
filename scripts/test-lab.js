@@ -2,6 +2,7 @@ import {readFileSync,writeFileSync,existsSync,mkdirSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {openSource,setScenario,startLab,SCENARIOS} from './test-lab/fixture.js';
+import {ensureFrontend} from './build-frontend.js';
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url))), directory = join(repository, '.data/test-lab');
 const args = process.argv.slice(2);
@@ -22,6 +23,7 @@ if (scenario !== null) {
   try {setScenario(source,scenario);} finally {source.close();}
   console.log(`Scenario: ${scenario}. Click Check prices in the test application.`);
 } else {
+  await ensureFrontend();
   const lab = await startLab({root,port});
   writeFileSync(join(directory,'active.json'),JSON.stringify({run},null,2));
   writeFileSync(join(root,'server.json'),JSON.stringify({pid:process.pid,url:lab.url,source:lab.sourceUrl,run},null,2));

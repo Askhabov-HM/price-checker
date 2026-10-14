@@ -6,8 +6,9 @@ import {join} from 'node:path';
 import {CONTEXTS} from './database.js';
 import {FetchError, ValidationError} from './errors.js';
 
-const publicDirectory = fileURLToPath(new URL('../public/', import.meta.url));
-const policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://*.randewoo.ru; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
+const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
+// Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
+const policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 function send(response, status, body, contentType = 'application/json; charset=utf-8', headers = {}) {
   if (!Buffer.isBuffer(body)) body = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
@@ -80,14 +81,17 @@ export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
         }
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
-        const files = new Map([['/', ['index.html', 'text/html; charset=utf-8']], ['/app.js', ['app.js', 'text/javascript; charset=utf-8']], ['/styles.css', ['styles.css', 'text/css; charset=utf-8']]]);
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        if (files.has(url.pathname)) {
-          const [filename, type] = files.get(url.pathname);
+        const page = ['/', '/cart', '/favorites', '/watching'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
+        if (page || asset) {
+          const filename = page ? 'index.html' : url.pathname.slice(1);
+          const type = page ? 'text/html; charset=utf-8' : ({js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', woff: 'font/woff', woff2: 'font/woff2', svg: 'image/svg+xml'})[asset[1]];
           let body = readFileSync(join(publicDirectory, filename));
           if (testMode && filename === 'index.html') body = body.toString('utf8')
             .replace('<title>', '<title>ТЕСТ · ')
-            .replace('<div class="workspace">', '<div class="workspace"><div class="notice" id="test-mode-banner">ТЕСТОВЫЙ РЕЖИМ · Управляемые цены аромата Test Lab / Graph Eau</div>');
+            .replace('name="price-checker-test-mode" content="false"', 'name="price-checker-test-mode" content="true"')
+            .replace('<div id="root"></div>', '<div id="root"><div id="test-mode-banner">ТЕСТОВЫЙ РЕЖИМ · Загрузка приложения…</div></div>');
           return send(response, 200, body, type);
         }
         return send(response, 404, {error: 'Страница не найдена'});
@@ -118,6 +122,7 @@ export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
       }
       return send(response, 404, {error: 'Действие не найдено'});
     } catch (error) {
+      if (error.code === 'ENOENT') return send(response, 404, {error: 'Страница не найдена'});
       if (error instanceof ValidationError) return send(response, 400, {error: error.message});
       if (error instanceof FetchError) return send(response, 502, {error: error.message});
       return send(response, 500, {error: 'Не удалось выполнить действие'});

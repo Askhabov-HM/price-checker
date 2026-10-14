@@ -66,6 +66,8 @@ async function main() {
       console.log(JSON.stringify(result));
       return result.errors ? 1 : 0;
     }
+    const {ensureFrontend} = await import('./scripts/build-frontend.js');
+    await ensureFrontend();
     server = makeServer(tracker, {onShutdown: signal});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');
