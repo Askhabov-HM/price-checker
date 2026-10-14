@@ -51,7 +51,7 @@ export function exportCsv(rows, context) {
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }
 
-export function makeServer(tracker, {onShutdown} = {}) {
+export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
   const csrf = randomBytes(32).toString('base64url');
   const server = createServer((request, response) => {
     handle(request, response).catch(() => {
@@ -84,7 +84,11 @@ export function makeServer(tracker, {onShutdown} = {}) {
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
         if (files.has(url.pathname)) {
           const [filename, type] = files.get(url.pathname);
-          return send(response, 200, readFileSync(join(publicDirectory, filename)), type);
+          let body = readFileSync(join(publicDirectory, filename));
+          if (testMode && filename === 'index.html') body = body.toString('utf8')
+            .replace('<title>', '<title>ТЕСТ · ')
+            .replace('<div class="workspace">', '<div class="workspace"><div class="notice" id="test-mode-banner">ТЕСТОВЫЙ РЕЖИМ · Управляемые цены аромата Test Lab / Graph Eau</div>');
+          return send(response, 200, body, type);
         }
         return send(response, 404, {error: 'Страница не найдена'});
       }
