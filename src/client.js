@@ -42,18 +42,40 @@ function* objects(value) {
   }
 }
 
+const hasType = (node, type) => [node?.['@type']].flat().includes(type);
+
 export function parseProducts(html, url) {
+  url = productUrl(url);
   const $ = load(html);
   const nodes = [];
   $('script[type="application/ld+json"]').each((_, element) => {
     try {nodes.push(...objects(JSON.parse($(element).text())));} catch { /* Ignore unrelated invalid metadata. */ }
   });
-  const parent = nodes.find(node => node['@type'] === 'Product');
+  const products = nodes.filter(node => hasType(node, 'Product'));
+  const matchesUrl = value => {
+    if (typeof value === 'object') value = value?.['@id'];
+    if (typeof value !== 'string') return false;
+    try {return productUrl(new URL(value, url).href) === url;} catch {return false;}
+  };
+  const parent = products.find(node => [node.url, node['@id'], node.mainEntityOfPage].some(matchesUrl))
+    || products.find(node => !node.url && !node['@id']);
+  if (!parent) throw new FetchError('Не удалось распознать карточку товара');
+  const references = new Map();
+  for (const node of nodes) if (node['@id'] && Object.keys(node).length > Object.keys(references.get(node['@id']) || {}).length) references.set(node['@id'], node);
+  function* ownOffers(value, visited = new Set()) {
+    if (Array.isArray(value)) {for (const child of value) yield* ownOffers(child, visited); return;}
+    if (!value || typeof value !== 'object') return;
+    value = references.get(value['@id']) || value;
+    if (visited.has(value)) return;
+    visited.add(value);
+    if (hasType(value, 'Offer')) yield value;
+    else yield* ownOffers(value.offers, visited);
+  }
   const brand = typeof parent?.brand === 'object' ? parent.brand?.name || '' : String(parent?.brand || '');
   let title = parent?.name || '';
   if (brand && title.startsWith(brand)) title = title.slice(brand.length).trim();
   const cards = new Map($('li[data-product-sku][data-variant]').toArray().map(element => [$(element).attr('data-product-sku'), element]));
-  const offers = new Map(nodes.filter(node => node['@type'] === 'Offer' && node.sku != null && VOLUME.test(node.name || '')).map(offer => [String(offer.sku), offer]));
+  const offers = new Map([...ownOffers(parent.offers)].filter(node => node.sku != null && VOLUME.test(node.name || '')).map(offer => [String(offer.sku), offer]));
   const image = $('meta[property="og:image"]').first().attr('content') || '';
   const result = [];
   for (const [sku, offer] of offers) {
@@ -65,7 +87,6 @@ export function parseProducts(html, url) {
       in_stock: String(offer.availability || '').endsWith('/InStock'), image, status: 'ok'});
   }
   if (result.length) return result;
-  if (!parent) throw new FetchError('Не удалось распознать карточку товара');
   return [{sku: null, brand, name: title, url: productUrl(url), variant: 'Вариант 1,5 мл не найден', volume_ml: '1.5',
     price_kopecks: null, original_price_kopecks: null, in_stock: false, image, status: 'missing'}];
 }
