@@ -33,7 +33,7 @@ export class Database {
       CREATE TABLE IF NOT EXISTS observations(
         id INTEGER PRIMARY KEY,variant_id INTEGER NOT NULL REFERENCES variants(id),check_id INTEGER REFERENCES checks(id),
         checked_at TEXT NOT NULL,context TEXT NOT NULL,price INTEGER,original_price INTEGER,in_stock INTEGER,status TEXT NOT NULL,
-        message TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '',UNIQUE(variant_id,checked_at,context));
+        message TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '');
       CREATE INDEX IF NOT EXISTS observation_lookup ON observations(variant_id,context,checked_at DESC,id DESC);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
@@ -48,6 +48,20 @@ export class Database {
         ALTER TABLE variants_new RENAME TO variants;
         COMMIT;
         PRAGMA foreign_keys=ON;`);
+      this.statements.clear();
+    }
+    const observationSchema = this.get("SELECT sql FROM sqlite_master WHERE name='observations'").sql;
+    if (/UNIQUE\s*\(\s*variant_id\s*,\s*checked_at\s*,\s*context\s*\)/i.test(observationSchema)) {
+      // Independent checks can finish in the same second. Preserve every event and its original ID.
+      this.transaction(() => this.connection.exec(`CREATE TABLE observations_new(
+          id INTEGER PRIMARY KEY,variant_id INTEGER NOT NULL REFERENCES variants(id),check_id INTEGER REFERENCES checks(id),
+          checked_at TEXT NOT NULL,context TEXT NOT NULL,price INTEGER,original_price INTEGER,in_stock INTEGER,status TEXT NOT NULL,
+          message TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '');
+        INSERT INTO observations_new(id,variant_id,check_id,checked_at,context,price,original_price,in_stock,status,message,source)
+          SELECT id,variant_id,check_id,checked_at,context,price,original_price,in_stock,status,message,source FROM observations;
+        DROP TABLE observations;
+        ALTER TABLE observations_new RENAME TO observations;
+        CREATE INDEX observation_lookup ON observations(variant_id,context,checked_at DESC,id DESC);`));
       this.statements.clear();
     }
     this.transaction(() => {
@@ -121,7 +135,7 @@ export class Database {
   }
   observation(id, item, context, checkId = null, timestamp = now(), source = 'Randewoo') {
     const status = item.status || 'ok';
-    this.run(`INSERT OR IGNORE INTO observations(variant_id,check_id,checked_at,context,price,original_price,in_stock,status,message,source)
+    this.run(`INSERT INTO observations(variant_id,check_id,checked_at,context,price,original_price,in_stock,status,message,source)
       VALUES(?,?,?,?,?,?,?,?,?,?)`, id, checkId, timestamp, context, status === 'ok' ? item.price_kopecks : null,
       item.original_price_kopecks, status === 'error' ? null : item.in_stock, status, item.message || '', source);
   }
@@ -152,7 +166,7 @@ export class Database {
         in_stock: latest && latest.status !== 'error' ? Boolean(latest.in_stock) : last ? Boolean(last.in_stock) : null,
         checked_at: latest?.checked_at ?? null, price_at: last?.checked_at ?? null, message: latest?.message || '', ...stats,
         watching: Boolean(this.get("SELECT 1 FROM memberships WHERE variant_id=? AND list_id='watching' AND left_at IS NULL", row.id)),
-        delta: price != null && previous != null ? price - previous : null,
+        delta: latest?.status === 'ok' && price != null && previous != null ? price - previous : null,
         sparkline: this.all('SELECT checked_at,price,status FROM observations WHERE variant_id=? AND context=? ORDER BY checked_at DESC,id DESC LIMIT 24', row.id, context).reverse()};
     });
   }
@@ -168,15 +182,18 @@ export class Database {
   listHistory(listId, context = 'public', days = 30) {
     this.validate(listId, context);
     const since = days ? now(new Date(Date.now() - days * 86400000)) : '';
-    const runs = this.all(`SELECT o.check_id,MAX(o.checked_at) AS checked_at FROM observations o JOIN memberships m ON m.variant_id=o.variant_id
+    const runs = this.all(`SELECT o.check_id,MAX(o.checked_at) AS checked_at,MIN(o.id) AS first_id FROM observations o JOIN memberships m ON m.variant_id=o.variant_id
       WHERE m.list_id=? AND o.context=? AND o.checked_at>=? AND o.checked_at>=m.joined_at AND (m.left_at IS NULL OR o.checked_at<m.left_at)
-      GROUP BY o.check_id,CASE WHEN o.check_id IS NULL THEN o.checked_at END ORDER BY checked_at`, listId, context, since);
+      GROUP BY o.check_id,CASE WHEN o.check_id IS NULL THEN o.checked_at END ORDER BY checked_at,first_id`, listId, context, since);
     return runs.map(run => {
       const stamp = run.checked_at;
-      const rows = this.all(`SELECT o.* FROM observations o JOIN memberships m ON m.variant_id=o.variant_id
-        WHERE m.list_id=? AND o.context=? AND o.check_id IS ? AND o.checked_at>=m.joined_at AND (m.left_at IS NULL OR o.checked_at<m.left_at)
-        AND (o.check_id IS NOT NULL OR o.checked_at=?)`, listId, context, run.check_id, stamp);
       const members = this.all('SELECT variant_id FROM memberships WHERE list_id=? AND joined_at<=? AND (left_at IS NULL OR left_at>?) ORDER BY variant_id', listId, stamp, stamp).map(row => row.variant_id);
+      const observations = this.all(`SELECT o.* FROM observations o
+        WHERE o.context=? AND o.check_id IS ? AND o.checked_at<=? AND (o.check_id IS NOT NULL OR o.checked_at=?)
+        AND EXISTS(SELECT 1 FROM memberships m WHERE m.variant_id=o.variant_id AND m.list_id=?
+          AND m.joined_at<=? AND (m.left_at IS NULL OR m.left_at>?) AND o.checked_at>=m.joined_at)
+        ORDER BY o.checked_at,o.id`, context, run.check_id, stamp, stamp, listId, stamp, stamp);
+      const rows = [...new Map(observations.map(row => [row.variant_id, row])).values()];
       const known = rows.filter(row => row.status === 'ok' && row.price != null && row.in_stock);
       const complete = known.length === members.length && members.length > 0;
       const total = known.reduce((sum, row) => sum + row.price, 0);
