@@ -1,5 +1,43 @@
 # Price Checker
 
+## Frontend: React + TypeScript
+
+Интерфейс использует React, TypeScript, Vite, TanStack Router и TanStack Query.
+Компоненты shadcn/ui оформлены через Tailwind CSS, графики построены на Recharts.
+Zustand сохраняет только предпочтения интерфейса; товары и историю кеширует TanStack Query.
+Cookie сессии не попадает в browser storage и очищается при закрытии настроек.
+
+`PriceChart`, `ProductTable` и `DetailDialog` реализованы как compound components
+с общим состоянием через Context: `Root` и вложенные части (`Toolbar`, `Plot`, `History` и другие).
+Компоненты shadcn/ui находятся в `frontend/src/components/ui/` и доступны для изменения.
+
+```powershell
+npm ci
+npm start
+```
+
+Сборка сохраняется в игнорируемом `dist/`, Node.js раздаёт её вместе с API.
+Прямой запуск `node run.js`, Windows-автозапуск и `npm run lab` автоматически
+пересобирают отсутствующий или устаревший frontend. Маршруты `/cart`, `/favorites`
+и `/watching` поддерживают прямое открытие и перезагрузку. Фильтры, поиск,
+период и тип цены сохраняются в URL; шкала графиков — локально в браузере.
+
+Для разработки запустите `npm start` в одном терминале и `npm run dev` в другом.
+Vite выводит адрес dev-сервера и перенаправляет `/api` на `127.0.0.1:8000`.
+Прокси меняет Origin только в режиме разработки, чтобы API сохранял проверку
+локального адреса и CSRF-токена. Браузерные тесты используют отдельный тестовый стенд.
+
+```powershell
+npm run check           # TypeScript и синтаксис backend
+npm test                # Сборка, node:test и Vitest + React Testing Library
+npm run test:e2e        # Playwright: навигация, формы, обновления, графики, мобильный экран
+npm run lab:verify      # Восемь сценариев цен, SVG-графики, сохранение после перезапуска
+```
+
+Playwright использует установленный Chrome/Edge/Chromium или путь из
+`PRICE_CHECKER_TEST_BROWSER`. Если подходящего системного браузера нет,
+для `test:e2e` можно установить Chromium командой `npx playwright install chromium`.
+
 ## Проверка тестовой базы и графиков
 
 `npm run lab:verify` создаёт отдельные базы в `.data/test-lab/runs/`: `source.sqlite3` с управляемыми ценами
@@ -182,8 +220,12 @@ node scripts/probe-cart.js --output scratch/cart-node.json
 - `src/database.js` — SQLite и совместимая схема данных.
 - `src/service.js`, `src/time.js` — сбор, синхронизация списков и расписание.
 - `src/web.js` — HTTP API и CSV.
-- `public/` — интерфейс, без внешних CDN и сборки.
-- `tests/` — тесты встроенного `node:test`.
+- `frontend/src/` — React + TypeScript, маршрутизация, запросы и compound components.
+- `frontend/src/components/ui/` — исходники компонентов shadcn/ui.
+- `dist/` — локальная сборка Vite; не включается в Git, не использует CDN.
+- `tests/` — тесты backend на встроенном `node:test`.
+- `frontend/src/**/*.test.*` — Vitest и React Testing Library.
+- `e2e/` — браузерные тесты Playwright на изолированном стенде.
 
 Используется встроенный [node:sqlite](https://github.com/nodejs/node/blob/v24.14.1/doc/api/sqlite.md), который в проверенной Node.js 24.14.1
 помечен как экспериментальный. Предупреждение в логах ожидаемо; API и совместимость
