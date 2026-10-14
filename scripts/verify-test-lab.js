@@ -55,7 +55,8 @@ try {
     assert.equal(primary.delta,delta);
     const row=page.locator(`tr[data-id="${primary.id}"]`);
     assert.ok((await row.innerText()).includes(new Intl.NumberFormat('ru-RU').format(scenario.public/100)));
-    assert.equal(await page.locator('#metric-drops').textContent(),['drop','recovery'].includes(name)?'1':'0');
+    assert.equal(await page.locator('#metric-drops').textContent(),['drop','recovery','error','restored'].includes(name)?'1':'0');
+    assert.equal(await page.locator('#metric-rises').textContent(),['rise','unchanged','unavailable'].includes(name)?'1':'0');
     if(name==='drop')assert.ok((await row.innerText()).includes('20,0%'));
     if(name==='rise')assert.ok((await row.innerText()).includes('50,0%'));
     if(scenario.error) {

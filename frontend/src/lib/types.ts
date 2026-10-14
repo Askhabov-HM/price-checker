@@ -2,8 +2,15 @@ export type ListId = 'cart' | 'favorites' | 'watching';
 export type PriceContext = 'public' | 'cart';
 export type ChartScale = 'time' | 'checks';
 export type Period = 0 | 7 | 30 | 90;
-export type Filter = 'all' | 'drops' | 'rises' | 'minimum' | 'unavailable' | 'errors';
-export type Sort = 'name' | 'price-asc' | 'price-desc' | 'delta';
+export type ChangePeriod = 7 | 14 | 30;
+export type Filter = 'all' | 'changed' | 'drops' | 'rises' | 'minimum' | 'unavailable' | 'errors';
+export type Sort = 'recent' | 'name' | 'price-asc' | 'price-desc' | 'delta';
+export interface PriceChangeEvent {
+  checked_at: string;
+  previous_price: number;
+  price: number;
+  delta: number;
+}
 export interface PricePoint {
   checked_at: string;
   price: number | null;
@@ -33,6 +40,7 @@ export interface ProductRow extends Product {
   price: number | null;
   previous_price: number | null;
   delta: number | null;
+  last_change: PriceChangeEvent | null;
   minimum: number | null;
   observations: number;
   in_stock: boolean | null;

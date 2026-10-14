@@ -1,14 +1,15 @@
 import {createRootRoute, createRoute, createRouter, Link, notFound, redirect} from '@tanstack/react-router';
 import {AppShell} from '@/components/app-shell';
 import {Dashboard} from '@/pages/dashboard';
-import type {Filter, Period, PriceContext, Sort} from '@/lib/types';
+import type {ChangePeriod, Filter, Period, PriceContext, Sort} from '@/lib/types';
 
 export function validateSearch(search: Record<string, unknown>) {
   return {
     context: (search.context === 'cart' ? 'cart' : 'public') as PriceContext,
     q: typeof search.q === 'string' ? search.q : '',
-    filter: (['all', 'drops', 'rises', 'minimum', 'unavailable', 'errors'].includes(String(search.filter)) ? search.filter : 'all') as Filter,
-    sort: (['name', 'price-asc', 'price-desc', 'delta'].includes(String(search.sort)) ? search.sort : 'name') as Sort,
+    filter: (['all', 'changed', 'drops', 'rises', 'minimum', 'unavailable', 'errors'].includes(String(search.filter)) ? search.filter : 'all') as Filter,
+    sort: (['recent', 'name', 'price-asc', 'price-desc', 'delta'].includes(String(search.sort)) ? search.sort : 'recent') as Sort,
+    changeDays: ([7, 14, 30].includes(Number(search.changeDays)) ? Number(search.changeDays) : 7) as ChangePeriod,
     days: ([0, 7, 30, 90].includes(Number(search.days)) ? Number(search.days) : 30) as Period,
   };
 }

@@ -45,6 +45,20 @@ test('CSV distinguishes a failed attempt from the date of the last known price',
   assert.equal(dashboard.items[0].price, 15000);
   assert.equal(dashboard.items[0].delta, null);
 });
+test('dashboard exposes the last price event after unchanged and failed refreshes', async t => {
+  const {base, tracker, id} = await setup(t);
+  const stamp = tracker.db.rows('cart')[0].checked_at;
+  tracker.db.observation(id, item({price_kopecks: 10000}), 'public', null, stamp);
+  tracker.db.observation(id, item({price_kopecks: 10000}), 'public', null, stamp);
+  let dashboard = await (await fetch(base + '/api/dashboard?list=cart')).json();
+  assert.equal(dashboard.items[0].delta, 0);
+  const event = {checked_at: stamp, previous_price: 15000, price: 10000, delta: -5000};
+  assert.deepEqual(dashboard.items[0].last_change, event);
+  tracker.db.observation(id, {status: 'error'}, 'public', null, stamp);
+  dashboard = await (await fetch(base + '/api/dashboard?list=cart')).json();
+  assert.equal(dashboard.items[0].status, 'error');
+  assert.deepEqual(dashboard.items[0].last_change, event);
+});
 test('CSRF and origin validation protect changes; valid watch requests persist', async t => {
   const {base, post, id, tracker} = await setup(t);
   assert.equal((await fetch(base + '/api/watch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, active: true})})).status, 403);

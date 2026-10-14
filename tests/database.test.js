@@ -126,6 +126,63 @@ test('a failed check does not repeat the previous price drop', t => {
   const row = db.rows('cart')[0];
   assert.equal(row.price, 10000); assert.equal(row.previous_price, 15000); assert.equal(row.delta, null);
 });
+test('the last real price change survives equal readings beyond the sparkline and failed checks', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  db.observation(id, item(), 'public', null, '2026-10-02T10:00:00+00:00');
+  const stamp = '2026-10-02T11:00:00+00:00';
+  db.observation(id, item({price_kopecks: 10000}), 'public', null, stamp);
+  for (let minute = 1; minute <= 40; minute++) {
+    db.observation(id, item({price_kopecks: 10000}), 'public', null, `2026-10-02T11:${String(minute).padStart(2, '0')}:00+00:00`);
+  }
+  const expected = {checked_at: stamp, previous_price: 15000, price: 10000, delta: -5000};
+  let row = db.rows('cart')[0];
+  assert.equal(row.delta, 0); assert.equal(row.sparkline.length, 24);
+  assert.deepEqual(row.last_change, expected);
+  db.observation(id, {status: 'error'}, 'public', null, '2026-10-02T12:00:00+00:00');
+  row = db.rows('cart')[0];
+  assert.equal(row.status, 'error'); assert.equal(row.delta, null);
+  assert.deepEqual(row.last_change, expected);
+  db.observation(id, {status: 'missing'}, 'public', null, '2026-10-02T13:00:00+00:00');
+  assert.deepEqual(db.rows('cart')[0].last_change, expected);
+  db.observation(id, item({price_kopecks: 10000}), 'public', null, '2026-10-02T14:00:00+00:00');
+  assert.deepEqual(db.rows('cart')[0].last_change, expected);
+});
+test('the last movement is a rise even when the price remains below its original value', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  for (const [hour, price] of [[10, 100000], [11, 80000], [12, 95000], [13, 95000]]) {
+    db.observation(id, item({price_kopecks: price}), 'public', null, `2026-10-02T${hour}:00:00+00:00`);
+  }
+  assert.deepEqual(db.rows('cart')[0].last_change, {checked_at: '2026-10-02T12:00:00+00:00', previous_price: 80000, price: 95000, delta: 15000});
+});
+test('first prices and availability-only changes do not create price events', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  assert.equal(db.rows('cart')[0].last_change, null);
+  db.observation(id, {status: 'error'}, 'public');
+  assert.equal(db.rows('cart')[0].last_change, null);
+  db.observation(id, item(), 'public');
+  db.observation(id, item({in_stock: false}), 'public');
+  db.observation(id, item(), 'public');
+  assert.equal(db.rows('cart')[0].last_change, null);
+});
+test('price change events stay separate by variant and price context and are shared between lists', t => {
+  const {db, id, joinList} = setup(t);
+  const other = db.variant(item({sku: '456', variant: 'духи 1,5мл'}));
+  joinList('cart', [id, other]); joinList('favorites');
+  for (const context of ['public', 'cart']) db.observation(id, item(), context, null, '2026-10-02T10:00:00+00:00');
+  db.observation(other, item(), 'public', null, '2026-10-02T10:00:00+00:00');
+  db.observation(id, item({price_kopecks: 10000}), 'public', null, '2026-10-02T11:00:00+00:00');
+  db.observation(id, item({price_kopecks: 20000}), 'cart', null, '2026-10-02T12:00:00+00:00');
+  assert.equal(db.rows('cart').find(row => row.id === id).last_change.delta, -5000);
+  assert.equal(db.rows('favorites')[0].last_change.delta, -5000);
+  assert.equal(db.rows('cart', 'cart').find(row => row.id === id).last_change.delta, 5000);
+  assert.equal(db.rows('cart').find(row => row.id === other).last_change, null);
+});
+test('simultaneous readings retain the final movement in insertion order', t => {
+  const {db, id, joinList} = setup(t); joinList();
+  const stamp = '2026-10-02T10:00:00+00:00';
+  for (const price of [100000, 80000, 80000, 95000, 95000]) db.observation(id, item({price_kopecks: price}), 'public', null, stamp);
+  assert.deepEqual(db.rows('cart')[0].last_change, {checked_at: stamp, previous_price: 80000, price: 95000, delta: 15000});
+});
 test('backup is readable, complete, and can replace the daily backup', async t => {
   const {db, id, root} = setup(t); db.observation(id, item(), 'public');
   const path = await db.backup(join(root, 'backups'));

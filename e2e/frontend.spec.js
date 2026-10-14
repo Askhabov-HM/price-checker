@@ -48,6 +48,51 @@ test('refresh updates prices and SVG charts; list URLs, filters, and scale survi
   expect(errors).toEqual([]);
 });
 
+test('last changes survive unchanged checks and errors and filter by 7, 14, or 30 days', async ({page}) => {
+  await refresh(page, 'initial'); await refresh(page, 'drop');
+  const primary = lab.tracker.db.rows('cart').find(row => row.sku === 'TEST-EDP-15');
+  const detected = primary.last_change.checked_at;
+  await refresh(page, 'drop'); await refresh(page, 'error');
+  const primaryRow = page.locator(`tr[data-id="${primary.id}"]`);
+  await expect(primaryRow.locator('time')).toHaveAttribute('datetime', detected);
+  await expect(primaryRow).toContainText('20,0%');
+  await expect(primaryRow).toContainText('Нет свежих данных');
+
+  const day = 86400000, now = Date.now(), stamp = age => new Date(now - age * day).toISOString();
+  const secondary = lab.tracker.db.rows('cart').find(row => row.sku === 'TEST-EDT-15');
+  lab.tracker.db.observation(secondary.id, {price_kopecks: 50000, in_stock: true}, 'public', null, stamp(11));
+  lab.tracker.db.observation(secondary.id, {price_kopecks: 60000, in_stock: true}, 'public', null, stamp(10));
+  const older = lab.tracker.db.variant({url: 'https://randewoo.ru/product/test-older-change', sku: 'OLD-20', brand: 'Test Lab', name: 'Older Change', variant: 'EDP 1,5мл'});
+  lab.tracker.db.addMembers('cart', [older]);
+  lab.tracker.db.observation(older, {price_kopecks: 90000, in_stock: true}, 'public', null, stamp(21));
+  lab.tracker.db.observation(older, {price_kopecks: 70000, in_stock: true}, 'public', null, stamp(20));
+  await page.reload();
+  await page.getByLabel('Фильтр товаров').selectOption('changed');
+  await expect(page.locator('#product-rows tr[data-id]')).toHaveCount(1);
+  await expect(page.locator('#metric-drops')).toHaveText('1');
+  await expect(page.locator('#metric-rises')).toHaveText('0');
+  await page.getByLabel('Период изменений').selectOption('14');
+  await expect(page.locator('#product-rows tr[data-id]')).toHaveCount(2);
+  await expect(page.locator('#metric-rises')).toHaveText('1');
+  await page.getByLabel('Период изменений').selectOption('30');
+  await expect(page.locator('#product-rows tr[data-id]')).toHaveCount(3);
+  await expect(page.locator('#metric-drops')).toHaveText('2');
+  await page.getByRole('button', {name: 'Показать подорожавшие за 30 дней'}).click();
+  await expect(page.locator('#product-rows tr[data-id]')).toHaveCount(1);
+  await expect(page.locator('#product-rows tr[data-id]').first()).toHaveAttribute('data-id', String(secondary.id));
+  await page.reload();
+  await expect(page.getByLabel('Период изменений')).toHaveValue('30');
+  await expect(page.getByLabel('Фильтр товаров')).toHaveValue('rises');
+  await page.getByLabel('Период изменений').selectOption('7');
+  await expect(page.locator('#product-rows tr[data-id]')).toHaveCount(0);
+  await page.getByLabel('Период изменений').selectOption('14');
+  await page.locator('#product-rows tr[data-id]').click();
+  await page.getByRole('button', {name: 'Всё время'}).click();
+  await expect(page).toHaveURL(/changeDays=14/);
+  await expect(page).toHaveURL(/days=0/);
+  await page.keyboard.press('Escape');
+});
+
 test('product details support keyboard selection, periods, context, and closing', async ({page}) => {
   await refresh(page, 'initial'); await refresh(page, 'drop');
   const row = page.locator('tr[data-id]').first();

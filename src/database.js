@@ -151,6 +151,20 @@ export class Database {
   validate(listId, context) {
     if (!own(LISTS, listId) || !own(CONTEXTS, context)) throw new ValidationError('Неизвестный список или тип цены');
   }
+  lastPriceChange(variantId, context, last) {
+    if (!last) return null;
+    const previous = this.get(`SELECT id,checked_at,price FROM observations
+      WHERE variant_id=? AND context=? AND status='ok' AND price IS NOT NULL AND price!=?
+      ORDER BY checked_at DESC,id DESC LIMIT 1`, variantId, context, last.price);
+    if (!previous) return null;
+    // Find the first reading at the current price after the last different price.
+    // Equal readings, errors and missing variants must not move the detection time.
+    const change = this.get(`SELECT checked_at,price FROM observations
+      WHERE variant_id=? AND context=? AND status='ok' AND price=?
+      AND (checked_at>? OR (checked_at=? AND id>?)) ORDER BY checked_at,id LIMIT 1`,
+    variantId, context, last.price, previous.checked_at, previous.checked_at, previous.id);
+    return {checked_at: change.checked_at, previous_price: previous.price, price: change.price, delta: change.price - previous.price};
+  }
   rows(listId, context = 'public') {
     this.validate(listId, context);
     return this.all(`SELECT v.id,v.sku,v.label,p.brand,p.name,p.url,p.image,m.quantity,m.joined_at FROM memberships m
@@ -167,6 +181,7 @@ export class Database {
         checked_at: latest?.checked_at ?? null, price_at: last?.checked_at ?? null, message: latest?.message || '', ...stats,
         watching: Boolean(this.get("SELECT 1 FROM memberships WHERE variant_id=? AND list_id='watching' AND left_at IS NULL", row.id)),
         delta: latest?.status === 'ok' && price != null && previous != null ? price - previous : null,
+        last_change: this.lastPriceChange(row.id, context, last),
         sparkline: this.all('SELECT checked_at,price,status FROM observations WHERE variant_id=? AND context=? ORDER BY checked_at DESC,id DESC LIMIT 24', row.id, context).reverse()};
     });
   }
