@@ -40,10 +40,13 @@ function csvCell(value) {
 const decimal = value => value == null ? '' : (value < 0 ? '-' : '') + Math.floor(Math.abs(value) / 100) + ',' + String(Math.abs(value) % 100).padStart(2, '0');
 
 export function exportCsv(rows, context) {
-  const lines = [['Бренд', 'Товар', 'Вариант', 'Артикул', 'Цена, руб.', 'Изменение, руб.', 'Наличие', 'Проверено UTC', 'Тип цены', 'Ссылка'].join(';')];
+  const statuses = {ok: 'Успешно', error: 'Ошибка проверки', missing: 'Вариант отсутствует', pending: 'Ожидает проверки'};
+  const lines = [['Бренд', 'Товар', 'Вариант', 'Артикул', 'Цена, руб.', 'Изменение, руб.', 'Наличие', 'Проверено UTC', 'Тип цены', 'Ссылка', 'Статус проверки', 'Цена получена UTC', 'Сообщение'].join(';')];
   for (const row of rows) {
+    const stock = row.status === 'missing' ? 'Нет' : row.status === 'ok' && row.in_stock != null ? row.in_stock ? 'Да' : 'Нет' : 'Неизвестно';
     lines.push([csvCell(row.brand), csvCell(row.name), csvCell(row.label), csvCell(row.sku), decimal(row.price), decimal(row.delta),
-      row.in_stock ? 'Да' : 'Нет', row.checked_at || '', CONTEXTS[context], csvCell(row.url)].join(';'));
+      stock, row.checked_at || '', CONTEXTS[context], csvCell(row.url), statuses[row.status] || statuses.pending,
+      row.price_at || '', csvCell(row.message)].join(';'));
   }
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }

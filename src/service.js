@@ -85,6 +85,7 @@ export class Tracker {
   async refresh(trigger) {
     const checkId = this.db.startCheck(trigger), errors = [];
     const favoriteUrls = new Set(), cartFallbackUrls = new Set();
+    let cartError = null, cartPricedIds = null;
     try {
       let authorized = false;
       try {
@@ -95,6 +96,7 @@ export class Tracker {
       } catch (error) {
         if (!(error instanceof FetchError)) throw error;
         errors.push(error.message);
+        cartError = error.message;
         this.db.setSetting('auth_status', error instanceof AuthError ? 'expired' : 'error');
         this.db.setSetting('auth_message', error.message);
       }
@@ -110,10 +112,12 @@ export class Tracker {
             return {id: this.db.variant(meta), item};
           });
           this.db.syncList('cart', resolved.map(({id, item}) => [id, item.quantity]), stamp);
+          cartPricedIds = new Set(resolved.filter(({item}) => item.matches_target_volume).map(({id}) => id));
           for (const {id, item} of resolved) if (item.matches_target_volume) this.db.observation(id, item, 'cart', checkId, stamp);
         } catch (error) {
           if (!(error instanceof FetchError)) throw error;
           errors.push('Корзина: ' + error.message);
+          cartError = error.message;
         }
         try {
           const favorites = await this.client.favorites(), entries = [];
@@ -159,6 +163,12 @@ export class Tracker {
       if (this.closing) {
         this.db.updateCheck(checkId, {status: 'interrupted', finished_at: now(), message: 'Приложение остановлено во время проверки'});
         return {check_id: checkId, errors: 1};
+      }
+      const cartStamp = now();
+      for (const row of this.db.rows('cart', 'cart')) {
+        if (cartError) this.db.observation(row.id, {status: 'error', message: cartError}, 'cart', checkId, cartStamp);
+        else if (cartPricedIds && !cartPricedIds.has(row.id)) this.db.observation(row.id,
+          {status: 'missing', in_stock: false, message: 'Вариант 1,5 мл отсутствует в корзине аккаунта'}, 'cart', checkId, cartStamp);
       }
       let message = 'Проверено товаров: ' + products.length;
       if (errors.length) message += '. ' + errors.slice(0, 5).join('; ') + (errors.length > 5 ? '. Ещё ошибок: ' + (errors.length - 5) : '');
