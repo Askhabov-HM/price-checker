@@ -5,6 +5,7 @@ import {Database} from './database.js';
 import {Randewoo, productUrl, quote} from './client.js';
 import {AuthError, FetchError, ValidationError} from './errors.js';
 import {now, nextCheck, scheduleSlot} from './time.js';
+import {RandewooLogin} from './randewoo-login.js';
 
 export class Tracker {
   constructor(root, {databasePath, client} = {}) {
@@ -12,6 +13,11 @@ export class Tracker {
     this.db = new Database(databasePath || join(root, '.data/prices.sqlite3'));
     this.db.setSetting('last_started_slot', null);
     this.client = client || new Randewoo(join(root, '.secrets/randewoo-session.json'));
+    this.randewooLogin = new RandewooLogin(this.client.transport, data => {
+      this.saveSession(data);
+      this.db.setSetting('auth_status', 'ok');
+      this.db.setSetting('auth_message', 'Randewoo подключён. Запустите проверку для обновления списков');
+    });
     this.running = false;
     this.closing = false;
     this.refreshPromise = null;
@@ -84,6 +90,7 @@ export class Tracker {
 
   async refresh(trigger) {
     const checkId = this.db.startCheck(trigger), errors = [];
+    this.client.checkId = checkId;
     const favoriteUrls = new Set(), cartFallbackUrls = new Set();
     let cartError = null, cartPricedIds = null;
     try {
@@ -179,7 +186,7 @@ export class Tracker {
     } catch {
       this.db.updateCheck(checkId, {status: this.closing ? 'interrupted' : 'error', message: 'Проверка прервана. Предыдущие данные сохранены', finished_at: now()});
       return {check_id: checkId, errors: 1};
-    }
+    } finally {this.client.checkId = null;}
   }
 
   async addUrl(url, listId = 'watching') {
@@ -213,6 +220,7 @@ export class Tracker {
     mkdirSync(dirname(path), {recursive: true});
     writeFileSync(path + '.tmp', JSON.stringify({cookie, user_agent: userAgent}), {encoding: 'utf8', mode: 0o600});
     renameSync(path + '.tmp', path);
+    this.randewooLogin.clear();
     this.db.setSetting('auth_status', 'unknown');
     this.db.setSetting('auth_message', 'Сессия сохранена. Запустите проверку');
   }
@@ -235,6 +243,7 @@ export class Tracker {
     if (!this.closePromise) this.closePromise = (async () => {
       clearInterval(this.timer);
       this.closing = true;
+      this.randewooLogin.clear();
       this.client.close?.();
       await this.refreshPromise;
       this.db.close();

@@ -6,10 +6,11 @@ import {join} from 'node:path';
 import {CONTEXTS} from './database.js';
 import {FetchError, ValidationError} from './errors.js';
 import {loadAuthentication} from './auth.js';
+import {LoginError} from './randewoo-login.js';
 
 const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
 // Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
-const policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
+const policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://captcha.randewoo.ru/assets/widget.js https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru; connect-src 'self' https://captcha.randewoo.ru https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 function send(response, status, body, contentType = 'application/json; charset=utf-8', headers = {}) {
   if (!Buffer.isBuffer(body)) body = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
@@ -144,6 +145,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
           {'Set-Cookie': auth.cookie(result.token, secureCookie)});
       }
       if (url.pathname === '/api/logout' && auth) {
+        tracker.randewooLogin.cancel(token);
         auth.logout(request);
         return send(response, 200, {required: true, authenticated: false, login: null, csrf_token: csrf}, undefined,
           {'Set-Cookie': auth.cookie('', secureCookie)});
@@ -166,6 +168,14 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       if (url.pathname === '/api/my-cart/add') return send(response, 200, {id: await tracker.addUrl(data.url, 'my-cart')});
       if (url.pathname === '/api/settings') {tracker.saveSettings(data); return send(response, 200, {ok: true});}
       if (url.pathname === '/api/session') {tracker.saveSession(data); return send(response, 200, {ok: true});}
+      if (url.pathname === '/api/randewoo/prepare') return send(response, 200, await tracker.randewooLogin.prepare(token));
+      if (url.pathname === '/api/randewoo/send-code') return send(response, 200, await tracker.randewooLogin.send(token, data));
+      if (url.pathname === '/api/randewoo/confirm') return send(response, 200, await tracker.randewooLogin.confirm(token, data));
+      if (url.pathname === '/api/randewoo/cancel') {
+        if (typeof data.challenge_id !== 'string') throw new ValidationError('Укажите подключение для отмены');
+        tracker.randewooLogin.cancel(token, data.challenge_id);
+        return send(response, 200, {ok: true});
+      }
       if (url.pathname === '/api/shutdown' && onShutdown) {
         response.once('finish', onShutdown);
         return send(response, 200, {ok: true});
@@ -173,6 +183,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       return send(response, 404, {error: 'Действие не найдено'});
     } catch (error) {
       if (error.code === 'ENOENT') return send(response, 404, {error: 'Страница не найдена'});
+      if (error instanceof LoginError) return send(response, error.status, {error: error.message});
       if (error instanceof ValidationError) return send(response, 400, {error: error.message});
       if (error instanceof FetchError) return send(response, 502, {error: error.message});
       return send(response, 500, {error: 'Не удалось выполнить действие'});

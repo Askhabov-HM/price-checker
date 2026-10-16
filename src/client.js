@@ -1,7 +1,8 @@
 import {readFileSync} from 'node:fs';
-import {spawn} from 'node:child_process';
 import {load} from 'cheerio';
 import {AuthError, FetchError, ValidationError} from './errors.js';
+import {CurlTransport, quote} from './randewoo-transport.js';
+export {quote} from './randewoo-transport.js';
 
 const ORIGIN = 'https://randewoo.ru';
 // A Unicode boundary is required: JavaScript's \b does not treat Cyrillic as letters.
@@ -28,11 +29,6 @@ export function money(value) {
   const result = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
   if (!Number.isSafeInteger(result) || result <= 0) throw new FetchError('Сайт вернул некорректную цену');
   return result;
-}
-
-export function quote(value) {
-  if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new ValidationError('Некорректные заголовки сессии');
-  return '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
 }
 
 function* objects(value) {
@@ -127,8 +123,8 @@ export function authorizedUser(html) {
 }
 
 export class Randewoo {
-  constructor(sessionPath) {this.sessionPath = sessionPath; this.children = new Set(); this.closed = false;}
-  close() {this.closed = true; for (const child of this.children) child.kill();}
+  constructor(sessionPath, options = {}) {this.sessionPath = sessionPath; this.transport = new CurlTransport(options); this.closed = false;}
+  close() {this.closed = true; this.transport.close();}
 
   session() {
     try {
@@ -141,36 +137,11 @@ export class Randewoo {
 
   async get(path, {authorized = false, json = false} = {}) {
     if (this.closed) throw new FetchError('Приложение останавливается');
-    if (typeof path !== 'string' || !/^\/(?!\/)/.test(path) || /[\r\n\\]/.test(path)) throw new ValidationError('Недопустимый адрес запроса');
-    const allowed = path.split('?')[0];
-    if (!['/cart', '/favorites', '/cabinet/favorites', '/front_api/cart/new_cart'].includes(allowed) && !/^\/product\/[^/]+$/.test(allowed)) throw new ValidationError('Запрос не относится к спискам или товарам');
-    const config = ['url = ' + quote(ORIGIN + path), 'silent', 'show-error', 'max-time = 30', 'proto = "=https"', 'write-out = "\\nPRICE_CHECKER_STATUS:%{http_code}"'];
-    if (authorized) {
-      const session = this.session();
-      config.push('cookie = ' + quote(session.cookie), 'user-agent = ' + quote(session.user_agent));
-    } else config.push('user-agent = "PriceChecker/1.0"');
-    config.push('header = ' + quote('Accept: ' + (json ? 'application/json' : 'text/html')));
-    if (path.startsWith('/favorites')) config.push('header = "Content-Type: application/json"');
-    // curl remains a transport only; authentication travels through stdin, never argv.
-    const body = await new Promise((resolve, reject) => {
-      const child = spawn(process.platform === 'win32' ? 'curl.exe' : 'curl', ['-q', '--config', '-'], {windowsHide: true, stdio: ['pipe', 'pipe', 'ignore']});
-      this.children.add(child);
-      const chunks = []; let bytes = 0, failed = false;
-      const fail = message => {if (!failed) {failed = true; child.kill(); reject(new FetchError(message));}};
-      const timer = setTimeout(() => fail('Не удалось связаться с Randewoo'), 40000);
-      child.stdout.on('data', chunk => {bytes += chunk.length; if (bytes > 20 * 1024 * 1024) fail('Слишком большой ответ Randewoo'); else chunks.push(chunk);});
-      child.stdin.on('error', () => {});
-      child.on('error', error => {clearTimeout(timer); fail(error.code === 'ENOENT' ? 'Не найдена программа curl' : 'Ошибка соединения с Randewoo');});
-      child.on('close', code => {this.children.delete(child); clearTimeout(timer); if (!failed) code === 0 ? resolve(Buffer.concat(chunks).toString('utf8')) : fail('Ошибка соединения с Randewoo');});
-      child.stdin.end(config.join('\n'));
-    });
-    const marker = '\nPRICE_CHECKER_STATUS:', index = body.lastIndexOf(marker);
-    const status = index < 0 ? 'неизвестен' : body.slice(index + marker.length);
-    if (status !== '200') {
-      if (authorized && ['301', '302', '303', '401'].includes(status)) throw new AuthError('Сессия истекла: обновите вход в Randewoo');
-      throw new FetchError('Randewoo вернул HTTP ' + status);
+    const {status, payload} = await this.transport.request(path, {json, session: authorized ? this.session() : undefined, checkId: this.checkId});
+    if (status !== 200) {
+      if (authorized && [301, 302, 303, 401].includes(status)) throw new AuthError('Сессия истекла: обновите вход в Randewoo');
+      throw new FetchError('Randewoo вернул HTTP ' + (status || 'неизвестен'));
     }
-    const payload = body.slice(0, index);
     if (!json) return payload;
     try {return JSON.parse(payload);} catch {throw new FetchError('Неожиданный формат ответа Randewoo');}
   }
