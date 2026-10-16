@@ -45,11 +45,12 @@ async function main() {
     else console.error('Не удалось получить блокировку приложения.');
     return 1;
   }
-  let tracker, server, shutdownPromise, resolveStopped;
+  let tracker, telegram, server, shutdownPromise, resolveStopped;
   const pidFile = join(root, '.data/server.pid'), metaFile = join(root, '.data/server.json');
   const shutdown = () => {
     if (!shutdownPromise) shutdownPromise = (async () => {
       const closed = server?.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
+      await telegram?.close();
       await tracker?.close();
       server?.closeAllConnections();
       await closed;
@@ -62,9 +63,13 @@ async function main() {
   try {
     const {Tracker} = await import('./src/service.js');
     const {makeServer, listen} = await import('./src/web.js');
+    const {createTelegramBot} = await import('./src/telegram.js');
     tracker = new Tracker(root);
+    telegram = createTelegramBot(tracker);
     if (args.once) {
+      telegram?.start({polling: false});
       const result = await tracker.refreshNow('cli');
+      await telegram?.flush();
       console.log(JSON.stringify(result));
       return result.errors ? 1 : 0;
     }
@@ -77,6 +82,7 @@ async function main() {
     writeFileSync(metaFile, JSON.stringify({pid: process.pid, port, runtime: 'node.js', control_token: controlToken}), {encoding: 'utf8', mode: 0o600});
     const url = 'http://127.0.0.1:' + port;
     console.log(`Price Checker (Node.js): ${url}\nРасписание: Москва. Для остановки нажмите Ctrl+C.`);
+    telegram?.start();
     tracker.startScheduler();
     if (!args.noBrowser) openBrowser(url);
     await new Promise(resolve => {resolveStopped = resolve;});
