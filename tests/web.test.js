@@ -146,7 +146,8 @@ test('login protects all data and mutations; logout revokes the session and leav
     assert.equal(response.status, 401);
     assert.ok(!(await response.text()).includes('Fragrance'));
   }
-  for (const path of ['/api/watch', '/api/refresh', '/api/session', '/api/settings', '/api/my-cart', '/api/shutdown']) {
+  for (const path of ['/api/watch', '/api/refresh', '/api/session', '/api/settings', '/api/my-cart', '/api/shutdown',
+    '/api/randewoo/prepare', '/api/randewoo/send-code', '/api/randewoo/confirm', '/api/randewoo/cancel']) {
     assert.equal((await fetch(base + path, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf_token}, body: '{}'})).status, 401);
   }
   const response = await signIn(base), signedIn = await response.json(), setCookie = response.headers.get('set-cookie');
@@ -220,4 +221,28 @@ test('local control token can stop a signed-out app but cannot read data', async
   assert.equal(stopped, false);
   assert.equal((await fetch(base + '/api/shutdown', {method: 'POST', headers})).status, 200);
   assert.equal(stopped, true);
+});
+
+test('Randewoo phone endpoints enforce CSRF, save verified cookies and expose no session secrets', async t => {
+  const {base, post, tracker} = await setup(t);
+  const replies = [
+    {payload: '<meta name="csrf-token" content="private-csrf"><script>gon.cap_enabled=false;</script>', status: 200, headers: {'set-cookie': ['_session=guest; Path=/']}},
+    {payload: '{"estimate":60}', status: 200, headers: {}},
+    {payload: '{"userData":{"private":"account"}}', status: 200, headers: {'set-cookie': ['_session=private-verified-cookie; Path=/']}},
+    {payload: 'gon.user={"is_authorized":true};', status: 200, headers: {}},
+  ];
+  tracker.randewooLogin.transport = {request: async () => replies.shift()};
+  const noCsrf = await fetch(base + '/api/randewoo/prepare', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+  assert.equal(noCsrf.status, 403); assert.equal(replies.length, 4);
+  assert.equal((await post('/api/randewoo/prepare', {}, {Origin: 'https://evil.example'})).status, 403);
+  const prepared = await (await post('/api/randewoo/prepare', {})).json();
+  assert.equal(prepared.captcha, null);
+  const data = {challenge_id: prepared.challenge_id, phone: '+79991234567'};
+  assert.equal((await post('/api/randewoo/send-code', data)).status, 200);
+  const confirmed = await post('/api/randewoo/confirm', {...data, code: '1234'});
+  assert.equal(confirmed.status, 200); assert.deepEqual(await confirmed.json(), {connected: true});
+  assert.equal(JSON.parse(readFileSync(tracker.client.sessionPath, 'utf8')).cookie, '_session=private-verified-cookie');
+  const status = await (await fetch(base + '/api/status')).text();
+  assert.doesNotMatch(status, /private-verified-cookie|private-csrf|userData|79991234567/);
+  assert.equal(JSON.parse(status).auth_status, 'ok');
 });

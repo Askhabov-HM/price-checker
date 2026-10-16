@@ -235,6 +235,55 @@ test('settings validate schedules and never persist session fields in browser st
   expect(await page.evaluate(() => JSON.stringify({...localStorage}))).not.toContain('synthetic-transient-fixture');
 });
 
+test('phone connection handles incorrect codes, succeeds on mobile and clears transient fields', async ({page}) => {
+  const requests = []; let confirms = 0;
+  await page.route('**/api/randewoo/*', async route => {
+    const path = new URL(route.request().url()).pathname, data = route.request().postDataJSON();
+    requests.push({path, data});
+    const result = path.endsWith('/prepare') ? {challenge_id: 'test-challenge', captcha: null}
+      : path.endsWith('/send-code') ? {sent: true, resend_after: 60}
+      : path.endsWith('/confirm') ? ++confirms === 1 ? {error: 'Код не подошёл или истёк'} : {connected: true}
+      : {ok: true};
+    await route.fulfill({status: result.error ? 400 : 200, json: result});
+  });
+  await page.setViewportSize({width: 390, height: 844});
+  await page.locator('#settings-button').click();
+  await page.getByLabel('Телефон Randewoo', {exact: true}).fill('+7 (999) 123-45-67');
+  await page.getByRole('button', {name: 'Получить код Randewoo'}).click();
+  const code = page.getByLabel('Код Randewoo', {exact: true});
+  await expect(code).toBeVisible();
+  await expect(page.getByRole('button', {name: /Повторить через/})).toBeDisabled();
+  await code.fill('1111'); await page.getByRole('button', {name: 'Подтвердить код'}).click();
+  await expect(page.getByRole('alert')).toContainText('Код не подошёл');
+  await code.fill('1234'); await page.getByRole('button', {name: 'Подтвердить код'}).click();
+  await expect(page.getByRole('region', {name: 'Подключение Randewoo'})).toContainText('Randewoo подключён');
+  await expect(code).toHaveCount(0);
+  expect(requests.filter(request => request.path.endsWith('/send-code'))).toHaveLength(1);
+  expect(await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]))).not.toMatch(/999|1234|test-challenge/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.keyboard.press('Escape'); await page.locator('#settings-button').click();
+  await expect(page.getByLabel('Телефон Randewoo', {exact: true})).toHaveValue('');
+});
+
+test('closing settings cancels only the pending phone login and clears its code', async ({page}) => {
+  const cancelled = [];
+  await page.route('**/api/randewoo/*', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/cancel')) cancelled.push(route.request().postDataJSON().challenge_id);
+    await route.fulfill({json: path.endsWith('/prepare') ? {challenge_id: 'pending-id', captcha: null}
+      : path.endsWith('/send-code') ? {sent: true, resend_after: 60} : {ok: true}});
+  });
+  await page.locator('#settings-button').click();
+  await page.getByLabel('Телефон Randewoo', {exact: true}).fill('+79991234567');
+  await page.getByRole('button', {name: 'Получить код Randewoo'}).click();
+  await page.getByLabel('Код Randewoo', {exact: true}).fill('1234');
+  await page.keyboard.press('Escape');
+  await expect.poll(() => cancelled).toEqual(['pending-id']);
+  await page.locator('#settings-button').click();
+  await expect(page.getByLabel('Телефон Randewoo', {exact: true})).toHaveValue('');
+  await expect(page.getByLabel('Код Randewoo', {exact: true})).toHaveCount(0);
+});
+
 test('mobile layout keeps navigation and settings accessible without page overflow', async ({page}) => {
   await refresh(page, 'initial');
   await page.setViewportSize({width: 390, height: 844});
