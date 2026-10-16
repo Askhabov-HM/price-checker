@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {CONTEXTS} from './database.js';
 import {FetchError, ValidationError} from './errors.js';
+import {loadAuthentication} from './auth.js';
 
 const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
 // Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
@@ -52,8 +53,17 @@ export function exportCsv(rows, context) {
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }
 
-export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
+export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAuthentication(tracker.root), controlToken,
+  publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN} = {}) {
   const csrf = randomBytes(32).toString('base64url');
+  let externalOrigin;
+  if (publicOrigin) {
+    const parsed = new URL(publicOrigin);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      throw new ValidationError('PRICE_CHECKER_PUBLIC_ORIGIN должен быть HTTPS-адресом сайта без пути.');
+    }
+    externalOrigin = parsed.origin;
+  }
   const server = createServer((request, response) => {
     handle(request, response).catch(() => {
       if (!response.headersSent && !response.destroyed) send(response, 500, {error: 'Не удалось выполнить действие'});
@@ -66,12 +76,32 @@ export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
   async function handle(request, response) {
     const port = server.address().port;
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+    if (externalOrigin) hosts.push(new URL(externalOrigin).host);
     if (!hosts.includes(request.headers.host)) return send(response, 403, {error: 'Недопустимый адрес приложения'});
     const url = new URL(request.url, 'http://127.0.0.1:' + port);
     const section = url.searchParams.get('list') ?? 'cart', context = url.searchParams.get('context') ?? 'public';
+    const session = auth?.session(request), authenticated = !auth || Boolean(session);
+    const token = session?.csrf || csrf;
+    const secureCookie = Boolean(externalOrigin) || Boolean(request.socket.encrypted);
+    const authState = () => ({required: Boolean(auth), authenticated, login: session?.login || null, csrf_token: token});
     try {
+      if (request.method === 'GET' && url.pathname === '/api/health') {
+        return send(response, 200, {ok: true, runtime: 'node.js', timezone: 'Europe/Moscow'});
+      }
+      if (request.method === 'GET' && url.pathname === '/api/auth') return send(response, 200, authState());
+      // Windows stop.cmd uses a local control token, independently of browser login.
+      if (request.method === 'POST' && url.pathname === '/api/shutdown' && controlToken
+        && request.headers.authorization === 'Bearer ' + controlToken && onShutdown) {
+        request.resume();
+        response.once('finish', onShutdown);
+        return send(response, 200, {ok: true});
+      }
+      if (url.pathname.startsWith('/api/') && url.pathname !== '/api/login' && !authenticated) {
+        request.resume();
+        return send(response, 401, {error: 'Войдите в Price Checker'});
+      }
       if (request.method === 'GET') {
-        if (url.pathname === '/api/status') return send(response, 200, {...tracker.status(), csrf_token: csrf});
+        if (url.pathname === '/api/status') return send(response, 200, {...tracker.status(), csrf_token: token});
         if (url.pathname === '/api/dashboard') return send(response, 200, {items: tracker.db.rows(section, context), counts: tracker.db.counts(), list: section, context,
           history: tracker.db.listHistory(section, context), status: tracker.status()});
         if (url.pathname.startsWith('/api/product/')) {
@@ -98,12 +128,26 @@ export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
       }
       if (request.method !== 'POST') return send(response, 405, {error: 'Метод не поддерживается'}, undefined, {Allow: 'GET, POST'});
       const origin = request.headers.origin;
-      if ((origin && !hosts.map(host => 'http://' + host).includes(origin)) || request.headers['x-csrf-token'] !== csrf) {
+      const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, ...(externalOrigin ? [externalOrigin] : [])];
+      if ((origin && !origins.includes(origin)) || request.headers['x-csrf-token'] !== token) {
         request.resume();
         return send(response, 403, {error: 'Обновите страницу приложения и повторите действие'});
       }
       if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume(); return send(response, 415, {error: 'Ожидается JSON'});}
       const data = await readJson(request);
+      if (url.pathname === '/api/login' && auth) {
+        const result = await auth.login(data.login, data.password, request.socket.remoteAddress);
+        if (result.status !== 200) return send(response, result.status, {error: result.error}, undefined,
+          result.status === 429 ? {'Retry-After': '900'} : {});
+        auth.logout(request);
+        return send(response, 200, {required: true, authenticated: true, login: result.session.login, csrf_token: result.session.csrf}, undefined,
+          {'Set-Cookie': auth.cookie(result.token, secureCookie)});
+      }
+      if (url.pathname === '/api/logout' && auth) {
+        auth.logout(request);
+        return send(response, 200, {required: true, authenticated: false, login: null, csrf_token: csrf}, undefined,
+          {'Set-Cookie': auth.cookie('', secureCookie)});
+      }
       if (url.pathname === '/api/refresh') {
         if (!tracker.startRefresh()) return send(response, 409, {error: 'Проверка уже выполняется'});
         return send(response, 202, {started: true});

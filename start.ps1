@@ -7,8 +7,8 @@ New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
 
 function Test-Tracker {
     try {
-        $response = Invoke-RestMethod -Uri "$appUrl/api/status" -TimeoutSec 2
-        return $response.runtime -eq 'node.js' -and $response.timezone -eq 'Europe/Moscow' -and $null -ne $response.schedule
+        $response = Invoke-RestMethod -Uri "$appUrl/api/health" -TimeoutSec 2
+        return $response.runtime -eq 'node.js' -and $response.timezone -eq 'Europe/Moscow' -and $response.ok
     } catch { return $false }
 }
 

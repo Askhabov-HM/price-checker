@@ -13,6 +13,7 @@
     "prestart": "npm run build",
     "start": "node run.js",
     "collect": "node run.js --once",
+    "auth:setup": "node scripts/setup-auth.js",
     "lab": "node scripts/test-lab.js",
     "prelab:verify": "npm run build",
     "lab:verify": "node scripts/verify-test-lab.js",
@@ -21,7 +22,7 @@
     "test:e2e": "playwright test",
     "test": "npm run build && npm run test:backend && npm run test:frontend",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && node --check run.js && node --check src/client.js && node --check src/database.js && node --check src/service.js && node --check src/web.js && node --check scripts/build-frontend.js && node --check scripts/test-lab.js && node --check scripts/test-lab/fixture.js && node --check scripts/verify-test-lab.js"
+    "check": "npm run typecheck && node --check run.js && node --check src/auth.js && node --check src/client.js && node --check src/database.js && node --check src/service.js && node --check src/web.js && node --check scripts/setup-auth.js && node --check scripts/build-frontend.js && node --check scripts/test-lab.js && node --check scripts/test-lab/fixture.js && node --check scripts/verify-test-lab.js"
   },
   "dependencies": {
     "@tanstack/react-query": "5.104.2",

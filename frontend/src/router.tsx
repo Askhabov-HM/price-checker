@@ -1,5 +1,6 @@
 import {createRootRoute, createRoute, createRouter, Link, notFound, redirect} from '@tanstack/react-router';
 import {AppShell} from '@/components/app-shell';
+import {AuthGate} from '@/components/auth-gate';
 import {Dashboard} from '@/pages/dashboard';
 import {listIds} from '@/lib/format';
 import type {ChangePeriod, Filter, Period, PriceContext, Sort} from '@/lib/types';
@@ -14,7 +15,7 @@ function validateSearch(search: Record<string, unknown>) {
     days: ([0, 7, 30, 90].includes(Number(search.days)) ? Number(search.days) : 30) as Period,
   };
 }
-const root = createRootRoute({component: AppShell, validateSearch, notFoundComponent: () => <div className="p-8"><h1>Страница не найдена</h1><Link to="/$listId" params={{listId: 'cart'}} search={validateSearch({})}>Открыть корзину</Link></div>});
+const root = createRootRoute({component: () => <AuthGate><AppShell /></AuthGate>, validateSearch, notFoundComponent: () => <div className="p-8"><h1>Страница не найдена</h1><Link to="/$listId" params={{listId: 'cart'}} search={validateSearch({})}>Открыть корзину</Link></div>});
 const index = createRoute({getParentRoute: () => root, path: '/', beforeLoad: ({search}) => {throw redirect({to: '/$listId', params: {listId: 'cart'}, search});}});
 const list = createRoute({getParentRoute: () => root, path: '/$listId', beforeLoad: ({params}) => {if (!listIds.some(id => id === params.listId)) throw notFound();}, component: Dashboard});
 export const router = createRouter({routeTree: root.addChildren([index, list])});

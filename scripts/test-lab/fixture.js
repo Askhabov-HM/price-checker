@@ -98,7 +98,7 @@ async function closeServer(server) {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }
 
-export async function startLab({root, port = 8001}) {
+export async function startLab({root, port = 8001, auth = null}) {
   const release = await acquireInstance(join(root, 'instance.lock'));
   let source, shop, tracker, server, closePromise, resolveStopped;
   const stopped = new Promise(resolve => {resolveStopped = resolve;});
@@ -113,7 +113,7 @@ export async function startLab({root, port = 8001}) {
     tracker.db.setSetting('schedule_enabled', false);
     const status = tracker.status.bind(tracker);
     tracker.status = () => ({...status(),test_mode:true});
-    server = makeServer(tracker, {testMode: true, onShutdown: () => {close().catch(() => {});}});
+    server = makeServer(tracker, {testMode: true, auth, onShutdown: () => {close().catch(() => {});}});
     const appPort = await listen(server, port);
     return {root, source, tracker, sourceUrl, url: 'http://127.0.0.1:' + appPort, close, stopped};
   } catch (error) {await close(); throw error;}

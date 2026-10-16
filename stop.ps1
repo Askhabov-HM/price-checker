@@ -10,10 +10,17 @@ if ($trackerProcess.Name -ne 'node.exe' -or -not $trackerProcess.CommandLine.Con
     throw 'The recorded process does not match this application; no process was stopped.'
 }
 $appUrl = 'http://127.0.0.1:' + [int]$metadata.port
-$status = Invoke-RestMethod -Uri "$appUrl/api/status" -TimeoutSec 3
+if ($metadata.control_token) {
+    $status = Invoke-RestMethod -Uri "$appUrl/api/health" -TimeoutSec 3
+    $shutdownHeaders = @{Authorization = ('Bearer ' + $metadata.control_token)}
+} else {
+    # Compatibility with an already-running version from before login was introduced.
+    $status = Invoke-RestMethod -Uri "$appUrl/api/status" -TimeoutSec 3
+    $shutdownHeaders = @{'X-CSRF-Token' = $status.csrf_token}
+}
 if ($status.runtime -ne 'node.js') { throw 'Unexpected application on the recorded port; nothing was stopped.' }
 Invoke-RestMethod -Uri "$appUrl/api/shutdown" -Method Post -ContentType 'application/json' `
-    -Headers @{'X-CSRF-Token' = $status.csrf_token} -Body '{}' -TimeoutSec 5 | Out-Null
+    -Headers $shutdownHeaders -Body '{}' -TimeoutSec 5 | Out-Null
 for ($attempt = 0; $attempt -lt 50; $attempt++) {
     if ($null -eq (Get-Process -Id $trackerPid -ErrorAction SilentlyContinue)) {
         Write-Output 'Price Checker stopped. Prices remain in the database.'

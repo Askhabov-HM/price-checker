@@ -6,6 +6,12 @@ export type Period = 0 | 7 | 30 | 90;
 export type ChangePeriod = 7 | 14 | 30;
 export type Filter = 'all' | 'changed' | 'drops' | 'rises' | 'minimum' | 'unavailable' | 'errors';
 export type Sort = 'recent' | 'name' | 'price-asc' | 'price-desc' | 'delta';
+export interface AuthState {
+  required: boolean;
+  authenticated: boolean;
+  login: string | null;
+  csrf_token: string;
+}
 export interface PriceChangeEvent {
   checked_at: string;
   previous_price: number;

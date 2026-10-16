@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {get as httpGet} from 'node:http';
 import {Tracker} from '../src/service.js';
 import {makeServer, listen} from '../src/web.js';
 import {cleanup, item, temporary} from './helpers.js';
+import {Authentication, createCredentials} from '../src/auth.js';
+
+const loginCredentials = await createCredentials('test-admin', 'test-access-password');
 
 async function setup(t, options) {
   const root = temporary(t), tracker = new Tracker(root, {client: undefined});
   const id = tracker.db.variant(item()); tracker.db.syncList('cart', [[id, 1]]); tracker.db.observation(id, item(), 'public');
-  const server = makeServer(tracker, options), port = await listen(server, 0), base = 'http://127.0.0.1:' + port;
+  const server = makeServer(tracker, {auth: null, ...options}), port = await listen(server, 0), base = 'http://127.0.0.1:' + port;
   cleanup(t, async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await tracker.close();});
   const status = await (await fetch(base + '/api/status')).json();
   const post = (path, data, headers = {}) => fetch(base + path, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': status.csrf_token, ...headers}, body: JSON.stringify(data)});
@@ -123,4 +127,97 @@ test('shutdown requires authentication to the local page and runs after respondi
   const {post, base} = await setup(t, {onShutdown: () => {stopped = true;}});
   assert.equal((await fetch(base + '/api/shutdown', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})).status, 403);
   assert.equal(stopped, false); assert.equal((await post('/api/shutdown', {})).status, 200); assert.equal(stopped, true);
+});
+
+async function signIn(base, login = 'test-admin', password = 'test-access-password', cookie = '') {
+  const state = await (await fetch(base + '/api/auth', {headers: {Cookie: cookie}})).json();
+  return fetch(base + '/api/login', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf_token, Cookie: cookie},
+    body: JSON.stringify({login, password})});
+}
+
+test('login protects all data and mutations; logout revokes the session and leaves collection running', async t => {
+  const {base, tracker, id} = await setup(t, {auth: new Authentication(loginCredentials)});
+  assert.equal((await fetch(base)).status, 200);
+  assert.deepEqual(await (await fetch(base + '/api/health')).json(), {ok: true, runtime: 'node.js', timezone: 'Europe/Moscow'});
+  const state = await (await fetch(base + '/api/auth')).json();
+  assert.equal(state.authenticated, false);
+  for (const path of ['/api/status', '/api/dashboard', '/api/product/' + id, '/api/export']) {
+    const response = await fetch(base + path);
+    assert.equal(response.status, 401);
+    assert.ok(!(await response.text()).includes('Fragrance'));
+  }
+  for (const path of ['/api/watch', '/api/refresh', '/api/session', '/api/settings', '/api/my-cart', '/api/shutdown']) {
+    assert.equal((await fetch(base + path, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf_token}, body: '{}'})).status, 401);
+  }
+  const response = await signIn(base), signedIn = await response.json(), setCookie = response.headers.get('set-cookie');
+  assert.equal(response.status, 200);
+  assert.equal(signedIn.login, 'test-admin');
+  assert.match(setCookie, /HttpOnly/); assert.match(setCookie, /SameSite=Strict/); assert.match(setCookie, /Max-Age=604800/);
+  assert.notEqual(signedIn.csrf_token, state.csrf_token);
+  const cookie = setCookie.split(';')[0];
+  assert.equal((await fetch(base + '/api/dashboard', {headers: {Cookie: cookie}})).status, 200);
+  const protectedPost = (path, csrfToken = signedIn.csrf_token) => fetch(base + path, {method: 'POST',
+    headers: {'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrfToken}, body: '{}'});
+  assert.equal((await protectedPost('/api/logout', state.csrf_token)).status, 403);
+  tracker.running = true;
+  const loggedOut = await protectedPost('/api/logout');
+  assert.equal(loggedOut.status, 200);
+  assert.match(loggedOut.headers.get('set-cookie'), /Max-Age=0/);
+  assert.equal((await fetch(base + '/api/dashboard', {headers: {Cookie: cookie}})).status, 401);
+  assert.equal(tracker.running, true);
+  assert.equal(tracker.db.rows('cart').length, 1);
+});
+
+test('login rejects wrong credentials, forged cookies, foreign origins and limits guesses', async t => {
+  const {base} = await setup(t, {auth: new Authentication(loginCredentials)});
+  const state = await (await fetch(base + '/api/auth')).json();
+  assert.equal((await fetch(base + '/api/login', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf_token,
+    Origin: 'https://evil.example'}, body: JSON.stringify({login: 'test-admin', password: 'test-access-password'})})).status, 403);
+  assert.equal((await fetch(base + '/api/dashboard', {headers: {Cookie: 'pricechecker_session=forged'}})).status, 401);
+  for (let index = 0; index < 8; index++) {
+    const response = await signIn(base, index % 2 ? 'another-user' : 'test-admin', 'wrong-password');
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), {error: 'Неверный логин или пароль'});
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  const limited = await signIn(base);
+  assert.equal(limited.status, 429); assert.equal(limited.headers.get('retry-after'), '900');
+});
+
+test('expired sessions fail closed and logins rotate an existing session', async t => {
+  let now = Date.now();
+  const {base} = await setup(t, {auth: new Authentication(loginCredentials, {now: () => now})});
+  const first = await signIn(base), firstCookie = first.headers.get('set-cookie').split(';')[0];
+  const second = await signIn(base, 'test-admin', 'test-access-password', firstCookie), secondCookie = second.headers.get('set-cookie').split(';')[0];
+  assert.notEqual(firstCookie, secondCookie);
+  assert.equal((await fetch(base + '/api/status', {headers: {Cookie: firstCookie}})).status, 401);
+  assert.equal((await fetch(base + '/api/status', {headers: {Cookie: secondCookie}})).status, 200);
+  now += 7 * 86400000 + 1;
+  assert.equal((await fetch(base + '/api/status', {headers: {Cookie: secondCookie}})).status, 401);
+  assert.equal((await (await fetch(base + '/api/auth', {headers: {Cookie: secondCookie}})).json()).authenticated, false);
+});
+
+test('a configured HTTPS origin is accepted and uses Secure cookies', async t => {
+  const {base} = await setup(t, {auth: new Authentication(loginCredentials), publicOrigin: 'https://prices.example.com'});
+  const headers = {Host: 'prices.example.com', Origin: 'https://prices.example.com'};
+  const state = await (await fetch(base + '/api/auth', {headers})).json();
+  const response = await fetch(base + '/api/login', {method: 'POST', headers: {...headers, 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf_token},
+    body: JSON.stringify({login: 'test-admin', password: 'test-access-password'})});
+  assert.equal(response.status, 200); assert.match(response.headers.get('set-cookie'), /; Secure/);
+  const hostStatus = host => new Promise((resolve, reject) => {
+    httpGet(base + '/api/auth', {headers: {Host: host}}, response => {response.resume(); resolve(response.statusCode);}).on('error', reject);
+  });
+  assert.equal(await hostStatus('prices.example.com'), 200);
+  assert.equal(await hostStatus('evil.example'), 403);
+});
+
+test('local control token can stop a signed-out app but cannot read data', async t => {
+  let stopped = false;
+  const {base} = await setup(t, {auth: new Authentication(loginCredentials), controlToken: 'test-local-control', onShutdown: () => {stopped = true;}});
+  const headers = {Authorization: 'Bearer test-local-control'};
+  assert.equal((await fetch(base + '/api/status', {headers})).status, 401);
+  assert.equal((await fetch(base + '/api/shutdown', {method: 'POST', headers: {Authorization: 'Bearer invalid'}})).status, 401);
+  assert.equal(stopped, false);
+  assert.equal((await fetch(base + '/api/shutdown', {method: 'POST', headers})).status, 200);
+  assert.equal(stopped, true);
 });

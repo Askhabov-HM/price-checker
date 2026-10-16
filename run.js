@@ -2,6 +2,8 @@ import {writeFileSync, readFileSync, unlinkSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
+import {randomBytes} from 'node:crypto';
+import {AuthConfigurationError} from './src/auth.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 
@@ -68,10 +70,11 @@ async function main() {
     }
     const {ensureFrontend} = await import('./scripts/build-frontend.js');
     await ensureFrontend();
-    server = makeServer(tracker, {onShutdown: signal});
+    const controlToken = randomBytes(32).toString('base64url');
+    server = makeServer(tracker, {onShutdown: signal, controlToken});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');
-    writeFileSync(metaFile, JSON.stringify({pid: process.pid, port, runtime: 'node.js'}), 'utf8');
+    writeFileSync(metaFile, JSON.stringify({pid: process.pid, port, runtime: 'node.js', control_token: controlToken}), {encoding: 'utf8', mode: 0o600});
     const url = 'http://127.0.0.1:' + port;
     console.log(`Price Checker (Node.js): ${url}\nРасписание: Москва. Для остановки нажмите Ctrl+C.`);
     tracker.startScheduler();
@@ -79,7 +82,7 @@ async function main() {
     await new Promise(resolve => {resolveStopped = resolve;});
     return 0;
   } catch (error) {
-    console.error(error.code === 'EADDRINUSE' ? `Порт ${args.port} занят. Закройте предыдущий сервер или укажите другой порт.` : 'Не удалось запустить приложение. Проверьте npm ci и доступ к базе.');
+    console.error(error instanceof AuthConfigurationError ? error.message : error.code === 'EADDRINUSE' ? `Порт ${args.port} занят. Закройте предыдущий сервер или укажите другой порт.` : 'Не удалось запустить приложение. Проверьте npm ci и доступ к базе.');
     return 1;
   } finally {
     await shutdown();
