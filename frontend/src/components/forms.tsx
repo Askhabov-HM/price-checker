@@ -7,13 +7,13 @@ import {Label} from '@/components/ui/label';
 import {invalidatePrices, mutate} from '@/lib/api';
 import type {Status} from '@/lib/types';
 
-export function AddDialog({open, onClose}: {open: boolean; onClose: () => void}) {
-  return <Dialog open={open} onOpenChange={value => {if (!value) onClose();}}>{open && <AddForm onClose={onClose} />}</Dialog>;
+export function AddDialog({open, onClose, destination = 'watching'}: {open: boolean; onClose: () => void; destination?: 'watching' | 'my-cart'}) {
+  return <Dialog open={open} onOpenChange={value => {if (!value) onClose();}}>{open && <AddForm destination={destination} onClose={onClose} />}</Dialog>;
 }
-function AddForm({onClose}: {onClose: () => void}) {
+function AddForm({onClose, destination}: {onClose: () => void; destination: 'watching' | 'my-cart'}) {
   const [url, setUrl] = useState('');
-  const add = useMutation({mutationFn: () => mutate('/api/watch/add', {url}), onSuccess: async () => {await invalidatePrices(); onClose();}});
-  return <DialogContent className="sm:max-w-[560px]"><DialogHeader><DialogTitle>Добавить в наблюдение</DialogTitle><DialogDescription>Найдём вариант 1,5 мл и сохраним его текущую цену.</DialogDescription></DialogHeader><form id="add-form" onSubmit={event => {event.preventDefault(); add.mutate();}} className="grid gap-4"><Label htmlFor="add-url">Ссылка на товар Randewoo</Label><Input id="add-url" type="url" required value={url} onChange={event => setUrl(event.target.value)} placeholder="https://randewoo.ru/product/…" />{add.error && <p role="alert">{add.error.message}</p>}<div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={onClose}>Отмена</Button><Button id="add-submit" type="submit" disabled={add.isPending}>{add.isPending ? 'Получаем цену…' : 'Добавить товар'}</Button></div></form></DialogContent>;
+  const add = useMutation({mutationFn: () => mutate(destination === 'my-cart' ? '/api/my-cart/add' : '/api/watch/add', {url}), onSuccess: async () => {await invalidatePrices(); onClose();}});
+  return <DialogContent className="sm:max-w-[560px]"><DialogHeader><DialogTitle>{destination === 'my-cart' ? 'Добавить в мою корзину' : 'Добавить в наблюдение'}</DialogTitle><DialogDescription>Найдём варианты 1,5 мл и сохраним их текущие цены.</DialogDescription></DialogHeader><form id="add-form" onSubmit={event => {event.preventDefault(); add.mutate();}} className="grid gap-4"><Label htmlFor="add-url">Ссылка на товар Randewoo</Label><Input id="add-url" type="url" required value={url} onChange={event => setUrl(event.target.value)} placeholder="https://randewoo.ru/product/…" />{add.error && <p role="alert">{add.error.message}</p>}<div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={onClose}>Отмена</Button><Button id="add-submit" type="submit" disabled={add.isPending}>{add.isPending ? 'Получаем цену…' : 'Добавить товар'}</Button></div></form></DialogContent>;
 }
 export function SettingsDialog({status, open, onClose}: {status?: Status; open: boolean; onClose: () => void}) {
   return <Dialog open={open} onOpenChange={value => {if (!value) onClose();}}>{open && status && <SettingsForm status={status} onClose={onClose} />}</Dialog>;

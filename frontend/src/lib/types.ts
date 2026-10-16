@@ -1,4 +1,5 @@
-export type ListId = 'cart' | 'favorites' | 'watching';
+export type ListId = 'cart' | 'my-cart' | 'favorites' | 'watching';
+export type CartListId = 'cart' | 'my-cart';
 export type PriceContext = 'public' | 'cart';
 export type ChartScale = 'time' | 'checks';
 export type Period = 0 | 7 | 30 | 90;
@@ -48,6 +49,7 @@ export interface ProductRow extends Product {
   price_at: string | null;
   message: string;
   watching: boolean;
+  in_my_cart: boolean;
   sparkline: PricePoint[];
 }
 export interface Check {

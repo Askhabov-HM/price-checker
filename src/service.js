@@ -182,11 +182,12 @@ export class Tracker {
     }
   }
 
-  async addUrl(url) {
+  async addUrl(url, listId = 'watching') {
+    if (!['watching', 'my-cart'].includes(listId)) throw new ValidationError('Этот список обновляется с Randewoo');
     const items = await this.client.products(productUrl(url));
     if (this.closing) throw new ValidationError('Приложение останавливается');
     let id = null;
-    for (const item of items) {id = this.db.variant(item); this.db.watch(id); this.db.observation(id, item, 'public');}
+    for (const item of items) {id = this.db.variant(item); this.db.localMember(listId, id); this.db.observation(id, item, 'public');}
     return id;
   }
 

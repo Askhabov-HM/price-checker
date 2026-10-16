@@ -82,7 +82,7 @@ export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/favorites', '/watching'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);
@@ -114,6 +114,12 @@ export function makeServer(tracker, {onShutdown, testMode = false} = {}) {
         return send(response, 200, {ok: true});
       }
       if (url.pathname === '/api/watch/add') return send(response, 200, {id: await tracker.addUrl(data.url)});
+      if (url.pathname === '/api/my-cart') {
+        if (typeof data.active !== 'boolean' || !Number.isSafeInteger(data.id) || data.id < 1) throw new ValidationError('Некорректное действие');
+        tracker.db.personalCart(data.id, data.active);
+        return send(response, 200, {ok: true});
+      }
+      if (url.pathname === '/api/my-cart/add') return send(response, 200, {id: await tracker.addUrl(data.url, 'my-cart')});
       if (url.pathname === '/api/settings') {tracker.saveSettings(data); return send(response, 200, {ok: true});}
       if (url.pathname === '/api/session') {tracker.saveSession(data); return send(response, 200, {ok: true});}
       if (url.pathname === '/api/shutdown' && onShutdown) {

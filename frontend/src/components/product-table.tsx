@@ -1,13 +1,13 @@
 import {createContext, useContext, useMemo, useState, type ReactNode} from 'react';
 import {useMutation} from '@tanstack/react-query';
-import {Star} from 'lucide-react';
+import {ShoppingBasket, Star} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {PriceChart} from './price-chart';
 import {invalidatePrices, mutate} from '@/lib/api';
 import {date, imageUrl, rub} from '@/lib/format';
 import {detectedAgo, hasRecentChange} from '@/lib/price-changes';
-import type {ChangePeriod, Filter, ProductRow, Sort} from '@/lib/types';
+import type {ChangePeriod, Filter, ListId, ProductRow, Sort} from '@/lib/types';
 
 export function selectProducts(items: ProductRow[], search: string, filter: Filter, sort: Sort, changeDays: ChangePeriod = 7, nowMs = Date.now()) {
   const query = search.toLocaleLowerCase('ru');
@@ -27,12 +27,12 @@ export function selectProducts(items: ProductRow[], search: string, filter: Filt
     return byName(a, b);
   });
 }
-type TableState = {items: ProductRow[]; search: string; filter: Filter; sort: Sort; changeDays: ChangePeriod; nowMs: number; onChange: (values: Partial<Pick<TableState, 'search' | 'filter' | 'sort' | 'changeDays'>>) => void; onSelect: (id: number) => void};
+type TableState = {items: ProductRow[]; list: ListId; search: string; filter: Filter; sort: Sort; changeDays: ChangePeriod; nowMs: number; onChange: (values: Partial<Pick<TableState, 'search' | 'filter' | 'sort' | 'changeDays'>>) => void; onSelect: (id: number) => void};
 const TableContext = createContext<(TableState & {visible: ProductRow[]}) | null>(null);
 function useTable() {const value = useContext(TableContext); if (!value) throw new Error('ProductTable parts must be inside ProductTable.Root'); return value;}
-function Root({children, changeDays = 7, nowMs = Date.now(), ...props}: Omit<TableState, 'changeDays' | 'nowMs'> & {children: ReactNode; changeDays?: ChangePeriod; nowMs?: number}) {
+function Root({children, changeDays = 7, nowMs = Date.now(), list = 'cart', ...props}: Omit<TableState, 'changeDays' | 'nowMs' | 'list'> & {children: ReactNode; changeDays?: ChangePeriod; nowMs?: number; list?: ListId}) {
   const visible = useMemo(() => selectProducts(props.items, props.search, props.filter, props.sort, changeDays, nowMs), [props.items, props.search, props.filter, props.sort, changeDays, nowMs]);
-  const value = useMemo(() => ({...props, changeDays, nowMs, visible}), [props.items, props.search, props.filter, props.sort, props.onChange, props.onSelect, changeDays, nowMs, visible]);
+  const value = useMemo(() => ({...props, list, changeDays, nowMs, visible}), [props.items, props.search, props.filter, props.sort, props.onChange, props.onSelect, list, changeDays, nowMs, visible]);
   return <TableContext.Provider value={value}><section className="products-card">{children}</section></TableContext.Provider>;
 }
 function Toolbar() {
@@ -61,9 +61,10 @@ function ProductImage({item}: {item: ProductRow}) {
   return <div className="product-image">{url && !failed ? <img src={url} alt="" loading="lazy" onError={() => setFailed(true)} /> : <span>{item.brand.slice(0, 2).toUpperCase()}</span>}</div>;
 }
 function Rows() {
-  const {visible, items, onSelect, changeDays, nowMs} = useTable();
+  const {visible, items, list, onSelect, changeDays, nowMs} = useTable();
   const watch = useMutation({mutationFn: (item: ProductRow) => mutate('/api/watch', {id: item.id, active: !item.watching}), onSuccess: invalidatePrices});
-  return <><div className="table-wrap"><table className="products-table"><thead><tr>{['ТОВАР', 'ЦЕНА СЕЙЧАС', 'ПОСЛЕДНЕЕ ИЗМЕНЕНИЕ', 'МИНИМУМ', 'ИСТОРИЯ', 'НАЛИЧИЕ', 'Наблюдение'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody id="product-rows">
+  const personalCart = useMutation({mutationFn: (item: ProductRow) => mutate('/api/my-cart', {id: item.id, active: !item.in_my_cart}), onSuccess: invalidatePrices});
+  return <><div className="table-wrap"><table className="products-table"><thead><tr>{['ТОВАР', 'ЦЕНА СЕЙЧАС', 'ПОСЛЕДНЕЕ ИЗМЕНЕНИЕ', 'МИНИМУМ', 'ИСТОРИЯ', 'НАЛИЧИЕ', 'Наблюдение', 'Моя корзина'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody id="product-rows">
     {visible.map(item => <tr key={item.id} data-id={item.id} tabIndex={0} aria-label={`История: ${item.brand} ${item.name}`} onClick={() => onSelect(item.id)} onKeyDown={event => {if (event.target === event.currentTarget && event.key === 'Enter') {event.preventDefault(); onSelect(item.id);}}}>
       <td><div className="product-cell"><ProductImage item={item} /><div className="product-info"><span className="product-brand">{item.brand}</span><strong>{item.name}</strong><small>{item.label} · {item.sku ? `арт. ${item.sku}` : 'артикул уточняется'}</small></div></div></td>
       <td><span className={`price ${item.status === 'error' ? 'stale-price' : ''}`}>{rub(item.price)}</span>{item.status === 'error' && item.price != null && <small className="stale-label">Последняя известная</small>}</td>
@@ -71,9 +72,10 @@ function Rows() {
       <td><PriceChart.Root points={item.sparkline}><PriceChart.Plot small /></PriceChart.Root><small className="sparkline-label">{item.observations} проверок</small></td>
       <td><span className={`stock ${item.status === 'error' ? 'warning' : item.in_stock ? '' : 'neutral'}`}>{item.status === 'error' ? 'Ошибка проверки' : item.status === 'missing' ? 'Нет варианта 1,5 мл' : item.in_stock == null ? 'Ожидает проверки' : item.in_stock ? 'В наличии' : 'Нет в наличии'}</span></td>
       <td><Button variant="ghost" size="icon" className={`watch-button ${item.watching ? 'selected' : ''}`} aria-label={item.watching ? 'Убрать из наблюдения' : 'Добавить в наблюдение'} disabled={watch.isPending} onClick={event => {event.stopPropagation(); watch.mutate(item);}}><Star size={19} fill={item.watching ? 'currentColor' : 'none'} /></Button></td>
+      <td><Button variant="ghost" size="icon" className={`watch-button ${item.in_my_cart ? 'selected' : ''}`} aria-label={item.in_my_cart ? 'Убрать из моей корзины' : 'Добавить в мою корзину'} title={item.in_my_cart ? 'Убрать из моей корзины' : 'Добавить в мою корзину'} aria-pressed={item.in_my_cart} disabled={personalCart.isPending} onClick={event => {event.stopPropagation(); personalCart.mutate(item);}}><ShoppingBasket size={19} /></Button></td>
     </tr>)}
-    {!visible.length && <tr><td colSpan={7} className="empty-state"><strong>{items.length ? 'Ничего не найдено' : 'В этом списке пока нет товаров'}</strong><p>Добавьте товар в наблюдение или запустите проверку цен.</p></td></tr>}
-  </tbody></table></div>{watch.error && <p className="notice" role="alert">{watch.error.message}</p>}</>;
+    {!visible.length && <tr><td colSpan={8} className="empty-state"><strong>{items.length ? 'Ничего не найдено' : 'В этом списке пока нет товаров'}</strong><p>{list === 'my-cart' ? 'Выберите товары кнопкой корзины в избранном или добавьте ссылку на аромат.' : 'Добавьте товар в наблюдение или запустите проверку цен.'}</p></td></tr>}
+  </tbody></table></div>{(watch.error || personalCart.error) && <p className="notice" role="alert">{personalCart.error?.message || watch.error?.message}</p>}</>;
 }
 function Summary() {const {visible, items} = useTable(); return <div className="table-footer"><span id="table-summary">Показано {visible.length} из {items.length} товаров</span><span>Цены в рублях · время по Москве</span></div>;}
 function Count() {return <span id="visible-count">{useTable().visible.length}</span>;}

@@ -19,6 +19,30 @@ test('lists share product variants and observations', t => {
   assert.equal(db.rows('cart')[0].price, db.rows('favorites')[0].price);
   assert.equal(db.get('SELECT COUNT(*) AS n FROM observations').n, 1);
 });
+
+test('personal cart persists independently of synced lists and keeps shared price history', t => {
+  const root = temporary(t);
+  let db = new Database(join(root, 'prices.sqlite3'));
+  cleanup(t, () => db.close());
+  const id = db.variant(item()), other = db.variant(item({sku: '456', variant: 'духи 1,5мл'}));
+  db.syncList('cart', [[id, 3]]); db.syncList('favorites', [[id, 1], [other, 1]]);
+  db.observation(id, item(), 'public');
+  db.personalCart(id); db.personalCart(id);
+  assert.equal(db.rows('my-cart').length, 1);
+  assert.equal(db.rows('favorites').find(row => row.id === id).in_my_cart, true);
+  assert.equal(db.rows('my-cart')[0].price, 15000);
+  assert.equal(db.rows('cart')[0].quantity, 3);
+  db.syncList('favorites', []); db.syncList('cart', [[other, 2]]);
+  db.close(); db = new Database(join(root, 'prices.sqlite3'));
+  assert.deepEqual(db.rows('my-cart').map(row => row.id), [id]);
+  assert.deepEqual(db.rows('cart').map(row => [row.id, row.quantity]), [[other, 2]]);
+  db.personalCart(id, false);
+  assert.equal(db.rows('my-cart').length, 0);
+  assert.equal(db.detail(id, 'public', 0).points.length, 1);
+  assert.equal(db.rows('cart').length, 1);
+  assert.throws(() => db.localMember('cart', id), /Randewoo/);
+  assert.throws(() => db.personalCart(9999), /Товар не найден/);
+});
 test('removing and rejoining a list retains history and avoids duplicate active memberships', t => {
   const {db, id, joinList} = setup(t);
   joinList(); db.observation(id, item(), 'public');

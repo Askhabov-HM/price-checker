@@ -10,7 +10,7 @@ import type {Filter, ProductRow} from '@/lib/types';
 vi.mock('./price-chart', () => ({PriceChart: {Root: ({children}: {children: ReactNode}) => children, Plot: () => null}}));
 
 const nowMs = Date.parse('2026-10-14T12:00:00Z');
-const product: ProductRow = {id: 1, sku: '123', brand: 'Brand', name: 'Fragrance', label: 'EDP 1.5 ml', url: 'https://randewoo.ru/product/test', image: '', quantity: 1, status: 'ok', price: 10000, previous_price: 15000, delta: 0, last_change: {checked_at: '2026-10-12T12:00:00Z', previous_price: 15000, price: 10000, delta: -5000}, minimum: 10000, observations: 2, in_stock: true, checked_at: null, price_at: null, message: '', watching: false, sparkline: []};
+const product: ProductRow = {id: 1, sku: '123', brand: 'Brand', name: 'Fragrance', label: 'EDP 1.5 ml', url: 'https://randewoo.ru/product/test', image: '', quantity: 1, status: 'ok', price: 10000, previous_price: 15000, delta: 0, last_change: {checked_at: '2026-10-12T12:00:00Z', previous_price: 15000, price: 10000, delta: -5000}, minimum: 10000, observations: 2, in_stock: true, checked_at: null, price_at: null, message: '', watching: false, in_my_cart: false, sparkline: []};
 it('preserves historical drops after a failed check while excluding stale minimum-price matches', () => {
   const stale = {...product, id: 2, status: 'error' as const};
   expect(selectProducts([product, stale], '', 'minimum', 'name', 7, nowMs).map(item => item.id)).toEqual([1]);

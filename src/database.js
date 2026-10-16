@@ -4,7 +4,7 @@ import {dirname, join} from 'node:path';
 import {now, moscowDate} from './time.js';
 import {ValidationError} from './errors.js';
 
-export const LISTS = Object.freeze({favorites: 'Избранное', cart: 'Корзина', watching: 'Наблюдение'});
+export const LISTS = Object.freeze({favorites: 'Избранное', cart: 'Корзина', 'my-cart': 'Моя корзина', watching: 'Наблюдение'});
 export const CONTEXTS = Object.freeze({public: 'Цена на сайте', cart: 'Цена в корзине'});
 const own = (object, key) => Object.hasOwn(object, key);
 
@@ -124,11 +124,14 @@ export class Database {
       }
     });
   }
-  watch(id, active = true) {
+  localMember(listId, id, active = true) {
+    if (!['watching', 'my-cart'].includes(listId)) throw new ValidationError('Этот список обновляется с Randewoo');
     if (!this.get('SELECT id FROM variants WHERE id=?', id)) throw new ValidationError('Товар не найден');
-    if (active) this.run("INSERT OR IGNORE INTO memberships(list_id,variant_id,joined_at) VALUES('watching',?,?)", id, now());
-    else this.run("UPDATE memberships SET left_at=? WHERE list_id='watching' AND variant_id=? AND left_at IS NULL", now(), id);
+    if (active) this.run('INSERT OR IGNORE INTO memberships(list_id,variant_id,joined_at) VALUES(?,?,?)', listId, id, now());
+    else this.run('UPDATE memberships SET left_at=? WHERE list_id=? AND variant_id=? AND left_at IS NULL', now(), listId, id);
   }
+  watch(id, active = true) {this.localMember('watching', id, active);}
+  personalCart(id, active = true) {this.localMember('my-cart', id, active);}
   activeVariants() {
     return this.all(`SELECT DISTINCT v.id,v.sku,p.url,p.brand,p.name,p.image,v.label FROM variants v JOIN products p ON p.id=v.product_id
       JOIN memberships m ON m.variant_id=v.id WHERE m.left_at IS NULL`);
@@ -180,6 +183,7 @@ export class Database {
         in_stock: latest && latest.status !== 'error' ? Boolean(latest.in_stock) : last ? Boolean(last.in_stock) : null,
         checked_at: latest?.checked_at ?? null, price_at: last?.checked_at ?? null, message: latest?.message || '', ...stats,
         watching: Boolean(this.get("SELECT 1 FROM memberships WHERE variant_id=? AND list_id='watching' AND left_at IS NULL", row.id)),
+        in_my_cart: Boolean(this.get("SELECT 1 FROM memberships WHERE variant_id=? AND list_id='my-cart' AND left_at IS NULL", row.id)),
         delta: latest?.status === 'ok' && price != null && previous != null ? price - previous : null,
         last_change: this.lastPriceChange(row.id, context, last),
         sparkline: this.all('SELECT checked_at,price,status FROM observations WHERE variant_id=? AND context=? ORDER BY checked_at DESC,id DESC LIMIT 24', row.id, context).reverse()};

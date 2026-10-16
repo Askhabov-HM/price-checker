@@ -21,7 +21,7 @@ test('local UI, dashboard, history, assets, and Excel CSV are served', async t =
   const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map(match => match[1]);
   assert.ok(assets.some(path => path.endsWith('.js'))); assert.ok(assets.some(path => path.endsWith('.css')));
   for (const path of assets) assert.equal((await fetch(base + path)).status, 200);
-  for (const path of ['/cart', '/favorites', '/watching']) assert.equal(await (await fetch(base + path)).text(), html);
+  for (const path of ['/cart', '/my-cart', '/favorites', '/watching']) assert.equal(await (await fetch(base + path)).text(), html);
   for (const path of ['/assets/missing.js', '/src/web.js', '/package.json', '/api/unknown', '/.secrets/randewoo-session.json']) assert.equal((await fetch(base + path)).status, 404);
   const dashboard = await (await fetch(base + '/api/dashboard?list=cart')).json();
   assert.equal(dashboard.items[0].price, 15000); assert.equal(dashboard.counts.cart, 1);
@@ -66,6 +66,31 @@ test('CSRF and origin validation protect changes; valid watch requests persist',
   assert.equal((await post('/api/watch', {id, active: true})).status, 200); assert.equal(tracker.db.rows('watching').length, 1);
   assert.equal((await post('/api/watch', {id, active: false})).status, 200); assert.equal(tracker.db.rows('watching').length, 0);
   assert.equal(tracker.db.detail(id).points.length, 1);
+});
+
+test('personal cart API validates requests, preserves the account cart, and exports its own selection', async t => {
+  const {base, post, id, tracker} = await setup(t);
+  const before = tracker.db.rows('cart');
+  assert.equal((await fetch(base + '/api/my-cart', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, active: true})})).status, 403);
+  assert.equal((await post('/api/my-cart', {id, active: true}, {Origin: 'https://evil.example'})).status, 403);
+  for (const data of [{id: '1', active: true}, {id, active: 'true'}, {id: 9999, active: true}]) assert.equal((await post('/api/my-cart', data)).status, 400);
+  assert.equal((await post('/api/my-cart', {id, active: true})).status, 200);
+  assert.equal((await post('/api/my-cart', {id, active: true})).status, 200);
+  const dashboard = await (await fetch(base + '/api/dashboard?list=my-cart')).json();
+  assert.equal(dashboard.items.length, 1);
+  assert.equal(dashboard.items[0].in_my_cart, true);
+  assert.equal(dashboard.items[0].price, 15000);
+  assert.equal(dashboard.counts['my-cart'], 1);
+  assert.deepEqual(tracker.db.rows('cart'), before.map(row => ({...row, in_my_cart: true})));
+  const csv = await (await fetch(base + '/api/export?list=my-cart')).text();
+  assert.match(csv, /150,00/);
+  assert.equal((await post('/api/my-cart', {id, active: false})).status, 200);
+  assert.deepEqual(tracker.db.rows('cart'), before);
+  assert.equal(tracker.db.rows('my-cart').length, 0);
+  tracker.client.products = async () => [item()];
+  assert.equal((await post('/api/my-cart/add', {url: item().url})).status, 200);
+  assert.equal(tracker.db.rows('my-cart').length, 1);
+  assert.equal(tracker.db.rows('watching').length, 0);
 });
 test('session values are saved locally and never returned by API', async t => {
   const {base, post, tracker} = await setup(t);

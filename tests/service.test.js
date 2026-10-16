@@ -93,7 +93,7 @@ test('one parent product is requested once and exact cart SKU stays separate fro
     favorites: async () => [item({sku: null})], products: async () => {calls++; return [item(), item({sku: '456', price_kopecks: 25000})];}});
   const result = await tracker.refreshNow('test');
   assert.equal(result.errors, 0); assert.equal(calls, 1);
-  assert.deepEqual(tracker.db.counts(), {favorites: 2, cart: 1, watching: 0});
+  assert.deepEqual(tracker.db.counts(), {favorites: 2, cart: 1, 'my-cart': 0, watching: 0});
   assert.equal(tracker.db.rows('cart', 'cart')[0].price, 10000); assert.equal(tracker.db.rows('cart')[0].price, 15000);
 });
 test('failed favorite synchronization keeps its old members', async t => {
@@ -107,6 +107,30 @@ test('manual additions track every 1.5 ml concentration', async t => {
   const {tracker} = setup(t, {products: async () => [item(), item({sku: '456', price_kopecks: 25000})]});
   await tracker.addUrl(item().url);
   assert.equal(tracker.db.rows('watching').length, 2); assert.equal(tracker.db.get('SELECT COUNT(*) AS n FROM observations').n, 2);
+});
+
+test('refresh checks personal selections without replacing their SKUs or the account cart', async t => {
+  const selected = item({url: 'https://randewoo.ru/product/personal-selection', sku: 'PERSONAL', price_kopecks: 41000});
+  const requested = [];
+  const {tracker} = setup(t, {authorizedUser: async () => ({}), favorites: async () => [],
+    cart: async () => [item({quantity: 3, matches_target_volume: true, price_kopecks: 9000})],
+    products: async url => {requested.push(url); return url === selected.url ? [selected, {...selected, sku: 'OTHER', price_kopecks: 60000}] : [item()];}});
+  const id = tracker.db.variant(selected);
+  tracker.db.personalCart(id);
+  const result = await tracker.refreshNow('test');
+  assert.equal(result.errors, 0);
+  assert.ok(requested.includes(selected.url));
+  assert.deepEqual(tracker.db.rows('my-cart').map(row => [row.id, row.sku, row.price]), [[id, 'PERSONAL', 41000]]);
+  assert.deepEqual(tracker.db.rows('cart', 'cart').map(row => [row.sku, row.quantity, row.price]), [['123', 3, 9000]]);
+  assert.equal(tracker.db.rows('favorites').length, 0);
+});
+
+test('adding a product URL to the personal cart does not populate other lists', async t => {
+  const {tracker} = setup(t, {products: async () => [item()]});
+  await tracker.addUrl(item().url, 'my-cart');
+  assert.equal(tracker.db.rows('my-cart')[0].price, 15000);
+  assert.deepEqual(tracker.db.counts(), {favorites: 0, cart: 0, 'my-cart': 1, watching: 0});
+  await assert.rejects(tracker.addUrl(item().url, 'cart'), /Randewoo/);
 });
 test('shutdown cancels an active read and preserves previously saved prices', async t => {
   let entered, cancel;
