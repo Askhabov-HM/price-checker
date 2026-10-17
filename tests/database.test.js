@@ -58,6 +58,26 @@ test('errors keep the last known price without creating a false zero or change',
   const row = db.rows('cart')[0];
   assert.equal(row.price, 15000); assert.equal(row.minimum, 15000); assert.equal(row.status, 'error'); assert.equal(row.delta, null);
   assert.equal(db.detail(id, 'public', 0).points[1].price, null);
+  assert.equal(db.detail(id, 'public', 0).points[1].message, 'Network error');
+  assert.equal(row.sparkline[1].status, 'error');
+  const failed = db.listHistory('cart', 'public', 0)[1];
+  assert.equal(failed.price, null); assert.equal(failed.status, 'error'); assert.equal(failed.message, 'Network error');
+});
+
+test('overview exposes partial failures without treating missing variants as errors', t => {
+  const {db, id, joinList} = setup(t);
+  const other = db.variant(item({sku: '456'}));
+  joinList('cart', [id, other]);
+  const check = db.startCheck('manual');
+  db.observation(id, item(), 'public', check, '2026-10-02T10:00:00+00:00');
+  db.observation(other, {status: 'error', message: 'Timeout'}, 'public', check, '2026-10-02T10:00:00+00:00');
+  const failed = db.listHistory('cart', 'public', 0)[0];
+  assert.equal(failed.status, 'error'); assert.equal(failed.message, 'Timeout');
+  assert.equal(failed.price, null); assert.equal(failed.known_total, 15000); assert.equal(failed.priced_count, 1);
+  const next = db.startCheck('manual');
+  db.observation(id, item(), 'public', next, '2026-10-02T11:00:00+00:00');
+  db.observation(other, {status: 'missing'}, 'public', next, '2026-10-02T11:00:00+00:00');
+  assert.equal(db.listHistory('cart', 'public', 0)[1].status, 'missing');
 });
 test('prices from the account cart and public site remain separate', t => {
   const {db, id, joinList} = setup(t); joinList();

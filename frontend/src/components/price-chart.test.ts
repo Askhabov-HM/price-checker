@@ -26,4 +26,33 @@ describe('chart scales and gaps', () => {
     expect(chartData([{checked_at: '2026-10-11T00:00:00Z', price: null}], 'checks').seriesIds).toEqual([]);
     expect(chartData([{checked_at: '2026-10-11T00:00:00Z', price: 10000}], 'time').seriesIds).toHaveLength(1);
   });
+  it('marks failures at the last known price without filling prices or connecting successful readings', () => {
+    const points = [
+      {price: 10000, status: 'ok' as const}, {price: null, status: 'error' as const},
+      {price: null, status: 'error' as const}, {price: 8000, status: 'ok' as const},
+      {price: null, status: 'missing' as const},
+    ].map((point, index) => ({...point, checked_at: new Date(1760000000000 + index * 1000).toISOString()}));
+    for (const scale of ['time', 'checks'] as const) {
+      const {rows, seriesIds} = chartData(points, scale);
+      expect(rows.map(row => row.errorPrice)).toEqual([null, 10000, 10000, null, null]);
+      expect(rows.map(row => row.price)).toEqual([10000, null, null, 8000, null]);
+      expect(rows.map(row => row.chartPrice)).toEqual([10000, null, null, 8000, null]);
+      expect(seriesIds).toHaveLength(2);
+    }
+  });
+  it('places failures before any price on a separate baseline and leaves empty history empty', () => {
+    const points = [null, null, 8000].map((price, index) => ({price, checked_at: new Date(1760000000000 + index * 1000).toISOString(), status: price == null ? 'error' as const : 'ok' as const}));
+    const {rows} = chartData(points, 'checks');
+    expect(rows.map(row => row.errorBaseline)).toEqual([0, 0, null]);
+    expect(rows.map(row => row.errorPrice)).toEqual([null, null, null]);
+    expect(chartData(points.slice(0, 2), 'checks').rows.map(row => row.errorBaseline)).toEqual([0, 0]);
+    expect(chartData([], 'checks').rows).toEqual([]);
+  });
+  it('marks a partial total as a failure without adding it to successful price series', () => {
+    const point = {checked_at: '2026-10-11T00:00:00Z', price: 5000, status: 'error' as const};
+    const {rows, seriesIds} = chartData([point], 'checks', true);
+    expect(rows[0].errorPrice).toBe(5000);
+    expect(rows[0].chartPrice).toBeNull();
+    expect(seriesIds).toEqual([]);
+  });
 });

@@ -214,10 +214,13 @@ export class Database {
         ORDER BY o.checked_at,o.id`, context, run.check_id, stamp, stamp, listId, stamp, stamp);
       const rows = [...new Map(observations.map(row => [row.variant_id, row])).values()];
       const known = rows.filter(row => row.status === 'ok' && row.price != null && row.in_stock);
+      const failed = rows.filter(row => row.status === 'error');
       const complete = known.length === members.length && members.length > 0;
       const total = known.reduce((sum, row) => sum + row.price, 0);
       return {checked_at: stamp, price: complete ? total : null, known_total: total, count: members.length,
-        priced_count: known.length, complete, composition: JSON.stringify([members, known.map(row => row.variant_id).sort((a, b) => a - b)])};
+        priced_count: known.length, complete, status: failed.length ? 'error' : complete ? 'ok' : 'missing',
+        message: [...new Set(failed.map(row => row.message).filter(Boolean))].join('; '),
+        composition: JSON.stringify([members, known.map(row => row.variant_id).sort((a, b) => a - b)])};
     });
   }
 

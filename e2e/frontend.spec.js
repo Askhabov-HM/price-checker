@@ -48,6 +48,40 @@ test('refresh updates prices and SVG charts; list URLs, filters, and scale survi
   expect(errors).toEqual([]);
 });
 
+test('failed checks appear as red dots in overview, sparklines and details, including before the first price', async ({page}) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await refresh(page, 'error');
+  await expect(page.locator('#overview-chart .chart-error-dot')).toHaveCount(1);
+  await expect(page.locator('#overview-chart')).toHaveAttribute('aria-label', /Ошибок проверки: 1/);
+  await page.locator('tr[data-id]').first().click();
+  await expect(page.locator('#detail-chart .chart-error-dot')).toHaveCount(1);
+  await expect(page.locator('#detail-chart')).not.toContainText('Пока нет данных');
+  await page.keyboard.press('Escape');
+  await refresh(page, 'initial'); await refresh(page, 'error');
+  await page.locator('.overview-card [data-chart-scale="checks"]').click();
+  await expect(page.locator('#overview-chart .chart-error-dot')).toHaveCount(2);
+  await expect(page.locator('#overview-chart .recharts-line-dot:not(.chart-error-dot)')).toHaveCount(1);
+  await expect(page.locator('tr[data-id]').first().locator('.sparkline .chart-error-dot')).toHaveCount(2);
+  await page.locator('tr[data-id]').first().click();
+  const dots = page.locator('#detail-chart .chart-error-dot');
+  await expect(dots).toHaveCount(2);
+  const color = await dots.last().evaluate(dot => getComputedStyle(dot).fill);
+  expect(color).toBe('rgb(239, 159, 148)');
+  const marker = await dots.first().boundingBox();
+  expect(marker).not.toBeNull();
+  await page.mouse.move(marker.x + marker.width / 2, marker.y + marker.height / 2);
+  await expect(page.locator('#detail-chart .chart-tooltip')).toContainText('Ошибка проверки');
+  await expect(page.locator('#detail-chart .chart-tooltip')).not.toContainText('0 ₽');
+  await page.keyboard.press('Escape');
+  await refresh(page, 'restored');
+  await expect(page.locator('#overview-chart .chart-error-dot')).toHaveCount(2);
+  await expect(page.locator('#overview-chart .recharts-line-dot:not(.chart-error-dot)')).toHaveCount(2);
+  await page.locator('.overview-card [data-chart-scale="time"]').click();
+  await expect(page.locator('#overview-chart .chart-error-dot')).toHaveCount(2);
+  expect(errors).toEqual([]);
+});
+
 test('last changes survive unchanged checks and errors and filter by 7, 14, or 30 days', async ({page}) => {
   await refresh(page, 'initial'); await refresh(page, 'drop');
   const primary = lab.tracker.db.rows('cart').find(row => row.sku === 'TEST-EDP-15');

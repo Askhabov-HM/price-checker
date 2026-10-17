@@ -52,6 +52,7 @@
   --chart-grid: var(--line);
   --chart-text: var(--muted);
   --chart-line: var(--green);
+  --chart-error: #ef9f94;
   --chart-point-border: var(--surface);
   --sidebar: 226px;
   font-family: "Segoe UI", Arial, sans-serif;

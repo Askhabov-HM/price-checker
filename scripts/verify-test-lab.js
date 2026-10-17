@@ -10,9 +10,10 @@ import {ensureFrontend} from './build-frontend.js';
 await ensureFrontend();
 
 async function chartProof(page,id,count) {
-  await page.waitForFunction(({id,count}) => document.querySelectorAll('#'+id+' .recharts-line-dot').length===count,{id,count});
+  await page.waitForFunction(({id,count}) => document.querySelectorAll('#'+id+' .recharts-line-dot:not(.chart-error-dot)').length===count,{id,count});
   return page.locator('#'+id).evaluate(element => ({
-    points: [...element.querySelectorAll('.recharts-line-dot')].map(dot => ({x:Number(dot.getAttribute('cx')),y:Number(dot.getAttribute('cy'))})),
+    points: [...element.querySelectorAll('.recharts-line-dot:not(.chart-error-dot)')].map(dot => ({x:Number(dot.getAttribute('cx')),y:Number(dot.getAttribute('cy'))})),
+    errors: element.querySelectorAll('.chart-error-dot').length,
     segments: [...element.querySelectorAll('.recharts-line-curve')].flatMap(path => [...(path.getAttribute('d') || '').matchAll(/L/g)].map(() => true))
   }));
 }
@@ -67,6 +68,7 @@ try {
     expectedTotals.push(total);expectedPublic.push(scenario.error?null:scenario.public);expectedCart.push(scenario.cart);
     const overview=await chartProof(page,'overview-chart',expectedTotals.filter(price=>price!==null).length);
     assert.equal(overview.points.length,expectedTotals.filter(price=>price!==null).length);
+    assert.equal(overview.errors,expectedTotals.filter(price=>price===null).length);
     if(['drop','rise','unchanged'].includes(name)) {
       const [previous,current]=overview.points.slice(-2);
       assert.ok(name==='drop'?current.y>previous.y:name==='rise'?current.y<previous.y:Math.abs(current.y-previous.y)<0.01);
@@ -80,6 +82,7 @@ try {
     assert.deepEqual(detail.points.map(point=>point.price),expectedPublic);
     const detailProof=await chartProof(page,'detail-chart',expectedPublic.filter(price=>price!==null).length);
     assert.equal(detailProof.points.length,expectedPublic.filter(price=>price!==null).length);
+    assert.equal(detailProof.errors,expectedPublic.filter(price=>price===null).length);
     assert.equal(detailProof.segments.length,Math.min(Number(index),5));
     await page.screenshot({path:join(root,'screenshots',prefix+'-detail.png'),fullPage:true});
     await page.locator('#product-dialog [data-slot="dialog-close"]').click();
