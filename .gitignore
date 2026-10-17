@@ -11,6 +11,7 @@ dist/
 playwright-report/
 test-results/
 .vitest/
+__pycache__/
 
 # Required local secret exclusions.
 .env

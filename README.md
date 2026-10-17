@@ -93,6 +93,56 @@ npm run lab -- --scenario restored
 
 Repository: [Askhabov-HM/price-checker](https://github.com/Askhabov-HM/price-checker).
 
+## CI/CD: Ubuntu
+
+GitHub Actions (`.github/workflows/ci-deploy.yml`) проверяет pull request и push
+в `main`: типы, синтаксис, сборку, backend, frontend, браузерные сценарии и скрипт
+деплоя. После успешных проверок push в `main` автоматически обновляет сервер
+`153.76.171.172`. Ручной запуск доступен в Actions → Check and deploy → Run workflow
+или через `gh workflow run ci-deploy.yml --ref main`. Деплой разрешён только из `main`.
+Незакоммиченные локальные изменения на сервер не отправляются.
+
+Используется существующая служба `price-checker.service` (пользователь `pricechecker`,
+Node.js в `/usr/local/bin/node`). GitHub передаёт проверенные исходники и готовый
+`dist/`; зависимости устанавливаются на Ubuntu через `npm ci`. Новая версия
+сохраняется в `/opt/price-checker/releases/github-<commit>-<id>`, а ссылка
+`/opt/price-checker/current` переключается после установки зависимостей.
+
+Перед переключением служба останавливается, а SQLite копируется через SQLite
+Backup API в `data/backups/pre-deploy-*.sqlite3`. После запуска проверяется
+`http://127.0.0.1:8000/api/health`. Если запуск или проверка завершились ошибкой,
+восстанавливается предыдущая версия кода и workflow завершается с ошибкой.
+Автоматический откат не заменяет базу: новая версия могла успеть записать данные.
+При несовместимой миграции восстановление базы из копии выполняется отдельно.
+
+Рабочая база, история, сессия Randewoo и прочие секреты остаются в
+`/var/lib/price-checker/data` и `/var/lib/price-checker/secrets`. Конфигурация службы,
+Telegram и HTTPS-прокси при деплое не меняется. Предыдущие версии и копии базы
+сохраняются для восстановления; их очистка выполняется отдельно по мере необходимости.
+
+Однократная настройка для существующего сервера:
+
+1. Создать отдельный SSH-ключ Ed25519 без парольной фразы для GitHub Actions.
+2. Скопировать на сервер `scripts/deploy.py`, `scripts/setup-deploy.sh` (в одну
+   папку) и публичный ключ. Выполнить от root:
+   `bash setup-deploy.sh /path/to/deploy-key.pub`.
+3. В Settings → Secrets and variables → Actions создать repository secrets:
+   `DEPLOY_SSH_KEY` — приватный ключ; `DEPLOY_KNOWN_HOSTS` — уже проверенная запись
+   сервера из `known_hosts`. Не подставлять неподтверждённый результат `ssh-keyscan`.
+4. При смене адреса или SSH-порта задать repository variables `DEPLOY_HOST` и
+   `DEPLOY_PORT` (по умолчанию `153.76.171.172` и `22`) и обновить запись хоста.
+
+Ключ в `authorized_keys` ограничен `restrict` и фиксированной командой
+`/usr/bin/python3 /usr/local/lib/price-checker/deploy.py`: произвольные SSH-команды,
+PTY и перенаправление портов для него запрещены. Загрузчик принимает только
+`deploy <SHA>` и архив без симлинков, путей за пределами версии, базы и секретов.
+Сам загрузчик устанавливается отдельно; push не заменяет его. При изменении
+`scripts/deploy.py` повторите установку через `setup-deploy.sh` с тем же публичным ключом.
+
+Проверка сервера: `systemctl status price-checker.service`, логи:
+`journalctl -u price-checker.service -n 100 --no-pager`. Коммит активной версии
+сохраняется в `/opt/price-checker/current/REVISION`.
+
 ## Запуск
 
 Требуются **Node.js 24.14.1 или новее**, npm и **curl** в PATH.
