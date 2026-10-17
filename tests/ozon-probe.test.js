@@ -206,4 +206,3 @@ test('probe storage persists only whitelisted signals, not injected credentials,
   assert.equal(store.status(current).account_connected, false);
   assert.equal(store.status(current).collector_enabled, false);
 });
-
