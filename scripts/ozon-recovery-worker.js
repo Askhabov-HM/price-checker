@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {realpathSync, statSync} from 'node:fs';
 import {createInterface} from 'node:readline';
-import {createBrowserReader} from '../src/providers/ozon/browser-refresh.js';
+import {createBrowserReader,browserCookieParams} from '../src/providers/ozon/browser-refresh.js';
 import {RECOVERY_LIMIT} from '../src/providers/ozon/recovery.js';
 import {validateCapturedRequest} from '../src/providers/ozon/network-capture.js';
 
@@ -27,7 +27,7 @@ try {
   let inputBytes = 0;
   process.stdin.on('data',chunk => {
     inputBytes += chunk.length;
-    if (inputBytes > 16384) cleanup().finally(() => process.exit(1));
+    if (inputBytes > 262144) cleanup().finally(() => process.exit(1));
     if (chunk.includes(10)) inputBytes = chunk.length-chunk.lastIndexOf(10)-1;
   });
   const lines = createInterface({input:process.stdin,crlfDelay:Infinity})[Symbol.asyncIterator]();
@@ -35,6 +35,7 @@ try {
   if (first.done) throw Error('No request');
   let input = JSON.parse(first.value);
   if (input.version !== 2 || input.id !== 1) throw Error('Invalid version');
+  const cookies = browserCookieParams(input.cookies || []);
   const request = validateCapturedRequest(input.request);
   if (!['product','favorites','cart'].includes(request.operation)) throw Error('Invalid target');
   display = spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0','1365x900x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
@@ -68,6 +69,7 @@ try {
     pending.set(id,{resolve,reject,timer});
     chrome.stdio[3].write(JSON.stringify({id,method,params,...(sessionId ? {sessionId} : {})})+'\0');
   });
+  if (cookies.length) await call('Storage.setCookies',{cookies});
   const browser = await createBrowserReader(call,request);
   let expected = 1;
   while (true) {

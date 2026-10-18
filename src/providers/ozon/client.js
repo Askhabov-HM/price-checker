@@ -53,7 +53,7 @@ export class OzonClient {
     // After 403, keep the remaining collection inside one saved browser session.
     if (result.summary.http_status === 403 && !result.summary.retry_after_ms && this.createBrowser && !this.signal?.aborted) {
       try {
-        this.browser = await this.createBrowser({signal:this.signal});
+        this.browser = await this.createBrowser({signal:this.signal,cookies:await this.session.browserCookies()});
         this.source = 'browser';
         if (request.operation === 'banks') await this.readBrowser(this.request('/product/'+request.external_id+'/'));
         return await this.readBrowser(request,{loginFlag,context});

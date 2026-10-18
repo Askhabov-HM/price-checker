@@ -7,7 +7,7 @@ import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {OzonClient} from '../src/providers/ozon/client.js';
 import {OzonService} from '../src/providers/ozon/service.js';
-import {createBrowserReader} from '../src/providers/ozon/browser-refresh.js';
+import {createBrowserReader,browserCookieParams} from '../src/providers/ozon/browser-refresh.js';
 import {browserCollection} from '../src/providers/ozon/recovery.js';
 import {acquireInstance,AlreadyRunning} from '../src/instance.js';
 import {temporary,cleanup} from './helpers.js';
@@ -21,7 +21,8 @@ const fakeBrowser = read => ({read,close:async () => {}});
 test('403 switches the whole queue to one browser under the collector lock and saves browser prices without an HTTP retry',async t => {
   const root = temporary(t);await connectTestOzon(root);let http = 0,browsers = 0,closed = 0;
   const path = join(root,'.secrets/ozon/session.json'),before = readFileSync(path),reads = [];
-  const client = new OzonClient(root,{fetchImpl:async () => {http++;return new Response('',{status:403});},browser:async () => {
+  const client = new OzonClient(root,{fetchImpl:async () => {http++;return new Response('',{status:403});},browser:async ({cookies}) => {
+    assert.equal(cookies.length,1);assert.equal(cookies[0].value,'synthetic-session');
     browsers++;await assert.rejects(acquireInstance(join(root,'.data/ozon/collector.lock')),AlreadyRunning);
     return {read:async request => {assert.deepEqual(request.headers,{});reads.push(request.operation);return exported(request);},close:async () => {closed++;}};
   }});
@@ -133,6 +134,15 @@ test('browser responses preserve rate limits and reject HTML, oversized bodies a
     const {reader}=await readerHarness(fetchImpl);const result=await reader.read(requestFor('/product/123/'));
     assert.equal(result.outcome,outcome);assert.doesNotMatch(JSON.stringify(result),/private/);
     if (outcome==='rate_limited') assert.equal(result.retry_after_ms,7200000);
+  }
+});
+
+test('only scoped unexpired session cookies can seed Chrome, preserving secure host-only cookies',() => {
+  const cookie={name:'__Host-auth',value:'synthetic-session',domain:'www.ozon.ru',hostOnly:true,path:'/',secure:true,httpOnly:true,sameSite:'lax'};
+  const [param]=browserCookieParams([cookie]);assert.equal(param.url,'https://www.ozon.ru/');assert.equal(param.domain,undefined);assert.equal(param.sameSite,'Lax');
+  assert.deepEqual(browserCookieParams([{...cookie,expires:1}]),[]);
+  for (const changed of [{domain:'evil.test'},{path:'/my/profile'},{secure:false},{hostOnly:false},{value:'bad\nvalue'},{sameSite:'invalid'}]) {
+    assert.throws(() => browserCookieParams([{...cookie,...changed}]));
   }
 });
 

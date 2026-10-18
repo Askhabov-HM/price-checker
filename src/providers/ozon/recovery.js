@@ -6,7 +6,7 @@ export const RECOVERY_SOCKET = '/run/price-checker-ozon-recovery.sock';
 export const RECOVERY_LIMIT = 12 * 1024 * 1024;
 
 // One private socket and one browser for the remaining reads in this collection.
-export function browserCollection({signal} = {}, {path = RECOVERY_SOCKET, timeoutMs = 60000} = {}) {
+export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_SOCKET, timeoutMs = 60000} = {}) {
   if (!existsSync(path) || signal?.aborted) throw new Error('Browser unavailable');
   const socket = connect(path);
   let sequence = 0, pending, buffer = Buffer.alloc(0), closed = false;
@@ -30,12 +30,14 @@ export function browserCollection({signal} = {}, {path = RECOVERY_SOCKET, timeou
   });
   const send = (message, timeout = timeoutMs) => new Promise((resolve,reject) => {
     if (closed || signal?.aborted || pending) return reject(new Error('Browser unavailable'));
-    const id = ++sequence,timer = setTimeout(fail,timeout);
+    const id = ++sequence,output = JSON.stringify({version:2,id,...message})+'\n';
+    if (Buffer.byteLength(output) > 262144) {fail();return reject(new Error('Browser unavailable'));}
+    const timer = setTimeout(fail,timeout);
     pending = {id,timer,resolve,reject};
-    socket.write(JSON.stringify({version:2,id,...message})+'\n');
+    socket.write(output);
   });
   return {
-    read(request) {const verified = validateCapturedRequest(request);return send({request:{...verified,headers:{}}});},
+    read(request) {const verified = validateCapturedRequest(request);return send({request:{...verified,headers:{}},...(sequence === 0 ? {cookies} : {})});},
     async close() {
       if (closed) return;
       try {await send({close:true},5000);} catch { /* Disconnect also terminates the worker. */ }

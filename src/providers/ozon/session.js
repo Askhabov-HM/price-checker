@@ -109,6 +109,14 @@ export class OzonSession {
     return changed;
   }
 
+  async browserCookies() {
+    const cookies = await this.jar.getCookies(OZON_ORIGIN+OZON_JSON_PATH,{expire:false});
+    return cookies.filter(cookie => cookie.expiryTime() > this.current()).map(cookie => ({name:cookie.key,value:cookie.value,
+      domain:cookie.domain,hostOnly:!!cookie.hostOnly,path:cookie.path,secure:!!cookie.secure,httpOnly:!!cookie.httpOnly,
+      ...(cookie.sameSite ? {sameSite:cookie.sameSite} : {}),
+      ...(Number.isFinite(cookie.expiryTime()) ? {expires:cookie.expiryTime()/1000} : {})}));
+  }
+
   async save() {
     if (!this.path) return;
     writePrivateJson(this.path, {provider: 'ozon-http-session', version: 1,

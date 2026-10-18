@@ -1,5 +1,27 @@
 import {validateCapturedRequest} from './network-capture.js';
 import {ozonProduct} from './url.js';
+import {pathMatch} from 'tough-cookie';
+import {OZON_JSON_PATH} from './session.js';
+
+export function browserCookieParams(cookies, now = Date.now()) {
+  if (!Array.isArray(cookies) || cookies.length > 200) throw new Error('Invalid browser session');
+  return cookies.flatMap(cookie => {
+    if (!['ozon.ru','www.ozon.ru'].includes(cookie?.domain) || typeof cookie.hostOnly !== 'boolean'
+      || typeof cookie.name !== 'string' || !/^[!#$%&'*+.^_`|~\w-]+$/.test(cookie.name)
+      || typeof cookie.value !== 'string' || /[^\x20-\x7e]|;/.test(cookie.value) || cookie.value.length > 50000
+      || typeof cookie.path !== 'string' || !cookie.path.startsWith('/') || !pathMatch(OZON_JSON_PATH,cookie.path)
+      || typeof cookie.secure !== 'boolean' || typeof cookie.httpOnly !== 'boolean'
+      || cookie.sameSite !== undefined && !['strict','lax','none'].includes(cookie.sameSite)
+      || cookie.expires !== undefined && !Number.isFinite(cookie.expires)
+      || cookie.name.startsWith('__Secure-') && !cookie.secure
+      || cookie.name.startsWith('__Host-') && (!cookie.secure || !cookie.hostOnly || cookie.path !== '/')) throw new Error('Invalid browser session');
+    if (cookie.expires !== undefined && cookie.expires*1000 <= now) return [];
+    return [{name:cookie.name,value:cookie.value,path:cookie.path,secure:cookie.secure,httpOnly:cookie.httpOnly,
+      ...(cookie.hostOnly ? {url:'https://'+cookie.domain+'/'} : {domain:'.'+cookie.domain}),
+      ...(cookie.sameSite ? {sameSite:cookie.sameSite[0].toUpperCase()+cookie.sameSite.slice(1)} : {}),
+      ...(cookie.expires !== undefined ? {expires:cookie.expires} : {})}];
+  });
+}
 
 // Navigate once, then use the same authenticated page for the rest of the queue.
 export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms))} = {}) {
