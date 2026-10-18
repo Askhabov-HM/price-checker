@@ -156,7 +156,10 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
             .replace('name="price-checker-test-mode" content="false"', 'name="price-checker-test-mode" content="true"')
             .replace('<div id="root"></div>', '<div id="root"><div id="test-mode-banner">ТЕСТОВЫЙ РЕЖИМ · Загрузка приложения…</div></div>');
           const websocketOrigin = externalOrigin ? externalOrigin.replace(/^https:/,'wss:') : 'ws://'+request.headers.host;
-          return send(response, 200, body, type,{'Content-Security-Policy':policy.replace("connect-src 'self'","connect-src 'self' "+websocketOrigin)});
+          // noVNC decodes compressed framebuffer rectangles through data: images.
+          const pagePolicy = policy.replace("connect-src 'self'","connect-src 'self' "+websocketOrigin)
+            .replace("img-src 'self'","img-src 'self' data:");
+          return send(response, 200, body, type,{'Content-Security-Policy':pagePolicy});
         }
         return send(response, 404, {error: 'Страница не найдена'});
       }

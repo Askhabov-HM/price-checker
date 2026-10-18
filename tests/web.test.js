@@ -21,6 +21,9 @@ async function setup(t, options) {
 test('local UI, dashboard, history, assets, and Excel CSV are served', async t => {
   const {base, id} = await setup(t);
   const page = await fetch(base); assert.equal(page.status, 200);
+  const csp = page.headers.get('content-security-policy');
+  assert.match(csp, /(?:^|; )img-src 'self' data:/);
+  assert.match(csp, /(?:^|; )script-src 'self' 'wasm-unsafe-eval' https:/);
   const html = await page.text(); assert.match(html, /Price Checker/);
   const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map(match => match[1]);
   assert.ok(assets.some(path => path.endsWith('.js'))); assert.ok(assets.some(path => path.endsWith('.css')));
