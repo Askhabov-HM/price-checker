@@ -22,7 +22,7 @@ export function ozonRedirect(original, previous, location) {
 
 // One logical read; at most two verified redirects, no automatic retries.
 export async function requestOzonJson(captured, {fetchImpl = fetch, current = Date.now, timeoutMs = 20000,
-  session, maxRedirects = 2} = {}) {
+  session, maxRedirects = 2, signal: parentSignal} = {}) {
   const request = validateCapturedRequest(captured);
   if (!Number.isInteger(maxRedirects) || maxRedirects < 0 || maxRedirects > 2) throw new RangeError('Invalid redirect limit');
   session ??= new OzonSession(request.headers.cookie, {current});
@@ -31,7 +31,8 @@ export async function requestOzonJson(captured, {fetchImpl = fetch, current = Da
     requests_made: 0, redirects_followed: 0, session_updated: false};
   let response;
   try {
-    const signal = AbortSignal.timeout(timeoutMs), visited = new Set([request.url]);
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = parentSignal ? AbortSignal.any([parentSignal,timeout]) : timeout, visited = new Set([request.url]);
     let url = request.url;
     while (true) {
       const headers = {...request.headers, cookie: await session.header(url)};

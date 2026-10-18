@@ -3,7 +3,7 @@ import type {AuthState, DashboardData, DetailData, ListId, Period, PriceContext,
 
 export const queryClient = new QueryClient({defaultOptions: {queries: {retry: 1, staleTime: 1000}, mutations: {retry: false}}});
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
   const result = await response.json();
   if (response.status === 401 && path !== '/api/login') {
@@ -23,7 +23,7 @@ export const authOptions = queryOptions({
 });
 
 async function clearPrivateQueries() {
-  for (const key of ['status', 'dashboard', 'detail']) {
+  for (const key of ['status', 'dashboard', 'detail', 'ozon']) {
     await queryClient.cancelQueries({queryKey: [key]});
     queryClient.removeQueries({queryKey: [key]});
   }

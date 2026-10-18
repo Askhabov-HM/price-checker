@@ -1,0 +1,52 @@
+import {test,expect} from '@playwright/test';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {basename,dirname,join,resolve} from 'node:path';
+import {Tracker} from '../src/service.js';
+import {OzonService} from '../src/providers/ozon/service.js';
+import {OzonClient} from '../src/providers/ozon/client.js';
+import {makeServer,listen} from '../src/web.js';
+import {connectTestOzon,TEST_OZON_URL,ozonPage,jsonResponse} from '../tests/ozon-fixture.js';
+
+test('Ozon route shows real stored prices, isolated lists and a chart after one manual check',async ({page},testInfo) => {
+  const root = mkdtempSync(join(tmpdir(),'price-checker-ozon-ui-'));
+  let server, tracker, ozon;
+  const errors = [];
+  page.on('pageerror',error => errors.push(error.message));
+  page.on('request',request => expect(new URL(request.url()).hostname).toBe('127.0.0.1'));
+  try {
+    tracker = new Tracker(root); await connectTestOzon(root);
+    ozon = new OzonService(root,{client:new OzonClient(root,{fetchImpl:async () => jsonResponse(ozonPage())})});
+    server = makeServer(tracker,{auth:null,ozon}); const port = await listen(server,0);
+    await page.goto('http://127.0.0.1:'+port+'/ozon');
+    await expect(page.getByRole('heading',{name:'Ozon.'})).toBeVisible();
+    await expect(page.getByText('Автоматические проверки выключены.',{exact:false})).toBeVisible();
+    await page.getByLabel('Ссылка на товар Ozon').fill(TEST_OZON_URL);
+    await page.getByRole('button',{name:'Добавить товар',exact:true}).click();
+    await expect(page.getByText('Товар Ozon · 123',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Проверить',exact:true}).click();
+    await expect(page.getByText('Тестовый товар Ozon',{exact:true})).toBeVisible();
+    await expect(page.getByText('Продавец 55',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'История',exact:true}).click();
+    await expect(page.locator('#ozon-detail-chart')).toBeVisible();
+    await expect(page.locator('#ozon-detail-chart .recharts-line-dot')).toHaveCount(1);
+    await expect(page.getByText('Первая реальная проверка сохранена.',{exact:false})).toBeVisible();
+    await page.getByRole('dialog').getByLabel('Тип цены Ozon').selectOption('regular');
+    await expect(page).toHaveURL(/price=regular/);
+    await page.screenshot({path:testInfo.outputPath('ozon-desktop.png'),fullPage:true});
+    await page.keyboard.press('Escape');
+    await page.getByRole('button',{name:/Избранное · 0/}).click();
+    await expect(page.getByText('Добавьте ссылку на товар или обновите списки аккаунта.',{exact:false})).toBeVisible();
+    await page.getByRole('link',{name:'Randewoo',exact:true}).click();
+    await expect(page.locator('#metric-count')).toHaveText('0');
+    await page.getByRole('link',{name:'Ozon ↗'}).click();
+    await expect(page.getByText('Тестовый товар Ozon',{exact:true})).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    await page.screenshot({path:testInfo.outputPath('ozon-mobile.png'),fullPage:true});
+    expect(errors).toEqual([]); expect(ozon.status().schedule_enabled).toBe(false);
+  } finally {
+    server?.closeAllConnections(); if (server) await new Promise(resolve => server.close(resolve));
+    await ozon?.close(); await tracker?.close();
+    if (dirname(root) === resolve(tmpdir()) && basename(root).startsWith('price-checker-ozon-ui-')) rmSync(root,{recursive:true,force:true});
+  }
+});

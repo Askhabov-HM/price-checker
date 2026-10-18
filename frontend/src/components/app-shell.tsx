@@ -1,5 +1,5 @@
 import {useEffect, useState} from 'react';
-import {Link, Outlet, useParams, useSearch} from '@tanstack/react-router';
+import {Link, Outlet, useParams, useSearch, useRouterState} from '@tanstack/react-router';
 import {useMutation, useQuery} from '@tanstack/react-query';
 import {ShoppingBag, ShoppingBasket, Heart, Eye, Plus, Settings, LogOut} from 'lucide-react';
 import {Button} from '@/components/ui/button';
@@ -7,8 +7,13 @@ import {authOptions, dashboardOptions, logout, queryClient, statusOptions} from 
 import {labels, listIds} from '@/lib/format';
 import type {ListId} from '@/lib/types';
 import {AddDialog, SettingsDialog} from './forms';
+import {OzonShell} from './ozon-shell';
 
 export function AppShell() {
+  const ozon = useRouterState({select:state => state.location.pathname.replace(/\/$/,'') === '/ozon'});
+  return ozon ? <OzonShell/> : <RandewooShell/>;
+}
+function RandewooShell() {
   const params = useParams({strict: false}), search = useSearch({from: '__root__'});
   const list = (params.listId || 'cart') as ListId;
   const {data: status, error} = useQuery(statusOptions);
@@ -28,6 +33,7 @@ export function AppShell() {
     <Button id="add-side" variant="ghost" className="add-side max-[850px]:size-10 max-[850px]:p-0" aria-label="Добавить товар" onClick={() => setAdding(true)}>
       <Plus size={14} /><span className="sidebar-action-label">Добавить товар</span>
     </Button>
+    <Link className="ozon-provider-link" to="/ozon" search={{...search,ozonList:'watching',price:'ozon_card'}}>Ozon ↗</Link>
     <div className="sidebar-note"><strong>Только пробники 1,5 мл</strong><p>Сохраняем реальные проверки и показываем, как меняется цена.</p></div>
     <div className="sidebar-bottom">
       <Button id="settings-button" variant="ghost" className="settings-button max-[850px]:size-10 max-[850px]:p-0" aria-label="Настройки" disabled={!status} onClick={() => setSettings(true)}>

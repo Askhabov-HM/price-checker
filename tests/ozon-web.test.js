@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {Tracker} from '../src/service.js';
+import {OzonService} from '../src/providers/ozon/service.js';
+import {OzonClient} from '../src/providers/ozon/client.js';
+import {makeServer,listen} from '../src/web.js';
+import {Authentication,createCredentials} from '../src/auth.js';
+import {temporary,cleanup} from './helpers.js';
+import {connectTestOzon,TEST_OZON_URL,ozonPage,jsonResponse} from './ozon-fixture.js';
+
+test('Ozon route and API use shared authentication, CSRF and namespaced IDs without exposing connection secrets', async t => {
+  const root = temporary(t), tracker = new Tracker(root);
+  await connectTestOzon(root);
+  const ozon = new OzonService(root,{client:new OzonClient(root,{fetchImpl:async () => jsonResponse(ozonPage())})});
+  const auth = new Authentication(await createCredentials('test-owner','synthetic-login-password'));
+  const server = makeServer(tracker,{ozon,auth}), port = await listen(server,0), base = 'http://127.0.0.1:'+port;
+  cleanup(t,async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await ozon.close(); await tracker.close();});
+  assert.equal((await fetch(base+'/ozon')).status,200);
+  assert.equal((await fetch(base+'/api/providers/ozon/dashboard')).status,401);
+  const anon = await (await fetch(base+'/api/auth')).json();
+  const login = await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':anon.csrf_token},body:JSON.stringify({login:'test-owner',password:'synthetic-login-password'})});
+  const state = await login.json(), cookie = login.headers.get('set-cookie').split(';')[0];
+  const post = (path,data,extra={}) => fetch(base+'/api/providers/ozon/'+path,{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json','X-CSRF-Token':state.csrf_token,...extra},body:JSON.stringify(data)});
+  assert.equal((await post('watch/add',{url:TEST_OZON_URL},{'X-CSRF-Token':'wrong'})).status,403);
+  assert.equal((await post('watch/add',{url:TEST_OZON_URL},{Origin:'https://other.test'})).status,403);
+  const added = await post('watch/add',{url:TEST_OZON_URL}), {id} = await added.json();
+  assert.equal(id,'ozon:item:123');
+  assert.equal((await post('refresh',{id:123})).status,400);
+  assert.equal((await post('refresh',{id:'randewoo:item:123'})).status,400);
+  assert.equal((await post('refresh',{id})).status,202); await ozon.running;
+  const detailResponse = await fetch(base+'/api/providers/ozon/product/'+encodeURIComponent(id)+'/history?days=0',{headers:{Cookie:cookie}});
+  assert.equal(detailResponse.status,200);
+  assert.equal((await detailResponse.json()).points[0].ozon_card_kopecks,90000);
+  const status = await (await fetch(base+'/api/providers/ozon/status',{headers:{Cookie:cookie}})).json();
+  assert.equal(status.schedule_enabled,false);
+  assert.doesNotMatch(JSON.stringify(status),/synthetic-session|Synthetic test address|account_id|delivery_digest/);
+  assert.equal(tracker.db.rows('watching').length,0);
+});

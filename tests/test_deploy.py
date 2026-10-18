@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import tarfile
 import tempfile
+import sqlite3
+from contextlib import closing
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -26,6 +28,36 @@ def archive(extra=()):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_each_store_has_its_own_consistent_backup_and_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / 'ozon').mkdir()
+            for name in ['prices.sqlite3', 'ozon/prices.sqlite3']:
+                with closing(sqlite3.connect(data / name)) as connection, connection:
+                    connection.execute('CREATE TABLE sample(value TEXT)')
+                    connection.execute('INSERT INTO sample VALUES(?)', (name,))
+                    if name.startswith('ozon/'):
+                        connection.execute('CREATE TABLE ozon_meta(id INTEGER,provider TEXT,version INTEGER)')
+                        connection.execute("INSERT INTO ozon_meta VALUES(1,'ozon-prices',1)")
+            copies = deploy.backup_databases(data, 'a' * 40)
+            self.assertEqual([entry['provider'] for entry in copies], ['randewoo', 'ozon'])
+            for entry in copies:
+                with closing(sqlite3.connect(data / entry['backup'])) as connection:
+                    self.assertEqual(connection.execute('SELECT value FROM sample').fetchone()[0], entry['source'])
+            self.assertEqual(len(list((data / 'backups').glob('*.json'))), 1)
+
+    def test_foreign_ozon_store_is_rejected_without_opening_it_for_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / 'ozon').mkdir()
+            source = data / 'ozon/prices.sqlite3'
+            with closing(sqlite3.connect(source)) as connection, connection:
+                connection.execute('CREATE TABLE randewoo(value TEXT)')
+            before = source.read_bytes()
+            with self.assertRaises(sqlite3.Error):
+                deploy.backup_databases(data, 'b' * 40)
+            self.assertEqual(source.read_bytes(), before)
+
     def test_only_exact_deploy_commands_are_accepted(self):
         sha = 'a' * 40
         self.assertEqual(deploy.commit_from_command('deploy ' + sha), sha)

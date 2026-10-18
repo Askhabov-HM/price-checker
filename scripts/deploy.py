@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import time
 from datetime import datetime, timezone
+from contextlib import closing
 from urllib.request import urlopen
 
 BASE = Path('/opt/price-checker')
@@ -79,6 +80,48 @@ def wait_healthy():
     raise RuntimeError('Service did not become healthy within 30 seconds')
 
 
+def backup_databases(data, commit, account=None):
+    """Back up each existing store independently; never restore one as another."""
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    copies = []
+    for provider, relative in [('randewoo', 'prices.sqlite3'), ('ozon', 'ozon/prices.sqlite3')]:
+        source = data / relative
+        if not source.exists():
+            continue
+        if source.is_symlink() or source.resolve() != data.resolve() / relative:
+            raise ValueError('Unexpected database path')
+        directory = source.parent / 'backups'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or not directory.resolve().is_relative_to(data.resolve()):
+            raise ValueError('Unexpected backup directory')
+        if account:
+            shutil.chown(directory, account.pw_uid, account.pw_gid)
+        target = directory / f'pre-deploy-{stamp}-{commit[:12]}.sqlite3'
+        if target.exists():
+            raise ValueError('Deployment backup already exists')
+        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as database:
+            if provider == 'ozon' and database.execute('SELECT provider,version FROM ozon_meta WHERE id=1').fetchone() != ('ozon-prices', 1):
+                raise ValueError('Unsupported Ozon database')
+            with closing(sqlite3.connect(target)) as copy:
+                database.backup(copy)
+                if copy.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                    raise ValueError('Invalid database backup')
+        target.chmod(0o600)
+        if account:
+            shutil.chown(target, account.pw_uid, account.pw_gid)
+        copies.append({'provider': provider, 'source': relative, 'backup': str(target.relative_to(data))})
+        print(f'Database backup ({provider}): {target.name}', flush=True)
+    if copies:
+        manifest = data / 'backups' / f'pre-deploy-{stamp}-{commit[:12]}.json'
+        manifest.parent.mkdir(mode=0o700, exist_ok=True)
+        with manifest.open('x') as output:
+            json.dump({'commit': commit, 'databases': copies}, output)
+        manifest.chmod(0o600)
+        if account:
+            shutil.chown(manifest, account.pw_uid, account.pw_gid)
+    return copies
+
+
 def activate_release(release, previous, backup):
     # Stop polling and SQLite writes before taking the deployment backup.
     # Retain the database on rollback: a new process may already have saved data.
@@ -142,19 +185,7 @@ def main():
         (release / '.secrets').symlink_to(SECRETS)
 
         def backup():
-            source = DATA / 'prices.sqlite3'
-            if source.is_file():
-                directory = DATA / 'backups'
-                directory.mkdir(exist_ok=True)
-                shutil.chown(directory, account.pw_uid, account.pw_gid)
-                stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-                target = directory / f'pre-deploy-{stamp}-{commit[:12]}.sqlite3'
-                with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as database:
-                    with sqlite3.connect(target) as copy:
-                        database.backup(copy)
-                target.chmod(0o600)
-                shutil.chown(target, account.pw_uid, account.pw_gid)
-                print(f'Database backup: {target.name}', flush=True)
+            backup_databases(DATA, commit, account)
 
         activate_release(release, previous, backup)
         print(f'Deployed {commit}; health check passed.', flush=True)

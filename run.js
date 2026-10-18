@@ -45,12 +45,13 @@ async function main() {
     else console.error('Не удалось получить блокировку приложения.');
     return 1;
   }
-  let tracker, telegram, server, shutdownPromise, resolveStopped;
+  let tracker, ozon, telegram, server, shutdownPromise, resolveStopped;
   const pidFile = join(root, '.data/server.pid'), metaFile = join(root, '.data/server.json');
   const shutdown = () => {
     if (!shutdownPromise) shutdownPromise = (async () => {
       const closed = server?.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
       await telegram?.close();
+      await ozon?.close();
       await tracker?.close();
       server?.closeAllConnections();
       await closed;
@@ -64,6 +65,7 @@ async function main() {
     const {Tracker} = await import('./src/service.js');
     const {makeServer, listen} = await import('./src/web.js');
     const {createTelegramBot} = await import('./src/telegram.js');
+    const {createOzonService} = await import('./src/providers/ozon/service.js');
     tracker = new Tracker(root);
     telegram = createTelegramBot(tracker);
     if (args.once) {
@@ -76,7 +78,8 @@ async function main() {
     const {ensureFrontend} = await import('./scripts/build-frontend.js');
     await ensureFrontend();
     const controlToken = randomBytes(32).toString('base64url');
-    server = makeServer(tracker, {onShutdown: signal, controlToken});
+    ozon = createOzonService(root);
+    server = makeServer(tracker, {onShutdown: signal, controlToken, ozon});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');
     writeFileSync(metaFile, JSON.stringify({pid: process.pid, port, runtime: 'node.js', control_token: controlToken}), {encoding: 'utf8', mode: 0o600});
@@ -84,6 +87,7 @@ async function main() {
     console.log(`Price Checker (Node.js): ${url}\nРасписание: Москва. Для остановки нажмите Ctrl+C.`);
     telegram?.start();
     tracker.startScheduler();
+    await ozon?.startScheduler();
     if (!args.noBrowser) openBrowser(url);
     await new Promise(resolve => {resolveStopped = resolve;});
     return 0;

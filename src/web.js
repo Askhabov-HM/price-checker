@@ -10,7 +10,7 @@ import {LoginError} from './randewoo-login.js';
 
 const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
 // Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
-const policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://captcha.randewoo.ru/assets/widget.js https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru; connect-src 'self' https://captcha.randewoo.ru https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
+const policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://captcha.randewoo.ru/assets/widget.js https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru https://ir.ozone.ru; connect-src 'self' https://captcha.randewoo.ru https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 function send(response, status, body, contentType = 'application/json; charset=utf-8', headers = {}) {
   if (!Buffer.isBuffer(body)) body = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
@@ -54,7 +54,7 @@ export function exportCsv(rows, context) {
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }
 
-export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAuthentication(tracker.root), controlToken,
+export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAuthentication(tracker.root), controlToken, ozon = null,
   publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN} = {}) {
   const csrf = randomBytes(32).toString('base64url');
   let externalOrigin;
@@ -102,6 +102,18 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         return send(response, 401, {error: 'Войдите в Price Checker'});
       }
       if (request.method === 'GET') {
+        if (url.pathname === '/api/providers/ozon/status') return send(response,200,{...(ozon ? ozon.status() : {available:false,configured:false,message:'Раздел Ozon временно недоступен.'}),csrf_token:token});
+        if (url.pathname.startsWith('/api/providers/ozon/')) {
+          if (!ozon) return send(response,503,{error:'Раздел Ozon временно недоступен.'});
+          if (url.pathname === '/api/providers/ozon/dashboard') return send(response,200,{...ozon.db.dashboard(url.searchParams.get('list') || 'watching'),status:ozon.status()});
+          const product = /^\/api\/providers\/ozon\/product\/(ozon:item:[1-9]\d{0,19})\/history$/.exec(decodeURIComponent(url.pathname));
+          if (product) {
+            const days = url.searchParams.get('days') ?? '30';
+            if (!['0','7','30','90','365'].includes(days)) throw new ValidationError('Некорректный период Ozon.');
+            return send(response,200,ozon.db.detail(product[1],Number(days)));
+          }
+          return send(response,404,{error:'Страница Ozon не найдена'});
+        }
         if (url.pathname === '/api/status') return send(response, 200, {...tracker.status(), csrf_token: token});
         if (url.pathname === '/api/dashboard') return send(response, 200, {items: tracker.db.rows(section, context), counts: tracker.db.counts(), list: section, context,
           history: tracker.db.listHistory(section, context), status: tracker.status()});
@@ -113,7 +125,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);
@@ -136,6 +148,17 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       }
       if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume(); return send(response, 415, {error: 'Ожидается JSON'});}
       const data = await readJson(request);
+      if (url.pathname.startsWith('/api/providers/ozon/')) {
+        if (!ozon) return send(response,503,{error:'Раздел Ozon временно недоступен.'});
+        if (url.pathname === '/api/providers/ozon/watch/add') return send(response,200,{id:ozon.watch(data.url)});
+        if (url.pathname === '/api/providers/ozon/watch/remove') {ozon.unwatch(data.id); return send(response,200,{ok:true});}
+        if (url.pathname === '/api/providers/ozon/refresh') {
+          if (data.id != null && typeof data.id !== 'string') throw new ValidationError('Некорректный товар Ozon.');
+          return send(response,202,await ozon.start({id:data.id ?? null}));
+        }
+        if (url.pathname === '/api/providers/ozon/settings') {ozon.settings(data); return send(response,200,{ok:true});}
+        return send(response,404,{error:'Действие Ozon не найдено'});
+      }
       if (url.pathname === '/api/login' && auth) {
         const result = await auth.login(data.login, data.password, request.socket.remoteAddress);
         if (result.status !== 200) return send(response, result.status, {error: result.error}, undefined,
