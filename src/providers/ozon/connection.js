@@ -8,7 +8,7 @@ import {OzonSession, writePrivateJson} from './session.js';
 export async function importOzonConnection(root, input, exported, {current = Date.now} = {}) {
   const request = validateCapturedRequest(input?.request);
   const reference = input?.reference;
-  if (!/^[1-9]\d{0,19}$/.test(reference?.account_id) || !/^[a-f0-9]{64}$/.test(reference?.delivery_digest)
+  if (!/^[1-9]\d{0,19}$/.test(reference?.account_id)
     || !Array.isArray(exported?.cookies) || !exported.cookies.length || exported.cookies.length > 200) throw new ValidationError('Некорректный экспорт подключения Ozon.');
   const headers = {...request.headers};
   delete headers.cookie;

@@ -2,6 +2,13 @@ import {accountContext} from '../src/providers/ozon/account-context.js';
 import {importOzonConnection} from '../src/providers/ozon/connection.js';
 
 export const TEST_OZON_URL = 'https://www.ozon.ru/product/test-item-123/';
+export function favoriteTile(sku = '123', {price = '950 ₽', original = '1 500 ₽',available = true} = {}) {
+  return {sku,id:sku,action:available ? {link:'/product/test-item-'+sku+'/'} : {},
+    topRightButtons:[{favoriteProductMoleculeV2:{isFav:true}}],
+    mainState:[{id:'name',textDS:{text:'Тестовый товар '+sku}},...(price === null ? [] : [{type:'priceV2',priceV2:{price:[
+      {textStyle:'PRICE',text:price},...(original === null ? [] : [{textStyle:'ORIGINAL_PRICE',text:original}])
+    ]}}])]};
+}
 export function ozonPage({sku = '123',seller = '55',regular = '1 000 ₽',card = '900 ₽',account = 123} = {}) {
   return {userInfo:{user:{userId:account,isLoggedIn:true}},location:{current:{areaId:456,uid:'test-area',city:'Test city',countryCode:'RU'}},
     widgetStates:Object.fromEntries(Object.entries({

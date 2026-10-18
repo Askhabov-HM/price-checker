@@ -8,8 +8,9 @@ import {OzonService} from '../src/providers/ozon/service.js';
 import {OzonClient} from '../src/providers/ozon/client.js';
 import {OzonSession} from '../src/providers/ozon/session.js';
 import {OZON_INTERVAL_MS} from '../src/providers/ozon/probe.js';
+import {acquireInstance} from '../src/instance.js';
 import {temporary, cleanup, item} from './helpers.js';
-import {TEST_OZON_URL, connectTestOzon, ozonPage, jsonResponse} from './ozon-fixture.js';
+import {TEST_OZON_URL, connectTestOzon, ozonPage, jsonResponse, favoriteTile} from './ozon-fixture.js';
 
 test('real HTTP pipeline persists two prices, survives restart, marks seller changes and preserves prices on 403', async t => {
   const root = temporary(t), randewoo = new Database(join(root,'.data/prices.sqlite3'));
@@ -68,24 +69,30 @@ test('only an explicit source pause or a 429 creates a manual backoff',async t =
   }
 });
 
-test('a card redirect preserves its old price and cannot prevent checking the remaining products',async t => {
-  const root=temporary(t);await connectTestOzon(root);let redirect=false;
+test('a full refresh saves both favorites prices without reading cards, cart or delivery',async t => {
+  const root=temporary(t);await connectTestOzon(root);const calls=[];
   const client=new OzonClient(root,{browser:null,fetchImpl:async url => {
     const page=new URL(url).searchParams.get('url');
-    if (redirect && page.startsWith('/product/test-item-123/')) return new Response('',{status:302,headers:{Location:'/search/'}});
-    return jsonResponse(ozonPage({sku:page.includes('456') ? '456' : '123'}));
+    calls.push(page);assert.equal(page,'/my/favorites?sorting=last_added');
+    const data=ozonPage();delete data.location;delete data.widgetStates['addressBookBarWeb-1-default-1'];
+    data.widgetStates['tileGridDesktop-8-default-1']=JSON.stringify({items:[favoriteTile(),favoriteTile('456',{price:'1 373 ₽',original:null})]});
+    return jsonResponse(data);
   }});
   const service=new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
   const first=service.watch(TEST_OZON_URL),second=service.watch('https://www.ozon.ru/product/456/');
-  await service.start({id:first});await service.running;redirect=true;
+  const unwatched=service.watch('https://www.ozon.ru/product/789/');
   await service.start();await service.running;
   const check=service.status().checks[0];
-  assert.equal(check.status,'partial');assert.equal(check.completed,2);assert.equal(check.total,2);
+  assert.deepEqual(calls,['/my/favorites?sorting=last_added']);
+  assert.equal(check.status,'success');assert.equal(check.completed,2);assert.equal(check.total,2);
   assert.equal(service.status().action_required,false);assert.equal(service.status().not_before,null);
-  assert.equal(service.db.detail(first,0).product.regular_kopecks,100000);
-  assert.equal(service.db.detail(first,0).points.at(-1).status,'error');
-  assert.equal(service.db.detail(second,0).product.status,'ok');
-  assert.equal(service.db.listHistory('watching',0).at(-1).regular.known_total,100000);
+  assert.equal(service.db.detail(first,0).product.listed_price_kopecks,95000);
+  assert.equal(service.db.detail(first,0).product.original_price_kopecks,150000);
+  assert.equal(service.db.detail(second,0).product.listed_price_kopecks,137300);
+  assert.equal(service.db.detail(second,0).product.original_price_kopecks,null);
+  assert.equal(service.db.detail(unwatched,0).points.length,0);
+  assert.equal(service.db.listHistory('favorites',0).at(-1).listed.known_total,232300);
+  assert.equal(service.db.listHistory('watching',0).length,0);
 });
 
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {
@@ -118,9 +125,9 @@ test('schedule is opt-in, respects the two-hour delay and never overlaps a manua
   await service.tick(); assert.equal(calls,0);
   now += OZON_INTERVAL_MS+1;
   await service.tick(); await service.running;
-  assert.equal(calls,2); // Empty but complete favorites and cart; no product requests.
+  assert.equal(calls,1); // Empty but complete favorites; no cart or product requests.
   assert.equal(service.status().checks[0].trigger,'schedule');
-  service.settings({schedule_enabled:false}); now += 86400000; await service.tick(); assert.equal(calls,2);
+  service.settings({schedule_enabled:false}); now += 86400000; await service.tick(); assert.equal(calls,1);
 });
 
 test('an interrupted persisted check remains blocked on restart and a foreign database is rejected without writes', async t => {
@@ -151,4 +158,19 @@ test('browser-cookie import selects only the Ozon first-party partition and resp
   session = await OzonSession.open(join(root,'.secrets/ozon/session.json'),'bootstrap=disabled',{current:() => now});
   assert.equal(await session.header(url),'');
   await assert.rejects(connectTestOzon(root,{cookies:[{...cookie,partitionKeyOpaque:true}]}),/область/);
+});
+
+test('a guest response requests owner login only after the collection browser and lock are closed',async t => {
+  const root=temporary(t);await connectTestOzon(root);let notifications=0,mode='guest';
+  const service=new OzonService(root,{client:new OzonClient(root,{browser:null,fetchImpl:async () => {
+    const data=ozonPage({account:mode==='guest' ? 0 : 999});
+    data.userInfo.user.isLoggedIn=mode!=='guest';return jsonResponse(data);
+  }})});
+  cleanup(t,() => service.close());
+  service.login.require=async () => {notifications++;const release=await acquireInstance(join(root,'.data/ozon/collector.lock'));await release();};
+  await service.start();await service.running;
+  assert.equal(notifications,1);assert.equal(service.status().action_required,true);
+  assert.equal(service.db.dashboard('favorites').items.length,0);
+  mode='other';service.db.updateState({action_required:0});await service.start();await service.running;
+  assert.equal(notifications,1);
 });

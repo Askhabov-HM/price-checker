@@ -24,7 +24,7 @@ export function browserCookieParams(cookies, now = Date.now()) {
 }
 
 // Navigate once, then use the same authenticated page for the rest of the queue.
-export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms))} = {}) {
+export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms)),interactiveLogin = false} = {}) {
   const request = validateCapturedRequest(captured);
   if (!['product','favorites','cart'].includes(request.operation)) throw new Error('Unsupported recovery target');
   const page = new URL(request.url).searchParams.get('url');
@@ -42,7 +42,7 @@ export async function createBrowserReader(call, captured, {pause = ms => new Pro
     if (request.operation === 'product' && value?.origin === 'https://www.ozon.ru') {
       try {samePage = ozonProduct(value.origin+value.path).external_id === request.external_id;} catch {samePage = false;}
     }
-    if (value?.origin === 'https://www.ozon.ru' && samePage && value.ready === 'complete') {ready = true;break;}
+    if (value?.origin === 'https://www.ozon.ru' && (samePage || interactiveLogin && request.operation === 'favorites') && value.ready === 'complete') {ready = true;break;}
   }
   if (!ready) throw new Error('Browser not ready');
   let reads = 0, lastProduct = null;

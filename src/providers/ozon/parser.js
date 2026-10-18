@@ -58,7 +58,8 @@ function favorite(item) {
   const badge = text(item.tileImage?.leftBottomBadgeV2?.text);
   return {...product, title, image_url: imageUrl(array(item.tileImage?.items).find(part => part?.image)?.image?.link),
     availability: item.action?.link == null ? 'unavailable' : badge === 'Нет в наличии' ? 'out_of_stock' : 'unknown',
-    listed_price_kopecks: rublePrice(array(price?.price).find(part => part?.textStyle === 'PRICE')?.text)};
+    listed_price_kopecks: rublePrice(array(price?.price).find(part => part?.textStyle === 'PRICE')?.text),
+    original_price_kopecks: rublePrice(array(price?.price).find(part => part?.textStyle === 'ORIGINAL_PRICE')?.text)};
 }
 
 function favoritesNext(value) {

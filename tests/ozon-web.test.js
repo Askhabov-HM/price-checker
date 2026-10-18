@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {request as httpRequest} from 'node:http';
 import {Tracker} from '../src/service.js';
 import {OzonService} from '../src/providers/ozon/service.js';
 import {OzonClient} from '../src/providers/ozon/client.js';
@@ -16,6 +17,13 @@ test('Ozon route and API use shared authentication, CSRF and namespaced IDs with
   const server = makeServer(tracker,{ozon,auth}), port = await listen(server,0), base = 'http://127.0.0.1:'+port;
   cleanup(t,async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await ozon.close(); await tracker.close();});
   assert.equal((await fetch(base+'/ozon')).status,200);
+  assert.equal((await fetch(base+'/ozon/login')).status,200);
+  assert.equal((await fetch(base+'/api/providers/ozon/login/status')).status,401);
+  const denied=await new Promise((resolve,reject) => {
+    const request=httpRequest(base+'/api/providers/ozon/login/view?token=wrong',{headers:{Connection:'Upgrade',Upgrade:'websocket',Origin:base}},response => {response.resume();resolve(response.statusCode);});
+    request.on('error',reject);request.end();
+  });
+  assert.equal(denied,403);
   assert.equal((await fetch(base+'/api/providers/ozon/dashboard')).status,401);
   const anon = await (await fetch(base+'/api/auth')).json();
   const login = await fetch(base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':anon.csrf_token},body:JSON.stringify({login:'test-owner',password:'synthetic-login-password'})});
@@ -23,6 +31,8 @@ test('Ozon route and API use shared authentication, CSRF and namespaced IDs with
   const post = (path,data,extra={}) => fetch(base+'/api/providers/ozon/'+path,{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json','X-CSRF-Token':state.csrf_token,...extra},body:JSON.stringify(data)});
   assert.equal((await post('watch/add',{url:TEST_OZON_URL},{'X-CSRF-Token':'wrong'})).status,403);
   assert.equal((await post('watch/add',{url:TEST_OZON_URL},{Origin:'https://other.test'})).status,403);
+  assert.equal((await post('login/start',{}, {'X-CSRF-Token':'wrong'})).status,403);
+  assert.equal((await post('login/start',{}, {Origin:'https://other.test'})).status,403);
   const added = await post('watch/add',{url:TEST_OZON_URL}), {id} = await added.json();
   assert.equal(id,'ozon:item:123');
   assert.equal((await post('refresh',{id:123})).status,400);

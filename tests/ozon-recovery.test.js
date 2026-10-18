@@ -11,11 +11,14 @@ import {createBrowserReader,browserCookieParams} from '../src/providers/ozon/bro
 import {browserCollection} from '../src/providers/ozon/recovery.js';
 import {acquireInstance,AlreadyRunning} from '../src/instance.js';
 import {temporary,cleanup} from './helpers.js';
-import {connectTestOzon,ozonPage,jsonResponse,TEST_OZON_URL} from './ozon-fixture.js';
+import {connectTestOzon,ozonPage,jsonResponse,TEST_OZON_URL,favoriteTile} from './ozon-fixture.js';
 
 const requestFor = page => ({method:'GET',url:'https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url='+encodeURIComponent(page),headers:{}});
-const exported = request => ({version:2,request_url:request.url,user_agent:'Synthetic test browser',http_status:200,retry_after_ms:0,outcome:'json_received',
-  data:ozonPage({sku:request.external_id || '123'})});
+const exported = request => {
+  const data=ozonPage({sku:request.external_id || '123'});
+  if(request.operation==='favorites') data.widgetStates['tileGridDesktop-8-default-1']=JSON.stringify({items:[favoriteTile(),favoriteTile('456')]});
+  return {version:2,request_url:request.url,user_agent:'Synthetic test browser',http_status:200,retry_after_ms:0,outcome:'json_received',data};
+};
 const fakeBrowser = read => ({read,close:async () => {}});
 
 test('403 switches the whole queue to one browser under the collector lock and saves browser prices without an HTTP retry',async t => {
@@ -30,11 +33,12 @@ test('403 switches the whole queue to one browser under the collector lock and s
   service.watch(TEST_OZON_URL);service.watch('https://www.ozon.ru/product/456/');
   await service.start();await service.running;
   assert.equal(http,1);assert.equal(browsers,1);assert.equal(closed,1);
-  assert.deepEqual(reads,['favorites','cart','product','banks','product','banks']);
+  assert.deepEqual(reads,['favorites']);
   assert.equal(service.status().action_required,false);assert.equal(service.status().schedule_enabled,false);assert.equal(service.status().not_before,null);
   for (const sku of ['123','456']) {
     const detail = service.db.detail('ozon:item:'+sku,0);
-    assert.equal(detail.points.length,1);assert.equal(detail.points[0].source,'browser');assert.equal(detail.product.ozon_card_kopecks,90000);
+    assert.equal(detail.points.length,1);assert.equal(detail.points[0].source,'browser');assert.equal(detail.product.listed_price_kopecks,95000);
+    assert.equal(detail.product.original_price_kopecks,150000);assert.equal(detail.product.ozon_card_kopecks,null);
   }
   assert.deepEqual(readFileSync(path),before);
 });
@@ -43,24 +47,24 @@ test('a browser 403 stops the queue and cannot open another browser or fall back
   const root = temporary(t);await connectTestOzon(root);let http = 0,browsers = 0,reads = 0,closed = 0;
   const client = new OzonClient(root,{fetchImpl:async url => {
     http++;const page = new URL(url).searchParams.get('url');
-    return page.startsWith('/my/favorites') || page === '/cart' ? jsonResponse(ozonPage()) : new Response('',{status:403});
+    assert.match(page,/^\/my\/favorites/);return new Response('',{status:403});
   },browser:async () => {
     browsers++;return {read:async request => {
-      reads++;assert.equal(request.external_id,'123');
-      return reads === 2 ? {...exported(request),data:null,http_status:403,outcome:'access_limited'} : exported(request);
+      reads++;assert.equal(request.operation,'favorites');
+      return {...exported(request),data:null,http_status:403,outcome:'access_limited'};
     },close:async () => {closed++;}};
   }});
   const service = new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
   service.watch(TEST_OZON_URL);service.watch('https://www.ozon.ru/product/456/');
   await service.start();await service.running;
-  assert.equal(http,3);assert.equal(browsers,1);assert.equal(reads,2);assert.equal(closed,1);
+  assert.equal(http,1);assert.equal(browsers,1);assert.equal(reads,1);assert.equal(closed,1);
   assert.equal(service.status().action_required,true);assert.equal(service.status().not_before,null);
-  assert.equal(service.db.detail('ozon:item:123',0).points[0].source,'browser');
+  assert.equal(service.db.detail('ozon:item:123',0).points.length,0);
   assert.equal(service.db.detail('ozon:item:456',0).points.length,0);
 });
 
-test('a different account, delivery, SKU, user agent or request identity cannot save browser prices',async t => {
-  for (const change of [value => {value.data = ozonPage({account:999});},value => {value.data.location.current.uid='other';},
+test('a different account, SKU, user agent or request identity cannot save browser prices',async t => {
+  for (const change of [value => {value.data = ozonPage({account:999});},
     value => {value.data = ozonPage({sku:'456'});},value => {value.user_agent='different';},value => {value.request_url='https://other.test/';},value => {value.version=1;}]) {
     const root = temporary(t);await connectTestOzon(root);let http=0;
     const client = new OzonClient(root,{fetchImpl:async () => {http++;return new Response('',{status:403});},

@@ -78,7 +78,7 @@ async function main() {
     const {ensureFrontend} = await import('./scripts/build-frontend.js');
     await ensureFrontend();
     const controlToken = randomBytes(32).toString('base64url');
-    ozon = createOzonService(root);
+    ozon = createOzonService(root,{notify:telegram ? text => telegram.send(text) : undefined});
     server = makeServer(tracker, {onShutdown: signal, controlToken, ozon});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');

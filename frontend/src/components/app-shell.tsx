@@ -10,7 +10,7 @@ import {AddDialog, SettingsDialog} from './forms';
 import {OzonShell} from './ozon-shell';
 
 export function AppShell() {
-  const ozon = useRouterState({select:state => state.location.pathname.replace(/\/$/,'') === '/ozon'});
+  const ozon = useRouterState({select:state => /^\/ozon(?:\/|$)/.test(state.location.pathname)});
   return ozon ? <OzonShell/> : <RandewooShell/>;
 }
 function RandewooShell() {
@@ -33,7 +33,7 @@ function RandewooShell() {
     <Button id="add-side" variant="ghost" className="add-side max-[850px]:size-10 max-[850px]:p-0" aria-label="Добавить товар" onClick={() => setAdding(true)}>
       <Plus size={14} /><span className="sidebar-action-label">Добавить товар</span>
     </Button>
-    <Link className="ozon-provider-link" to="/ozon" search={{...search,ozonList:'watching',price:'ozon_card'}}>Ozon ↗</Link>
+    <Link className="ozon-provider-link" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}>Ozon ↗</Link>
     <div className="sidebar-note"><strong>Только пробники 1,5 мл</strong><p>Сохраняем реальные проверки и показываем, как меняется цена.</p></div>
     <div className="sidebar-bottom">
       <Button id="settings-button" variant="ghost" className="settings-button max-[850px]:size-10 max-[850px]:p-0" aria-label="Настройки" disabled={!status} onClick={() => setSettings(true)}>

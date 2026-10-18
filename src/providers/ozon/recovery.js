@@ -38,6 +38,10 @@ export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_S
   });
   return {
     read(request) {const verified = validateCapturedRequest(request);return send({request:{...verified,headers:{}},...(sequence === 0 ? {cookies} : {})});},
+    login(action, data = {}) {
+      if (!['start','phone','finish'].includes(action)) throw new Error('Unsupported login action');
+      return send({...data,login:action});
+    },
     async close() {
       if (closed) return;
       try {await send({close:true},5000);} catch { /* Disconnect also terminates the worker. */ }

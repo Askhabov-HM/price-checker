@@ -1,8 +1,8 @@
 import {createServer} from 'node:http';
-import {readFileSync} from 'node:fs';
+import {readFileSync, realpathSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {join} from 'node:path';
+import {join, resolve, sep} from 'node:path';
 import {CONTEXTS} from './database.js';
 import {FetchError, ValidationError} from './errors.js';
 import {loadAuthentication} from './auth.js';
@@ -73,6 +73,17 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
   });
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
+  server.on('upgrade',(request,socket,head) => {
+    try {
+      const port = server.address().port;
+      const origins = [`http://127.0.0.1:${port}`,`http://localhost:${port}`,...(externalOrigin ? [externalOrigin] : [])];
+      const hosts = origins.map(value => new URL(value).host);
+      const session = auth?.session(request);
+      if (!session || !hosts.includes(request.headers.host) || !origins.includes(request.headers.origin)
+        || new URL(request.url,origins[0]).pathname !== '/api/providers/ozon/login/view' || !ozon?.login) throw Error('Forbidden');
+      ozon.login.upgrade(request,socket,head,session.csrf);
+    } catch {socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');}
+  });
 
   async function handle(request, response) {
     const port = server.address().port;
@@ -102,10 +113,19 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         return send(response, 401, {error: 'Войдите в Price Checker'});
       }
       if (request.method === 'GET') {
+        if (url.pathname === '/api/providers/ozon/login/status') return send(response,200,ozon?.login?.status() || {available:false,active:false,required:false});
+        if (url.pathname.startsWith('/api/providers/ozon/login/assets/')) {
+          const relative = url.pathname.slice('/api/providers/ozon/login/assets/'.length);
+          if (!/^[A-Za-z0-9_./-]+\.js$/.test(relative) || relative.split('/').includes('..')) return send(response,404,{error:'Файл не найден'});
+          const directory = realpathSync(process.env.PRICE_CHECKER_OZON_NOVNC_PATH || '/opt/price-checker-ozon-remote/extracted/usr/share/novnc');
+          const path = realpathSync(resolve(directory,relative));
+          if (!path.startsWith(directory+sep)) return send(response,404,{error:'Файл не найден'});
+          return send(response,200,readFileSync(path),'text/javascript; charset=utf-8');
+        }
         if (url.pathname === '/api/providers/ozon/status') return send(response,200,{...(ozon ? ozon.status() : {available:false,configured:false,message:'Раздел Ozon временно недоступен.'}),csrf_token:token});
         if (url.pathname.startsWith('/api/providers/ozon/')) {
           if (!ozon) return send(response,503,{error:'Раздел Ozon временно недоступен.'});
-          if (url.pathname === '/api/providers/ozon/dashboard') return send(response,200,{...ozon.db.dashboard(url.searchParams.get('list') || 'watching'),status:ozon.status()});
+          if (url.pathname === '/api/providers/ozon/dashboard') return send(response,200,{...ozon.db.dashboard(url.searchParams.get('list') || 'favorites'),status:ozon.status()});
           const product = /^\/api\/providers\/ozon\/product\/(ozon:item:[1-9]\d{0,19})\/history$/.exec(decodeURIComponent(url.pathname));
           if (product) {
             const days = url.searchParams.get('days') ?? '30';
@@ -125,7 +145,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);
@@ -135,7 +155,8 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
             .replace('<title>', '<title>ТЕСТ · ')
             .replace('name="price-checker-test-mode" content="false"', 'name="price-checker-test-mode" content="true"')
             .replace('<div id="root"></div>', '<div id="root"><div id="test-mode-banner">ТЕСТОВЫЙ РЕЖИМ · Загрузка приложения…</div></div>');
-          return send(response, 200, body, type);
+          const websocketOrigin = externalOrigin ? externalOrigin.replace(/^https:/,'wss:') : 'ws://'+request.headers.host;
+          return send(response, 200, body, type,{'Content-Security-Policy':policy.replace("connect-src 'self'","connect-src 'self' "+websocketOrigin)});
         }
         return send(response, 404, {error: 'Страница не найдена'});
       }
@@ -150,6 +171,13 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       const data = await readJson(request);
       if (url.pathname.startsWith('/api/providers/ozon/')) {
         if (!ozon) return send(response,503,{error:'Раздел Ozon временно недоступен.'});
+        if (url.pathname.startsWith('/api/providers/ozon/login/')) {
+          if (!auth || !session || !ozon.login) return send(response,403,{error:'Войдите в Price Checker'});
+          if (url.pathname === '/api/providers/ozon/login/start') return send(response,200,await ozon.login.start(token));
+          if (url.pathname === '/api/providers/ozon/login/phone') return send(response,200,await ozon.login.fillPhone(token));
+          if (url.pathname === '/api/providers/ozon/login/finish') return send(response,200,await ozon.login.finish(token));
+          if (url.pathname === '/api/providers/ozon/login/cancel') {await ozon.login.cancel(token);return send(response,200,{ok:true});}
+        }
         if (url.pathname === '/api/providers/ozon/watch/add') return send(response,200,{id:ozon.watch(data.url)});
         if (url.pathname === '/api/providers/ozon/watch/remove') {ozon.unwatch(data.id); return send(response,200,{ok:true});}
         if (url.pathname === '/api/providers/ozon/refresh') {
@@ -169,6 +197,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       }
       if (url.pathname === '/api/logout' && auth) {
         tracker.randewooLogin.cancel(token);
+        if (ozon?.login?.session?.owner === token || ozon?.login?.opening?.owner === token) await ozon.login.cancel(token);
         auth.logout(request);
         return send(response, 200, {required: true, authenticated: false, login: null, csrf_token: csrf}, undefined,
           {'Set-Cookie': auth.cookie('', secureCookie)});

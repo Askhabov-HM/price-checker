@@ -10,20 +10,30 @@ function widget(data, prefix) {
   try {return typeof values[0][1] === 'string' ? JSON.parse(values[0][1]) : values[0][1];} catch {throw invalid();}
 }
 
+export function accountIdentity(data, {requireLoginFlag = false} = {}) {
+  const user = data?.userInfo?.user;
+  if (!Number.isSafeInteger(user?.userId) || user.userId <= 0 || user.isLoggedIn === false
+    || requireLoginFlag && user.isLoggedIn !== true) throw new ValidationError('Не удалось подтвердить аккаунт Ozon.');
+  return String(user.userId);
+}
+
+export function accountMatches(data, reference, options) {
+  try {return accountIdentity(data, options) === reference.account_id;} catch {return false;}
+}
+
 // Reference fields are private. Public health output contains only match flags.
 export function accountContext(data, {requireLoginFlag = false} = {}) {
-  const user = data?.userInfo?.user;
+  const account = accountIdentity(data, {requireLoginFlag});
   const location = data?.location?.current;
   const address = widget(data, 'addressBookBarWeb');
   const labels = address?.customCell?.cells?.map(cell => cell?.button?.text || cell?.text?.text).filter(Boolean);
-  if (!Number.isSafeInteger(user?.userId) || user.userId <= 0 || user.isLoggedIn === false
-    || requireLoginFlag && user.isLoggedIn !== true || !location || typeof location !== 'object'
+  if (!location || typeof location !== 'object'
     || !Number.isSafeInteger(location.areaId) || typeof location.uid !== 'string' || !location.uid
     || !labels?.length || labels.some(label => typeof label !== 'string' || label.length > 2000)) throw invalid();
   // Stable account-selected locality and visible address; no coordinates or tracking tokens.
   const context = {area_id: location.areaId, uid: location.uid, city: location.city,
     country_code: location.countryCode, fias: location.fias, labels};
-  return {account_id: String(user.userId), delivery_digest: createHash('sha256').update(JSON.stringify(context)).digest('hex')};
+  return {account_id: account, delivery_digest: createHash('sha256').update(JSON.stringify(context)).digest('hex')};
 }
 
 export function contextMatches(data, reference, options) {

@@ -39,6 +39,7 @@ test('favorites keep only true memberships and ignore the separate recommendatio
   const parsed = parseFavoritesPage(data);
   assert.deepEqual(parsed.items.map(item => item.external_id), ['123']);
   assert.equal(parsed.items[0].listed_price_kopecks, 123400);
+  assert.equal(parsed.items[0].original_price_kopecks, 999900);
   assert.equal(parsed.items[0].url, 'https://www.ozon.ru/product/item-123/');
   assert.equal(parsed.items[0].prices, undefined);
   assert.doesNotMatch(JSON.stringify(parsed), /private-tracking|9 999/);
@@ -53,6 +54,7 @@ test('unavailable and removed favorites retain their original SKU and position',
   assert.equal(items[1].availability, 'unavailable');
   assert.equal(items[1].url, 'https://www.ozon.ru/product/456/');
   assert.equal(items[1].listed_price_kopecks, null);
+  assert.equal(items[1].original_price_kopecks, null);
 });
 
 test('a different SKU or a foreign link is not accepted as the tracked variant', () => {

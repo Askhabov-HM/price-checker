@@ -5,18 +5,22 @@ import {ValidationError} from '../../errors.js';
 import {OzonDatabase, itemSku} from './database.js';
 import {OzonClient, OzonReadError} from './client.js';
 import {OZON_INTERVAL_MS} from './probe.js';
+import {OzonLogin} from './login.js';
 
 export class OzonService {
-  constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay} = {}) {
+  constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify} = {}) {
     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
     this.running = null; this.closing = false;
+    this.login = new OzonLogin(root,{notify,onAuthorized:() => {
+      this.db.updateState({action_required:0,message:'',next_check:this.db.state().schedule_enabled ? this.stamp() : null});
+    }});
   }
   stamp() {return new Date(this.current()).toISOString();}
   status() {
     const state = this.db.state(), checks = this.db.checks();
     return {available:true,configured:this.client.configured(),running:!!this.running || checks[0]?.status === 'running',
       schedule_enabled:!!state.schedule_enabled,interval_minutes:120,next_check:state.schedule_enabled ? state.next_check : null,
-      not_before:state.not_before,action_required:!!state.action_required,message:state.message,city:'Грозный',checks};
+      not_before:state.not_before,action_required:!!state.action_required,message:state.message,login:this.login.status(),checks};
   }
   settings(data) {
     if (typeof data.schedule_enabled !== 'boolean') throw new ValidationError('Укажите состояние расписания Ozon.');
@@ -41,7 +45,10 @@ export class OzonService {
     catch (error) {throw new ValidationError(error instanceof AlreadyRunning ? 'Проверка Ozon уже выполняется.' : 'Не удалось начать проверку Ozon.');}
     try {this.allowed();} catch (error) {await release(); throw error;}
     this.controller = new AbortController();
-    this.running = this.execute({id,trigger,signal:this.controller.signal}).finally(async () => {await release(); this.running = null;});
+    this.running = this.execute({id,trigger,signal:this.controller.signal}).finally(async () => {
+      await release();this.running = null;
+      if (this.loginNeeded && !this.closing) {this.loginNeeded = false;await this.login.require();}
+    });
     this.running.catch(() => {});
     // The HTTP response returns before collection; errors are represented by persisted checks.
     return {started:true};
@@ -51,18 +58,21 @@ export class OzonService {
     if (this.db.state().action_required) return;
     const check = this.db.begin(trigger,this.stamp());
     this.db.updateState({action_required:1,message:'Проверка Ozon прервана. Проверьте подключение перед повтором.'});
-    let target,failed = 0;
+    let target,failed = 0,imported = null;
     try {
       const context = await this.client.open(signal);
-      this.db.bindContext(context);
+      this.db.bindContext(context,{legacyDigest:this.client.legacyContextDigest});
       if (!id) {
         const lists = await this.client.lists();
-        this.db.syncLists(lists.favorites,lists.cart,this.stamp());
-      }
-      this.db.snapshotLists(check);
-      const targets = id ? [this.db.product(itemSku(id))] : this.db.targets();
+        if (signal.aborted) throw new OzonReadError('interrupted');
+        imported = lists.favorites;
+        this.db.recordFavorites(check,imported,this.stamp(),this.client.source || 'http');
+      } else this.db.snapshotLists(check);
+      // The full refresh is complete after reading favorites; only an explicit
+      // single-product request may open a product card.
+      const targets = id ? [this.db.product(itemSku(id))] : [];
       if (targets.length > 100) throw new OzonReadError('invalid_data');
-      this.db.progress(check,targets.length);
+      if (id) this.db.progress(check,targets.length);
       for (const [index, product] of targets.entries()) {
         target = product.sku;
         if (signal.aborted) throw new OzonReadError('interrupted');
@@ -78,11 +88,14 @@ export class OzonService {
         target = null;
       }
       const next = new Date(this.current()+OZON_INTERVAL_MS).toISOString();
-      const message = failed ? `Проверено товаров: ${targets.length}. Не удалось получить цены: ${failed}. Прежние цены сохранены.` : `Проверено товаров: ${targets.length}.`;
+      const message = imported !== null
+        ? `Избранное обновлено. Товаров: ${imported.length}. Цены получены: ${imported.filter(item => item.listed_price_kopecks !== null).length}.`
+        : failed ? `Проверено товаров: ${targets.length}. Не удалось получить цены: ${failed}. Прежние цены сохранены.` : `Проверено товаров: ${targets.length}.`;
       this.db.updateState({not_before:null,next_check:next,action_required:0,message:failed ? message : ''});
       this.db.finish(check,failed ? 'partial' : 'success',message,this.stamp());
     } catch (error) {
       const known = error instanceof OzonReadError;
+      if (known && error.code === 'login_required') this.loginNeeded = true;
       const message = known ? error.message : signal.aborted ? 'Проверка Ozon остановлена.' : 'Не удалось проверить Ozon. Предыдущие данные сохранены.';
       if (target) this.db.failure(check,target,message,this.stamp(),this.client.source || 'http');
       const wait = Math.max(known ? error.retry_after_ms : 0,known && error.code === 'rate_limited' ? 6*3600000 : 0);
@@ -96,16 +109,18 @@ export class OzonService {
     try {release = await acquireInstance(join(this.root,'.data/ozon/collector.lock')); this.db.recover(this.stamp());} catch { /* A CLI check may own the lock. */ }
     finally {await release?.();}
     if (this.closing) return;
+    if (this.db.state().action_required && this.db.state().message === 'Нужно обновить вход в Ozon.') await this.login.require();
     this.timer = setInterval(() => {this.tick().catch(() => {});},30000);
     this.timer.unref();
   }
   async tick() {
     const state = this.db.state();
+    if (!this.closing && this.login.required) await this.login.require();
     if (this.closing || !state.schedule_enabled || this.running || state.action_required || !state.next_check || Date.parse(state.next_check) > this.current()) return;
     await this.start({trigger:'schedule'});
   }
-  async close() {this.closing = true; clearInterval(this.timer); this.controller?.abort(); await this.running; this.db.close();}
+  async close() {this.closing = true; clearInterval(this.timer); this.controller?.abort(); await this.running; await this.login.close();this.db.close();}
 }
-export function createOzonService(root) {
-  try {return new OzonService(root);} catch {return null;}
+export function createOzonService(root, options) {
+  try {return new OzonService(root,options);} catch {return null;}
 }

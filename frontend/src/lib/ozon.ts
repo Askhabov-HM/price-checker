@@ -3,16 +3,18 @@ import {authOptions, queryClient, request} from './api';
 import type {Check, PricePoint} from './types';
 
 export type OzonList = 'watching' | 'favorites' | 'cart';
-export type OzonPrice = 'ozon_card' | 'regular';
+export type OzonPrice = 'listed' | 'ozon_card' | 'regular';
 export interface OzonStatus {
   available: boolean; configured: boolean; running: boolean; schedule_enabled: boolean;
   interval_minutes: number; next_check: string | null; not_before: string | null;
-  action_required: boolean; message: string; city: string; checks: Check[];
+  action_required: boolean; message: string; checks: Check[];
+  login?: {available: boolean; required: boolean; active: boolean; expires_at: string | null; phone_hint: string | null};
 }
 export interface SellerEvent {checked_at: string; old_name: string | null; new_name: string | null;}
 export interface OzonItem {
   id: string; sku: string; url: string; title: string; image_url: string | null;
-  regular_kopecks: number | null; ozon_card_kopecks: number | null; seller_id: string | null;
+  listed_price_kopecks: number | null; regular_kopecks: number | null; ozon_card_kopecks: number | null; seller_id: string | null;
+  original_price_kopecks: number | null;
   seller_name: string | null; seller_change: SellerEvent | null; status: 'pending' | 'ok' | 'error';
   availability: string; checked_at: string | null; price_at: string | null; message: string;
   lists: {list: OzonList; quantity: number}[];
@@ -20,20 +22,25 @@ export interface OzonItem {
 }
 export interface OzonChartPoint {
   checked_at: string; status: 'ok' | 'error'; availability: string;
-  regular_kopecks: number | null; ozon_card_kopecks: number | null; seller_id: string | null;
+  listed_price_kopecks: number | null; regular_kopecks: number | null; ozon_card_kopecks: number | null; seller_id: string | null;
   message: string;
 }
 export interface OzonPoint extends OzonChartPoint {
+  original_price_kopecks: number | null;
   seller_name: string | null; source: 'http' | 'browser';
 }
 export interface OzonTotal {known_total: number; priced_count: number; complete: boolean; status: 'ok' | 'error' | 'missing'; composition: string;}
-export interface OzonHistory {checked_at: string; count: number; observed_count: number; message: string; regular: OzonTotal; ozon_card: OzonTotal;}
+export interface OzonHistory {checked_at: string; count: number; observed_count: number; message: string; listed: OzonTotal; regular: OzonTotal; ozon_card: OzonTotal;}
 export interface OzonDashboard {items: OzonItem[]; counts: Record<OzonList, number>; list: OzonList; status: OzonStatus; history: OzonHistory[];}
 export interface OzonDetail {product: OzonItem; points: OzonPoint[]; seller_events: SellerEvent[];}
 
+export function ozonPrice(point: Pick<OzonChartPoint,'listed_price_kopecks' | 'regular_kopecks' | 'ozon_card_kopecks'>, price: OzonPrice) {
+  return price === 'listed' ? point.listed_price_kopecks : price === 'regular' ? point.regular_kopecks : point.ozon_card_kopecks;
+}
 export function ozonProductPoints(points: OzonChartPoint[], price: OzonPrice): PricePoint[] {
-  return points.map(point => ({...point,price:price === 'regular' ? point.regular_kopecks : point.ozon_card_kopecks,
-    composition:point.seller_id || 'unknown',in_stock:point.availability === 'available'}));
+  return points.map(point => ({...point,price:ozonPrice(point,price),
+    composition:price === 'listed' ? 'favorites' : point.seller_id || 'unknown',
+    in_stock:point.availability === 'unknown' ? null : point.availability === 'available'}));
 }
 export function ozonOverviewPoints(history: OzonHistory[], price: OzonPrice) {
   return history.map(point => ({...point,...point[price],price:point[price].priced_count ? point[price].known_total : null}));

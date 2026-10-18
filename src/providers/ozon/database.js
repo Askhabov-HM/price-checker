@@ -43,6 +43,8 @@ export class OzonDatabase {
         CREATE TABLE IF NOT EXISTS collector_state(id INTEGER PRIMARY KEY CHECK(id=1),schedule_enabled INTEGER NOT NULL DEFAULT 0,next_check TEXT,not_before TEXT,action_required INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '');
         INSERT OR IGNORE INTO collector_state(id) VALUES(1);`);
       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'source')) this.db.exec("ALTER TABLE observations ADD COLUMN source TEXT NOT NULL DEFAULT 'http'");
+      if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'listed_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN listed_price_kopecks INTEGER');
+      if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'original_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN original_price_kopecks INTEGER');
     } catch (error) {this.db.close(); throw error;}
   }
   close() {this.db.close();}
@@ -50,9 +52,9 @@ export class OzonDatabase {
     this.db.exec('BEGIN IMMEDIATE');
     try {const result = action(); this.db.exec('COMMIT'); return result;} catch (error) {this.db.exec('ROLLBACK'); throw error;}
   }
-  bindContext(digest) {
+  bindContext(digest, {legacyDigest} = {}) {
     const previous = this.db.prepare('SELECT context_digest FROM ozon_meta WHERE id=1').get().context_digest;
-    if (previous && previous !== digest) throw new ValidationError('Аккаунт или адрес Ozon изменился. Требуется отдельная история для нового подключения.');
+    if (previous && previous !== digest && previous !== legacyDigest) throw new ValidationError('Аккаунт Ozon изменился. Требуется отдельная история для нового подключения.');
     this.db.prepare('UPDATE ozon_meta SET context_digest=? WHERE id=1').run(digest);
   }
   product(sku) {return this.db.prepare('SELECT * FROM products WHERE sku=?').get(sku);}
@@ -73,17 +75,37 @@ export class OzonDatabase {
   syncLists(favorites, cart, now) {
     this.transaction(() => {
       for (const [list, items] of [['favorites',favorites],['cart',cart]]) {
-        this.db.prepare('DELETE FROM membership WHERE list=?').run(list);
-        for (const [position, product] of items.entries()) {
-          this.upsert(product, now);
-          this.db.prepare('INSERT INTO membership(sku,list,quantity,position) VALUES(?,?,?,?)').run(product.external_id,list,product.quantity || 1,position);
-        }
+        if (items === undefined) continue;
+        this.replaceList(list,items,now);
       }
     });
   }
-  targets() {return this.db.prepare('SELECT DISTINCT p.* FROM products p JOIN membership m ON m.sku=p.sku ORDER BY p.created_at,p.sku LIMIT 101').all();}
-  snapshotLists(check) {
-    this.db.prepare('INSERT INTO list_snapshots(check_id,list,sku,quantity) SELECT ?,list,sku,quantity FROM membership').run(check);
+  replaceList(list, items, now) {
+    this.db.prepare('DELETE FROM membership WHERE list=?').run(list);
+    for (const [position, product] of items.entries()) {
+      this.upsert(product,now);
+      this.db.prepare('INSERT INTO membership(sku,list,quantity,position) VALUES(?,?,?,?)').run(product.external_id,list,product.quantity || 1,position);
+    }
+  }
+  recordFavorites(check, favorites, now, source = 'http') {
+    if (!['http','browser'].includes(source) || !Array.isArray(favorites) || favorites.length > 30) throw invalid();
+    this.transaction(() => {
+      this.replaceList('favorites',favorites,now);
+      this.snapshotLists(check,'favorites');
+      const insert = this.db.prepare("INSERT INTO observations(check_id,sku,checked_at,status,availability,listed_price_kopecks,original_price_kopecks,source) VALUES(?,?,?,'ok',?,?,?,?)");
+      for (const product of favorites) {
+        const price = product.listed_price_kopecks ?? null, original = product.original_price_kopecks ?? null;
+        if ([price,original].some(value => value !== null && (!Number.isSafeInteger(value) || value <= 0))) throw invalid();
+        insert.run(check,product.external_id,now,product.availability,price,original,source);
+      }
+      this.db.prepare('UPDATE checks SET total=?,completed=? WHERE id=?').run(favorites.length,favorites.length,check);
+    });
+  }
+  targets(list = null) {
+    return this.db.prepare('SELECT DISTINCT p.* FROM products p JOIN membership m ON m.sku=p.sku WHERE (? IS NULL OR m.list=?) ORDER BY p.created_at,p.sku LIMIT 101').all(list,list);
+  }
+  snapshotLists(check, list = null) {
+    this.db.prepare('INSERT INTO list_snapshots(check_id,list,sku,quantity) SELECT ?,list,sku,quantity FROM membership WHERE (? IS NULL OR list=?)').run(check,list,list);
   }
   state() {return this.db.prepare('SELECT * FROM collector_state WHERE id=1').get();}
   updateState({schedule_enabled,next_check,not_before,action_required,message}) {
@@ -124,12 +146,13 @@ export class OzonDatabase {
     const seller = this.db.prepare("SELECT seller_id,seller_name FROM observations WHERE sku=? AND status='ok' AND seller_id IS NOT NULL ORDER BY id DESC LIMIT 1").get(product.sku);
     const event = this.db.prepare('SELECT checked_at,old_name,new_name FROM seller_events WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);
     return {...product,id:itemId(product.sku),status:latest?.status || 'pending',checked_at:latest?.checked_at || null,
-      price_at:price?.checked_at || null,regular_kopecks:price?.regular_kopecks ?? null,ozon_card_kopecks:price?.ozon_card_kopecks ?? null,
+      price_at:price?.checked_at || null,listed_price_kopecks:price?.listed_price_kopecks ?? null,original_price_kopecks:price?.original_price_kopecks ?? null,
+      regular_kopecks:price?.regular_kopecks ?? null,ozon_card_kopecks:price?.ozon_card_kopecks ?? null,
       availability:price?.availability || 'unknown',seller_id:seller?.seller_id || null,seller_name:seller?.seller_name || null,
       seller_change:event || null,message:latest?.message || '',lists:this.db.prepare('SELECT list,quantity FROM membership WHERE sku=?').all(product.sku),
-      sparkline:this.db.prepare('SELECT checked_at,status,availability,regular_kopecks,ozon_card_kopecks,seller_id,message FROM observations WHERE sku=? ORDER BY id DESC LIMIT 24').all(product.sku).reverse()};
+      sparkline:this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,message FROM observations WHERE sku=? ORDER BY id DESC LIMIT 24').all(product.sku).reverse()};
   }
-  dashboard(list = 'watching') {
+  dashboard(list = 'favorites') {
     if (!lists.includes(list)) throw new ValidationError('Неизвестный список Ozon.');
     const items = this.db.prepare('SELECT p.* FROM products p JOIN membership m ON m.sku=p.sku WHERE m.list=? ORDER BY m.position,p.created_at DESC').all(list).map(product => this.row(product));
     const counts = Object.fromEntries(lists.map(name => [name,Number(this.db.prepare('SELECT COUNT(*) AS n FROM membership WHERE list=?').get(name).n)]));
@@ -139,7 +162,7 @@ export class OzonDatabase {
     if (!lists.includes(list)) throw new ValidationError('Неизвестный список Ozon.');
     const since = days ? new Date(now-days*86400000).toISOString() : '';
     const rows = this.db.prepare(`SELECT s.check_id,s.sku,s.quantity,c.finished_at,o.checked_at,o.status,o.availability,
-      o.regular_kopecks,o.ozon_card_kopecks,o.seller_id,o.message
+      o.listed_price_kopecks,o.regular_kopecks,o.ozon_card_kopecks,o.seller_id,o.message
       FROM list_snapshots s JOIN checks c ON c.id=s.check_id
       LEFT JOIN observations o ON o.check_id=s.check_id AND o.sku=s.sku
       WHERE s.list=? AND c.status<>'running' AND c.finished_at>=? ORDER BY c.finished_at,c.id,s.sku`).all(list,since);
@@ -152,9 +175,10 @@ export class OzonDatabase {
       const failed = members.filter(row => row.status === 'error');
       const point = {checked_at:members[0].finished_at,count:members.length,observed_count:members.filter(row => row.checked_at).length,
         message:[...new Set(failed.map(row => row.message).filter(Boolean))].join('; ')};
-      for (const price of ['regular','ozon_card']) {
-        const column = price+'_kopecks';
-        const known = members.filter(row => row.status === 'ok' && row.availability === 'available' && row[column] != null);
+      for (const price of ['listed','regular','ozon_card']) {
+        const column = price === 'listed' ? 'listed_price_kopecks' : price+'_kopecks';
+        const known = members.filter(row => row.status === 'ok' && row[column] != null
+          && (price === 'listed' ? !['out_of_stock','unavailable'].includes(row.availability) : row.availability === 'available'));
         const complete = known.length === members.length;
         point[price] = {known_total:known.reduce((sum,row) => sum+row[column]*row.quantity,0),priced_count:known.length,complete,
           status:failed.length ? 'error' : complete ? 'ok' : 'missing',
@@ -167,7 +191,7 @@ export class OzonDatabase {
     const sku = itemSku(id), product = this.product(sku);
     if (!product || ![0,7,30,90,365].includes(days)) throw new ValidationError('Товар или период Ozon не найден.');
     const since = days ? new Date(now-days*86400000).toISOString() : '';
-    const points = this.db.prepare('SELECT checked_at,status,availability,regular_kopecks,ozon_card_kopecks,seller_id,seller_name,message,source FROM observations WHERE sku=? AND checked_at>=? ORDER BY id DESC LIMIT 2000').all(sku,since).reverse();
+    const points = this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,original_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,seller_name,message,source FROM observations WHERE sku=? AND checked_at>=? ORDER BY id DESC LIMIT 2000').all(sku,since).reverse();
     const seller_events = this.db.prepare('SELECT checked_at,old_name,new_name FROM seller_events WHERE sku=? AND checked_at>=? ORDER BY id DESC LIMIT 2000').all(sku,since).reverse();
     return {product:this.row(product),points,seller_events};
   }
