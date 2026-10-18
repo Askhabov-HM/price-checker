@@ -51,7 +51,7 @@ export class OzonService {
     if (this.db.state().action_required) return;
     const check = this.db.begin(trigger,this.stamp());
     this.db.updateState({action_required:1,message:'Проверка Ozon прервана. Проверьте подключение перед повтором.'});
-    let target;
+    let target,failed = 0;
     try {
       const context = await this.client.open(signal);
       this.db.bindContext(context);
@@ -67,13 +67,20 @@ export class OzonService {
         target = product.sku;
         if (signal.aborted) throw new OzonReadError('interrupted');
         if (index) await this.pause(2500,undefined,{signal});
-        const result = await this.client.product(product.sku,product.url);
-        this.db.observe(check,result,this.stamp(),this.client.source || 'http');
+        try {
+          const result = await this.client.product(product.sku,product.url);
+          this.db.observe(check,result,this.stamp(),this.client.source || 'http');
+        } catch (error) {
+          if (!(error instanceof OzonReadError) || error.retry_after_ms > 0
+            || !['redirect','invalid_data','network_error','http_error','unexpected_content','response_too_large'].includes(error.code)) throw error;
+          this.db.failure(check,product.sku,error.message,this.stamp(),this.client.source || 'http');failed++;
+        }
         target = null;
       }
       const next = new Date(this.current()+OZON_INTERVAL_MS).toISOString();
-      this.db.updateState({not_before:null,next_check:next,action_required:0,message:''});
-      this.db.finish(check,'success',`Проверено товаров: ${targets.length}.`,this.stamp());
+      const message = failed ? `Проверено товаров: ${targets.length}. Не удалось получить цены: ${failed}. Прежние цены сохранены.` : `Проверено товаров: ${targets.length}.`;
+      this.db.updateState({not_before:null,next_check:next,action_required:0,message:failed ? message : ''});
+      this.db.finish(check,failed ? 'partial' : 'success',message,this.stamp());
     } catch (error) {
       const known = error instanceof OzonReadError;
       const message = known ? error.message : signal.aborted ? 'Проверка Ozon остановлена.' : 'Не удалось проверить Ozon. Предыдущие данные сохранены.';

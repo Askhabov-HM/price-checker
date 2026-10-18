@@ -68,6 +68,26 @@ test('only an explicit source pause or a 429 creates a manual backoff',async t =
   }
 });
 
+test('a card redirect preserves its old price and cannot prevent checking the remaining products',async t => {
+  const root=temporary(t);await connectTestOzon(root);let redirect=false;
+  const client=new OzonClient(root,{browser:null,fetchImpl:async url => {
+    const page=new URL(url).searchParams.get('url');
+    if (redirect && page.startsWith('/product/test-item-123/')) return new Response('',{status:302,headers:{Location:'/search/'}});
+    return jsonResponse(ozonPage({sku:page.includes('456') ? '456' : '123'}));
+  }});
+  const service=new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
+  const first=service.watch(TEST_OZON_URL),second=service.watch('https://www.ozon.ru/product/456/');
+  await service.start({id:first});await service.running;redirect=true;
+  await service.start();await service.running;
+  const check=service.status().checks[0];
+  assert.equal(check.status,'partial');assert.equal(check.completed,2);assert.equal(check.total,2);
+  assert.equal(service.status().action_required,false);assert.equal(service.status().not_before,null);
+  assert.equal(service.db.detail(first,0).product.regular_kopecks,100000);
+  assert.equal(service.db.detail(first,0).points.at(-1).status,'error');
+  assert.equal(service.db.detail(second,0).product.status,'ok');
+  assert.equal(service.db.listHistory('watching',0).at(-1).regular.known_total,100000);
+});
+
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let mode = 'wrong';

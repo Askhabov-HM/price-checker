@@ -15,8 +15,9 @@ export class OzonReadError extends Error {
     const messages = {access_limited:'Ozon ограничил доступ. Проверки приостановлены.',login_required:'Нужно обновить вход в Ozon.',
       context_mismatch:'Аккаунт или адрес Ozon не подтверждён. Проверки приостановлены.',rate_limited:'Ozon попросил снизить частоту. Проверки приостановлены.',
       incomplete_data:'Получен неполный список Ozon. Предыдущий состав сохранён.',invalid_data:'Не удалось подтвердить данные Ozon.',
-      network_error:'Не удалось получить ответ Ozon. Повтор отложен.',interrupted:'Проверка Ozon остановлена.',
-      redirect:'Ozon перенаправил запрос на неподтверждённую страницу. Проверки приостановлены.'};
+      network_error:'Не удалось получить ответ Ozon.',interrupted:'Проверка Ozon остановлена.',
+      browser_unverified:'Не удалось подтвердить серверный браузер Ozon. Проверки приостановлены.',
+      redirect:'Карточка Ozon перенаправляет на неподтверждённую страницу.'};
     super(messages[code] || 'Ozon не вернул подтверждённые данные. Проверки приостановлены.');
     this.code = code; this.retry_after_ms = retry;
   }
@@ -72,7 +73,7 @@ export class OzonClient {
     try {
       const result = await this.browser.read({...request,headers:{}});
       if (this.signal?.aborted) throw new OzonReadError('interrupted');
-      if (result?.version !== 2 || result.request_url !== request.url || result.user_agent !== this.connection.headers['user-agent']) throw new OzonReadError('invalid_data');
+      if (result?.version !== 2 || result.request_url !== request.url || result.user_agent !== this.connection.headers['user-agent']) throw new OzonReadError('browser_unverified');
       if (!result.data || result.outcome !== 'json_received' || result.http_status !== 200) throw new OzonReadError(result.outcome,result.retry_after_ms || 0);
       if (context) {
         const verified = contextMatches(result.data,this.connection.reference,{requireLoginFlag:loginFlag});
