@@ -1,0 +1,28 @@
+[Unit]
+Description=Refresh Ozon cookies with the saved server browser
+
+[Service]
+User=ozonbrowser
+Group=ozonbrowser
+EnvironmentFile=/etc/price-checker-ozon-recovery.env
+WorkingDirectory=/opt/price-checker/current
+ExecStart=/usr/local/bin/node /opt/price-checker/current/scripts/ozon-recovery-worker.js
+StandardInput=socket
+StandardOutput=inherit
+StandardError=null
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/price-checker-ozon-browser
+MemoryMax=768M
+MemoryHigh=640M
+MemorySwapMax=128M
+CPUQuota=100%
+Nice=10
+TasksMax=256
+RuntimeMaxSec=55
+TimeoutStopSec=5
+KillMode=control-group
+Restart=no
