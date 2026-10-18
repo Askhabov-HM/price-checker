@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {realpathSync, statSync} from 'node:fs';
-import {refreshBrowser} from '../src/providers/ozon/browser-refresh.js';
+import {createInterface} from 'node:readline';
+import {createBrowserReader} from '../src/providers/ozon/browser-refresh.js';
 import {RECOVERY_LIMIT} from '../src/providers/ozon/recovery.js';
 import {validateCapturedRequest} from '../src/providers/ozon/network-capture.js';
 
@@ -12,7 +13,7 @@ const stopped = child => child ? new Promise(resolve => {
   child.once('exit', () => {clearTimeout(timer);resolve();}); child.kill('SIGTERM');
 }) : Promise.resolve();
 async function cleanup() {closing = true; await stopped(chrome); await stopped(display);}
-const timeout = setTimeout(() => {cleanup().finally(() => process.exit(1));},50000);
+const timeout = setTimeout(() => {cleanup().finally(() => process.exit(1));},590000);
 process.on('SIGTERM', () => cleanup().finally(() => process.exit(1)));
 process.stdin.on('end', () => {if (!closing) cleanup().finally(() => process.exit(1));});
 process.stdin.on('error', () => cleanup().finally(() => process.exit(1)));
@@ -23,19 +24,17 @@ try {
   const profile = process.env.OZON_BROWSER_PROFILE;
   if (!profile || realpathSync(profile) !== profile || !profile.startsWith('/var/lib/price-checker-ozon-browser/')
     || !statSync(profile).isDirectory() || statSync(profile).uid !== process.getuid()) throw Error('Invalid profile');
-  const input = await new Promise((resolve,reject) => {
-    let bytes = 0, chunks = [];
-    const receive = chunk => {
-      bytes += chunk.length;
-      if (bytes > 16384) {process.stdin.off('data',receive);reject(Error('Too large'));return;}
-      chunks.push(chunk);
-      if (!chunk.includes(10)) return;
-      process.stdin.off('data',receive);
-      try {resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));} catch {reject(Error('Invalid input'));}
-    };
-    process.stdin.on('data',receive);
+  let inputBytes = 0;
+  process.stdin.on('data',chunk => {
+    inputBytes += chunk.length;
+    if (inputBytes > 16384) cleanup().finally(() => process.exit(1));
+    if (chunk.includes(10)) inputBytes = chunk.length-chunk.lastIndexOf(10)-1;
   });
-  if (input.version !== 1) throw Error('Invalid version');
+  const lines = createInterface({input:process.stdin,crlfDelay:Infinity})[Symbol.asyncIterator]();
+  const first = await lines.next();
+  if (first.done) throw Error('No request');
+  let input = JSON.parse(first.value);
+  if (input.version !== 2 || input.id !== 1) throw Error('Invalid version');
   const request = validateCapturedRequest(input.request);
   if (!['product','favorites','cart'].includes(request.operation)) throw Error('Invalid target');
   display = spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0','1365x900x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
@@ -69,14 +68,23 @@ try {
     pending.set(id,{resolve,reject,timer});
     chrome.stdio[3].write(JSON.stringify({id,method,params,...(sessionId ? {sessionId} : {})})+'\0');
   });
-  const result = await refreshBrowser(call,request);
-  // Cookies leave this service only once Chrome and its display are stopped.
-  try {await call('Browser.close');} catch { /* Chrome can close the pipe before replying. */ }
-  await cleanup(); result.browser_closed = true;
-  const output = JSON.stringify(result)+'\n';
-  if (Buffer.byteLength(output) > RECOVERY_LIMIT) throw Error('Too large');
-  await new Promise((resolve,reject) => process.stdout.write(output,error => error ? reject(error) : resolve()));
+  const browser = await createBrowserReader(call,request);
+  let expected = 1;
+  while (true) {
+    if (input.version !== 2 || input.id !== expected++) throw Error('Invalid sequence');
+    let result;
+    if (input.close === true) {
+      try {await call('Browser.close');} catch { /* Chrome may close the pipe before replying. */ }
+      await cleanup();result = {version:2,browser_closed:true};
+    } else result = await browser.read(input.request);
+    const output = JSON.stringify({...result,id:input.id})+'\n';
+    if (Buffer.byteLength(output) > RECOVERY_LIMIT) throw Error('Too large');
+    await new Promise((resolve,reject) => process.stdout.write(output,error => error ? reject(error) : resolve()));
+    if (closing) break;
+    const next = await lines.next();
+    if (next.done || Buffer.byteLength(next.value) > 16384) break;
+    input = JSON.parse(next.value);
+  }
 } catch {
   await cleanup();
-  if (!process.stdout.destroyed) process.stdout.write('{"version":1,"failed":true}\n');
-} finally {clearTimeout(timeout);process.stdin.destroy();}
+} finally {await cleanup();clearTimeout(timeout);process.stdin.destroy();}

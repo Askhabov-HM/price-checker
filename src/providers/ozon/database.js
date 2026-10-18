@@ -111,8 +111,9 @@ export class OzonDatabase {
       this.db.prepare('UPDATE checks SET completed=completed+1 WHERE id=?').run(check);
     });
   }
-  failure(check, sku, message, now) {
-    this.db.prepare("INSERT OR IGNORE INTO observations(check_id,sku,checked_at,status,message) VALUES(?,?,?,'error',?)").run(check,sku,now,message);
+  failure(check, sku, message, now, source = 'http') {
+    if (!['http','browser'].includes(source)) throw invalid();
+    this.db.prepare("INSERT OR IGNORE INTO observations(check_id,sku,checked_at,status,message,source) VALUES(?,?,?,'error',?,?)").run(check,sku,now,message,source);
   }
   row(product) {
     const latest = this.db.prepare('SELECT * FROM observations WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);

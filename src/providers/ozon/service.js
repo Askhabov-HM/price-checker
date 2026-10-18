@@ -68,21 +68,21 @@ export class OzonService {
         if (signal.aborted) throw new OzonReadError('interrupted');
         if (index) await this.pause(2500,undefined,{signal});
         const result = await this.client.product(product.sku,product.url);
-        this.db.observe(check,result,this.stamp());
+        this.db.observe(check,result,this.stamp(),this.client.source || 'http');
         target = null;
       }
       const next = new Date(this.current()+OZON_INTERVAL_MS).toISOString();
-      this.db.updateState({not_before:next,next_check:next,action_required:0,message:''});
+      this.db.updateState({not_before:null,next_check:next,action_required:0,message:''});
       this.db.finish(check,'success',`Проверено товаров: ${targets.length}.`,this.stamp());
     } catch (error) {
       const known = error instanceof OzonReadError;
       const message = known ? error.message : signal.aborted ? 'Проверка Ozon остановлена.' : 'Не удалось проверить Ozon. Предыдущие данные сохранены.';
-      if (target) this.db.failure(check,target,message,this.stamp());
-      const wait = Math.max(OZON_INTERVAL_MS,known ? error.retry_after_ms : 0,known && error.code === 'rate_limited' ? 6*3600000 : 0);
-      const next = new Date(Math.min(this.current()+wait,8.64e15)).toISOString();
+      if (target) this.db.failure(check,target,message,this.stamp(),this.client.source || 'http');
+      const wait = Math.max(known ? error.retry_after_ms : 0,known && error.code === 'rate_limited' ? 6*3600000 : 0);
+      const next = wait ? new Date(Math.min(this.current()+wait,8.64e15)).toISOString() : null;
       this.db.updateState({not_before:next,next_check:next,action_required:1,message});
       this.db.finish(check,signal.aborted ? 'interrupted' : 'error',message,this.stamp());
-    }
+    } finally {await this.client.close?.();}
   }
   async startScheduler() {
     let release;

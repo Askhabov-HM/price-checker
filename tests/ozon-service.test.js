@@ -32,15 +32,16 @@ test('real HTTP pipeline persists two prices, survives restart, marks seller cha
   assert.equal(detail.product.regular_kopecks,100000); assert.equal(detail.product.ozon_card_kopecks,90000);
   assert.equal(detail.product.seller_id,'55'); assert.equal(detail.points.length,1);
   assert.equal(detail.product.url,TEST_OZON_URL);
-  await assert.rejects(service.start({id}),/пауза/);
-  assert.equal(calls,2);
+  assert.equal(service.status().not_before,null);
+  await service.start({id});await service.running;
+  assert.equal(calls,4);
   await service.close();
   now += OZON_INTERVAL_MS + 1; seller = '66';
   service = new OzonService(root,{client:client(),current:() => now});
   cleanup(t,() => service.close());
   await service.start({id}); await service.running;
   detail = service.db.detail(id,0,now);
-  assert.equal(detail.points.length,2); assert.equal(detail.seller_events.length,1);
+  assert.equal(detail.points.length,3); assert.equal(detail.seller_events.length,1);
   assert.deepEqual([detail.seller_events[0].old_name,detail.seller_events[0].new_name],['Продавец 55','Продавец 66']);
   now += OZON_INTERVAL_MS + 1; blocked = true;
   const previousCalls = calls;
@@ -54,6 +55,17 @@ test('real HTTP pipeline persists two prices, survives restart, marks seller cha
   assert.doesNotMatch(JSON.stringify(service.status()),/synthetic-session|Synthetic test address|account_id|delivery_digest|private-response/);
   now += 86400000; await assert.rejects(service.start({id}),/приостановлены/);
   assert.deepEqual(readFileSync(join(root,'.data/prices.sqlite3')),before);
+});
+
+test('only an explicit source pause or a 429 creates a manual backoff',async t => {
+  for (const [status,retry,wait] of [[503,null,0],[403,'120',120000],[429,null,6*3600000],[429,'30000',30000000]]) {
+    const root=temporary(t);await connectTestOzon(root);const now=Date.now();
+    const service=new OzonService(root,{current:() => now,client:new OzonClient(root,{browser:null,fetchImpl:async () =>
+      new Response('',{status,headers:retry ? {'Retry-After':retry} : {}})})});
+    cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);await service.start({id});await service.running;
+    assert.equal(service.status().not_before,wait ? new Date(now+wait).toISOString() : null);
+    assert.equal(service.status().schedule_enabled,false);
+  }
 });
 
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {

@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh Ozon cookies with the saved server browser
+Description=Read Ozon products with the saved server browser
 
 [Service]
 User=ozonbrowser
@@ -22,7 +22,7 @@ MemorySwapMax=128M
 CPUQuota=100%
 Nice=10
 TasksMax=256
-RuntimeMaxSec=55
+RuntimeMaxSec=600
 TimeoutStopSec=5
 KillMode=control-group
 Restart=no

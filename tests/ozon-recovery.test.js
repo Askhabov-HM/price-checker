@@ -2,158 +2,153 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {OzonClient} from '../src/providers/ozon/client.js';
-import {OzonService} from '../src/providers/ozon/service.js';
-import {refreshBrowser} from '../src/providers/ozon/browser-refresh.js';
-import {acquireInstance, AlreadyRunning} from '../src/instance.js';
+import {runInNewContext} from 'node:vm';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
-import {browserRecovery} from '../src/providers/ozon/recovery.js';
-import {temporary, cleanup} from './helpers.js';
-import {connectTestOzon, ozonPage, jsonResponse, TEST_OZON_URL} from './ozon-fixture.js';
+import {OzonClient} from '../src/providers/ozon/client.js';
+import {OzonService} from '../src/providers/ozon/service.js';
+import {createBrowserReader} from '../src/providers/ozon/browser-refresh.js';
+import {browserCollection} from '../src/providers/ozon/recovery.js';
+import {acquireInstance,AlreadyRunning} from '../src/instance.js';
+import {temporary,cleanup} from './helpers.js';
+import {connectTestOzon,ozonPage,jsonResponse,TEST_OZON_URL} from './ozon-fixture.js';
 
-const exported = request => ({version:1,request_url:request.url,browser_closed:true,user_agent:'Synthetic test browser',data:ozonPage(),
-  cookies:[{name:'session',value:'fresh-synthetic',domain:'.ozon.ru',path:'/',secure:true,httpOnly:true,session:true}]});
+const requestFor = page => ({method:'GET',url:'https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url='+encodeURIComponent(page),headers:{}});
+const exported = request => ({version:2,request_url:request.url,user_agent:'Synthetic test browser',http_status:200,retry_after_ms:0,outcome:'json_received',
+  data:ozonPage({sku:request.external_id || '123'})});
+const fakeBrowser = read => ({read,close:async () => {}});
 
-test('403 refreshes once under the existing collection lock, persists cookies and records only the HTTP success', async t => {
-  const root = temporary(t); await connectTestOzon(root); let calls = 0, recoveries = 0;
-  const client = new OzonClient(root,{recover:async ({request}) => {
-    recoveries++; assert.deepEqual(request.headers,{});
-    // Another collector cannot start while the browser is running.
-    await assert.rejects(acquireInstance(join(root,'.data/ozon/collector.lock')),AlreadyRunning);
-    return exported(request);
-  },fetchImpl:async (url,options) => {
-    calls++;
-    if (calls === 1) return new Response('',{status:403});
-    assert.match(options.headers.cookie,/fresh-synthetic/);
-    return jsonResponse(ozonPage());
+test('403 switches the whole queue to one browser under the collector lock and saves browser prices without an HTTP retry',async t => {
+  const root = temporary(t);await connectTestOzon(root);let http = 0,browsers = 0,closed = 0;
+  const path = join(root,'.secrets/ozon/session.json'),before = readFileSync(path),reads = [];
+  const client = new OzonClient(root,{fetchImpl:async () => {http++;return new Response('',{status:403});},browser:async () => {
+    browsers++;await assert.rejects(acquireInstance(join(root,'.data/ozon/collector.lock')),AlreadyRunning);
+    return {read:async request => {assert.deepEqual(request.headers,{});reads.push(request.operation);return exported(request);},close:async () => {closed++;}};
   }});
-  const service = new OzonService(root,{client}); cleanup(t,() => service.close());
-  const id = service.watch(TEST_OZON_URL);
-  await service.start({id}); await service.running;
-  assert.equal(calls,3); // Failed card, one control card, bank conditions.
-  assert.equal(recoveries,1); assert.equal(service.status().action_required,false);
-  assert.equal(service.status().schedule_enabled,false);
-  const detail = service.db.detail(id,0);
-  assert.equal(detail.points.length,1); assert.equal(detail.points[0].source,'http');
-  assert.equal(detail.product.ozon_card_kopecks,90000);
-  const restarted = new OzonClient(root,{recover:null,fetchImpl:async (url,options) => {
-    assert.match(options.headers.cookie,/fresh-synthetic/);return jsonResponse(ozonPage());
-  }});
-  await restarted.open(); await restarted.product('123');
-});
-
-test('second 403 stops the queue and cannot launch a second browser, including a later bank request', async t => {
-  for (const failAt of [2,3]) {
-    const root = temporary(t); await connectTestOzon(root); let calls = 0, recoveries = 0;
-    const client = new OzonClient(root,{recover:async ({request}) => {recoveries++;return exported(request);},
-      fetchImpl:async url => {
-        const page = new URL(url).searchParams.get('url');
-        if (page.startsWith('/my/favorites') || page === '/cart') return jsonResponse(ozonPage());
-        assert.doesNotMatch(page,/456/); // The second queued product must never be requested.
-        calls++;return calls === 1 || calls >= failAt ? new Response('',{status:403}) : jsonResponse(ozonPage());
-      }});
-    const service = new OzonService(root,{client}); cleanup(t,() => service.close());
-    service.watch(TEST_OZON_URL); service.watch('https://www.ozon.ru/product/456/');
-    await service.start(); await service.running;
-    assert.equal(calls,failAt); assert.equal(recoveries,1);assert.equal(service.status().action_required,true);
-    assert.equal(service.db.detail('ozon:item:123',0).points.length,1);
-    await assert.rejects(service.start(),/приостановлены/);
+  const service = new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
+  service.watch(TEST_OZON_URL);service.watch('https://www.ozon.ru/product/456/');
+  await service.start();await service.running;
+  assert.equal(http,1);assert.equal(browsers,1);assert.equal(closed,1);
+  assert.deepEqual(reads,['favorites','cart','product','banks','product','banks']);
+  assert.equal(service.status().action_required,false);assert.equal(service.status().schedule_enabled,false);assert.equal(service.status().not_before,null);
+  for (const sku of ['123','456']) {
+    const detail = service.db.detail('ozon:item:'+sku,0);
+    assert.equal(detail.points.length,1);assert.equal(detail.points[0].source,'browser');assert.equal(detail.product.ozon_card_kopecks,90000);
   }
-});
-
-test('wrong account, address, SKU, browser UA or unclosed browser cannot replace saved cookies', async t => {
-  for (const change of [value => {value.data = ozonPage({account:999});}, value => {value.data.location.current.uid = 'other';},
-    value => {value.data = ozonPage({sku:'456'});}, value => {value.user_agent = 'different';}, value => {value.browser_closed = false;},
-    value => {value.cookies[0].partitionKeyOpaque = true;}]) {
-    const root = temporary(t); await connectTestOzon(root);
-    const path = join(root,'.secrets/ozon/session.json'), before = readFileSync(path);
-    let calls = 0;
-    const client = new OzonClient(root,{fetchImpl:async () => {calls++;return new Response('',{status:403});},
-      recover:async ({request}) => {const value = exported(request);change(value);return value;}});
-    await client.open(); await assert.rejects(client.product('123'));
-    assert.equal(calls,1);assert.deepEqual(readFileSync(path),before);
-  }
-});
-
-test('429, 401, network failure, 403 Retry-After and cancellation do not trigger browser recovery', async t => {
-  for (const status of [429,401,503,403,0]) {
-    const root = temporary(t); await connectTestOzon(root);let recoveries = 0;
-    const client = new OzonClient(root,{fetchImpl:async () => {
-      if (!status) throw Error('network');
-      return new Response('',{status,headers:{'Retry-After':'120'}});
-    },recover:async () => {recoveries++;throw Error('should not run');}});
-    await client.open();await assert.rejects(client.product('123'));assert.equal(recoveries,0);
-  }
-  const root = temporary(t);await connectTestOzon(root);const controller = new AbortController();
-  const path = join(root,'.secrets/ozon/session.json'), before = readFileSync(path);
-  const client = new OzonClient(root,{fetchImpl:async () => new Response('',{status:403}),recover:async ({request}) => {
-    controller.abort();return exported(request);
-  }});
-  await client.open(controller.signal);await assert.rejects(client.product('123'),error => error.code === 'interrupted');
   assert.deepEqual(readFileSync(path),before);
 });
 
-test('browser refresh permits one navigation and one fixed API fetch; it cannot mutate the account', async () => {
-  const calls = [], request = {method:'GET',url:'https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=%2Fproduct%2F123%2F'};
-  const call = async (method,params) => {
+test('a browser 403 stops the queue and cannot open another browser or fall back to HTTP',async t => {
+  const root = temporary(t);await connectTestOzon(root);let http = 0,browsers = 0,reads = 0,closed = 0;
+  const client = new OzonClient(root,{fetchImpl:async url => {
+    http++;const page = new URL(url).searchParams.get('url');
+    return page.startsWith('/my/favorites') || page === '/cart' ? jsonResponse(ozonPage()) : new Response('',{status:403});
+  },browser:async () => {
+    browsers++;return {read:async request => {
+      reads++;assert.equal(request.external_id,'123');
+      return reads === 2 ? {...exported(request),data:null,http_status:403,outcome:'access_limited'} : exported(request);
+    },close:async () => {closed++;}};
+  }});
+  const service = new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
+  service.watch(TEST_OZON_URL);service.watch('https://www.ozon.ru/product/456/');
+  await service.start();await service.running;
+  assert.equal(http,3);assert.equal(browsers,1);assert.equal(reads,2);assert.equal(closed,1);
+  assert.equal(service.status().action_required,true);assert.equal(service.status().not_before,null);
+  assert.equal(service.db.detail('ozon:item:123',0).points[0].source,'browser');
+  assert.equal(service.db.detail('ozon:item:456',0).points.length,0);
+});
+
+test('a different account, delivery, SKU, user agent or request identity cannot save browser prices',async t => {
+  for (const change of [value => {value.data = ozonPage({account:999});},value => {value.data.location.current.uid='other';},
+    value => {value.data = ozonPage({sku:'456'});},value => {value.user_agent='different';},value => {value.request_url='https://other.test/';},value => {value.version=1;}]) {
+    const root = temporary(t);await connectTestOzon(root);let http=0;
+    const client = new OzonClient(root,{fetchImpl:async () => {http++;return new Response('',{status:403});},
+      browser:async () => fakeBrowser(async request => {const value=exported(request);change(value);return value;})});
+    const service = new OzonService(root,{client});cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);
+    await service.start({id});await service.running;
+    assert.equal(http,1);assert.equal(service.db.detail(id,0).product.regular_kopecks,null);assert.equal(service.status().action_required,true);
+  }
+});
+
+test('429, 401, network errors and explicit Retry-After do not start a browser; cancellation closes it',async t => {
+  for (const status of [429,401,503,403,0]) {
+    const root=temporary(t);await connectTestOzon(root);let browsers=0;
+    const client=new OzonClient(root,{fetchImpl:async () => {
+      if (!status) throw Error('network');return new Response('',{status,headers:{'Retry-After':'120'}});
+    },browser:async () => {browsers++;throw Error('Must not run');}});
+    await client.open();await assert.rejects(client.product('123'));assert.equal(browsers,0);await client.close();
+  }
+  const root=temporary(t);await connectTestOzon(root);const controller=new AbortController();let closed=0;
+  const client=new OzonClient(root,{fetchImpl:async () => new Response('',{status:403}),browser:async () => ({
+    read:async request => {controller.abort();return exported(request);},close:async () => {closed++;},
+  })});
+  await client.open(controller.signal);await assert.rejects(client.product('123'),error => error.code==='interrupted');await client.close();assert.equal(closed,1);
+});
+
+test('403 on bank conditions verifies the browser product first and then reads banks without another HTTP request',async t => {
+  const root=temporary(t);await connectTestOzon(root);const reads=[];let http=0;
+  const client=new OzonClient(root,{fetchImpl:async () => ++http===1 ? jsonResponse(ozonPage()) : new Response('',{status:403}),
+    browser:async () => fakeBrowser(async request => {reads.push(request.operation);return exported(request);})});
+  await client.open();assert.equal((await client.product('123')).prices.ozon_card_kopecks,90000);await client.close();
+  assert.equal(http,2);assert.deepEqual(reads,['product','banks']);
+});
+
+async function readerHarness(fetchImpl) {
+  const calls=[];
+  const call=async (method,params) => {
     calls.push([method,params]);
-    if (method === 'Browser.getVersion') return {userAgent:'Synthetic test browser'};
-    if (method === 'Target.createTarget') return {targetId:'test'};
-    if (method === 'Target.attachToTarget') return {sessionId:'test'};
-    if (method === 'Runtime.evaluate') return {result:{value:params.awaitPromise ? ozonPage() : {origin:'https://www.ozon.ru',path:'/product/123/',ready:'complete'}}};
-    if (method === 'Storage.getCookies') return {cookies:exported(request).cookies};
+    if (method==='Browser.getVersion') return {userAgent:'Synthetic test browser'};
+    if (method==='Target.createTarget') return {targetId:'synthetic'};
+    if (method==='Target.attachToTarget') return {sessionId:'synthetic'};
+    if (method==='Runtime.evaluate') return {result:{value:params.awaitPromise
+      ? await runInNewContext(params.expression,{fetch:fetchImpl,AbortSignal,TextDecoder,Uint8Array,Date})
+      : {origin:'https://www.ozon.ru',path:'/product/canonical-item-123/',ready:'complete'}}};
     return {};
   };
-  const result = await refreshBrowser(call,request,{pause:async () => {}});
-  assert.equal(result.request_url,request.url);
-  assert.equal(calls.filter(([method]) => method === 'Page.navigate').length,1);
-  const reads = calls.filter(([method,params]) => method === 'Runtime.evaluate' && params.awaitPromise);
-  assert.equal(reads.length,1);assert.match(reads[0][1].expression,/redirect:"error"/);
-  await assert.rejects(refreshBrowser(call,{...request,method:'POST'}));
-  await assert.rejects(refreshBrowser(call,{...request,url:'https://evil.test/'}));
+  return {reader:await createBrowserReader(call,requestFor('/product/123/'),{pause:async () => {}}),calls};
+}
+
+test('the browser navigates once, reads only validated GET URLs, bounds responses and confines banks to the latest SKU',async () => {
+  const {reader,calls}=await readerHarness(async (url,options) => {
+    assert.equal(options.credentials,'include');assert.equal(options.redirect,'error');return jsonResponse(ozonPage());
+  });
+  const product=requestFor('/product/123/'),banks=requestFor('/modal/pdpListOfBanks?product_id=123');
+  assert.equal((await reader.read(product)).outcome,'json_received');assert.equal((await reader.read(banks)).http_status,200);
+  await assert.rejects(reader.read(requestFor('/modal/pdpListOfBanks?product_id=456')));
+  await assert.rejects(reader.read({...product,method:'POST'}));await assert.rejects(reader.read({...product,url:'https://evil.test/'}));
+  assert.equal(calls.filter(([method]) => method==='Page.navigate').length,1);
+  assert.equal(calls.filter(([method,params]) => method==='Runtime.evaluate' && params.awaitPromise).length,2);
+  assert.equal(calls.some(([method]) => method==='Storage.getCookies'),false);
 });
 
-test('socket refresh handles split replies and closes a stalled worker connection on cancellation', {skip:process.platform === 'win32'}, async t => {
-  const root = temporary(t), path = join(root,'recovery.sock'), sockets = new Set();
-  let mode = 'reply', disconnected;
-  const server = createServer(socket => {
-    const stalled = mode === 'stall';
-    sockets.add(socket);socket.on('close',() => {sockets.delete(socket);if (stalled) disconnected?.();});
+test('browser responses preserve rate limits and reject HTML, oversized bodies and network failures without exposing raw data',async () => {
+  for (const [fetchImpl,outcome] of [
+    [async () => new Response('private',{status:429,headers:{'Retry-After':'7200'}}),'rate_limited'],
+    [async () => new Response('private',{status:401}),'login_required'],
+    [async () => new Response('private',{status:403}),'access_limited'],
+    [async () => new Response('private',{headers:{'Content-Type':'text/html'}}),'unexpected_content'],
+    [async () => new Response('x'.repeat(8388609),{headers:{'Content-Type':'application/json'}}),'response_too_large'],
+    [async () => {throw Error('private-network');},'network_error'],
+  ]) {
+    const {reader}=await readerHarness(fetchImpl);const result=await reader.read(requestFor('/product/123/'));
+    assert.equal(result.outcome,outcome);assert.doesNotMatch(JSON.stringify(result),/private/);
+    if (outcome==='rate_limited') assert.equal(result.retry_after_ms,7200000);
+  }
+});
+
+test('one socket supports sequential split replies and cancellation disconnects the worker',{skip:process.platform==='win32'},async t => {
+  const root=temporary(t),path=join(root,'browser.sock'),sockets=new Set();let mode='reply',disconnected;
+  const server=createServer(socket => {
+    const stalled=mode==='stall';sockets.add(socket);socket.on('close',() => {sockets.delete(socket);if(stalled)disconnected?.();});
     socket.on('data',chunk => {
-      const input = JSON.parse(chunk.toString('utf8'));assert.equal(input.version,1);
-      if (mode === 'reply') {socket.write('{"version":');setImmediate(() => socket.end('1}\n'));}
+      const input=JSON.parse(chunk.toString('utf8'));assert.equal(input.version,2);
+      if (mode==='reply') {const response=JSON.stringify({version:2,id:input.id,browser_closed:input.close===true})+'\n';socket.write(response.slice(0,5));setImmediate(() => socket.write(response.slice(5)));}
     });
   });
-  server.listen(path);await once(server,'listening');
-  t.after(async () => {for(const socket of sockets) socket.destroy();await new Promise(resolve => server.close(resolve));});
-  assert.deepEqual(await browserRecovery({request:{}},{path}),{version:1});
-  mode = 'stall';const controller = new AbortController();
-  const closed = new Promise(resolve => {disconnected = resolve;});
-  const pending = browserRecovery({request:{},signal:controller.signal},{path});
-  await once(server,'connection');controller.abort();
-  await assert.rejects(pending,/Recovery unavailable/);await closed;
-});
-
-test('control HTTP redirect stops without following it or starting another browser', async t => {
-  const root = temporary(t);await connectTestOzon(root);let calls = 0, recoveries = 0;
-  const client = new OzonClient(root,{recover:async ({request}) => {recoveries++;return exported(request);},fetchImpl:async () => {
-    calls++;
-    return calls === 1 ? new Response('',{status:403}) : new Response('',{status:307,headers:{location:'/api/entrypoint-api.bx/page/json/v2?url=%2Fproduct%2F123%2F&__rr=1'}});
-  }});
-  await client.open();await assert.rejects(client.product('123'));assert.equal(calls,2);assert.equal(recoveries,1);
-});
-
-test('a first 403 on bank conditions refreshes the same SKU card and retries only the failed bank read', async t => {
-  const root = temporary(t);await connectTestOzon(root);const pages = [];let recoveries = 0;
-  const client = new OzonClient(root,{recover:async ({request}) => {
-    recoveries++;assert.equal(request.operation,'product');assert.equal(request.external_id,'123');return exported(request);
-  },fetchImpl:async url => {
-    const page = new URL(url).searchParams.get('url');pages.push(page);
-    return pages.length === 2 ? new Response('',{status:403}) : jsonResponse(ozonPage());
-  }});
-  await client.open();const product = await client.product('123');
-  assert.equal(product.prices.ozon_card_kopecks,90000);
-  assert.equal(recoveries,1);assert.equal(pages.length,3);assert.equal(pages[1],pages[2]);
-  assert.equal(pages[0],'/product/123/');
+  server.listen(path);await once(server,'listening');t.after(async () => {for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));});
+  const browser=browserCollection({},{path});
+  assert.equal((await browser.read(requestFor('/product/123/'))).id,1);assert.equal((await browser.read(requestFor('/cart'))).id,2);await browser.close();
+  mode='stall';const controller=new AbortController(),closed=new Promise(resolve=>{disconnected=resolve;});
+  const stalled=browserCollection({signal:controller.signal},{path}),pending=stalled.read(requestFor('/product/123/'));
+  await once(server,'connection');controller.abort();await assert.rejects(pending,/Browser unavailable/);await closed;
 });

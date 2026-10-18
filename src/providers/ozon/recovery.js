@@ -1,32 +1,45 @@
 import {connect} from 'node:net';
 import {existsSync} from 'node:fs';
+import {validateCapturedRequest} from './network-capture.js';
 
 export const RECOVERY_SOCKET = '/run/price-checker-ozon-recovery.sock';
 export const RECOVERY_LIMIT = 12 * 1024 * 1024;
 
-// The socket is owned by the application user. No shell, root command or public CDP port.
-export function browserRecovery({request, signal}, {path = RECOVERY_SOCKET, timeoutMs = 60000} = {}) {
-  if (!existsSync(path) || signal?.aborted) return Promise.reject(new Error('Recovery unavailable'));
-  return new Promise((resolve, reject) => {
-    const socket = connect(path); let bytes = 0, chunks = [], settled = false;
-    const finish = (error, value) => {
-      if (settled) return; settled = true;
-      clearTimeout(timer); signal?.removeEventListener('abort', abort); socket.destroy();
-      error ? reject(new Error('Recovery unavailable')) : resolve(value);
-    };
-    const abort = () => finish(true);
-    const timer = setTimeout(abort, timeoutMs);
-    signal?.addEventListener('abort', abort, {once:true});
-    socket.on('error', abort);
-    socket.on('end', abort);
-    socket.on('connect', () => socket.write(JSON.stringify({version:1,request})+'\n'));
-    socket.on('data', chunk => {
-      bytes += chunk.length;
-      if (bytes > RECOVERY_LIMIT) return abort();
-      chunks.push(chunk);
-      if (!chunk.includes(10)) return;
-      try {finish(false, JSON.parse(Buffer.concat(chunks).toString('utf8')));} catch {abort();}
-    });
-    if (signal?.aborted) abort();
+// One private socket and one browser for the remaining reads in this collection.
+export function browserCollection({signal} = {}, {path = RECOVERY_SOCKET, timeoutMs = 60000} = {}) {
+  if (!existsSync(path) || signal?.aborted) throw new Error('Browser unavailable');
+  const socket = connect(path);
+  let sequence = 0, pending, buffer = Buffer.alloc(0), closed = false;
+  const fail = () => {
+    closed = true;socket.destroy();signal?.removeEventListener('abort',fail);
+    if (pending) {clearTimeout(pending.timer);pending.reject(new Error('Browser unavailable'));pending = null;}
+  };
+  signal?.addEventListener('abort',fail,{once:true});
+  socket.on('error',fail);socket.on('end',fail);socket.on('close',fail);
+  socket.on('data',chunk => {
+    buffer = Buffer.concat([buffer,chunk]);
+    if (buffer.length > RECOVERY_LIMIT) return fail();
+    const newline = buffer.indexOf(10);
+    if (newline < 0) return;
+    try {
+      const value = JSON.parse(buffer.subarray(0,newline).toString('utf8'));
+      if (!pending || value.version !== 2 || value.id !== pending.id || newline !== buffer.length-1) return fail();
+      buffer = Buffer.alloc(0);
+      const current = pending;pending = null;clearTimeout(current.timer);current.resolve(value);
+    } catch {fail();}
   });
+  const send = (message, timeout = timeoutMs) => new Promise((resolve,reject) => {
+    if (closed || signal?.aborted || pending) return reject(new Error('Browser unavailable'));
+    const id = ++sequence,timer = setTimeout(fail,timeout);
+    pending = {id,timer,resolve,reject};
+    socket.write(JSON.stringify({version:2,id,...message})+'\n');
+  });
+  return {
+    read(request) {const verified = validateCapturedRequest(request);return send({request:{...verified,headers:{}}});},
+    async close() {
+      if (closed) return;
+      try {await send({close:true},5000);} catch { /* Disconnect also terminates the worker. */ }
+      finally {fail();}
+    },
+  };
 }

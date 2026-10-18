@@ -7,8 +7,7 @@ import {OzonSession} from './session.js';
 import {validateCapturedRequest} from './network-capture.js';
 import {contextMatches, bankConditionsRequest} from './account-context.js';
 import {latestFavorites, parseCartPage, parseProductPage} from './parser.js';
-import {browserRecovery} from './recovery.js';
-import {importOzonConnection} from './connection.js';
+import {browserCollection} from './recovery.js';
 import {ozonProduct} from './url.js';
 
 export class OzonReadError extends Error {
@@ -27,18 +26,19 @@ const privateJson = path => {
   try {return JSON.parse(readFileSync(path,'utf8'));} catch {throw new ValidationError('Нужно обновить подключение Ozon.');}
 };
 export class OzonClient {
-  constructor(root, {fetchImpl = fetch, recover = browserRecovery} = {}) {
-    this.root = root; this.directory = join(root,'.secrets/ozon'); this.fetchImpl = fetchImpl; this.recover = recover;
+  constructor(root, {fetchImpl = fetch, browser = browserCollection} = {}) {
+    this.root = root; this.directory = join(root,'.secrets/ozon'); this.fetchImpl = fetchImpl; this.createBrowser = browser;
   }
   configured() {return existsSync(join(this.directory,'connection.json')) && existsSync(join(this.directory,'session.json'));}
   async open(signal) {
+    await this.close();
     this.connection = privateJson(join(this.directory,'connection.json'));
     const config = this.connection;
     if (config.version !== 1 || config.top_level_site !== 'https://ozon.ru' || config.has_cross_site_ancestor !== false
       || !/^[1-9]\d{0,19}$/.test(config.reference?.account_id) || !/^[a-f0-9]{64}$/.test(config.reference?.delivery_digest)) throw new ValidationError('Нужно обновить подключение Ozon.');
     this.session = await OzonSession.open(join(this.directory,'session.json'),'bootstrap=disabled');
     this.signal = signal;
-    this.recoveryUsed = false;
+    this.source = 'http';
     return createHash('sha256').update(JSON.stringify(config.reference)).digest('hex');
   }
   request(path) {
@@ -46,25 +46,16 @@ export class OzonClient {
   }
   async read(request, {loginFlag = false, context = true} = {}) {
     if (this.signal?.aborted) throw new OzonReadError('interrupted');
+    if (this.browser) return this.readBrowser(request,{loginFlag,context});
     if (!await this.session.header(request.url)) throw new OzonReadError('login_required');
-    let result = await requestOzonJson(request, {session:this.session,fetchImpl:this.fetchImpl,signal:this.signal});
-    // One recovery for the entire collection, only for a real 403 without Retry-After.
-    if (result.summary.http_status === 403 && !result.summary.retry_after_ms && !this.recoveryUsed && this.recover && !this.signal?.aborted) {
-      this.recoveryUsed = true;
-      const probe = request.operation === 'banks' ? this.request('/product/'+request.external_id+'/') : request;
+    const result = await requestOzonJson(request, {session:this.session,fetchImpl:this.fetchImpl,signal:this.signal});
+    // After 403, keep the remaining collection inside one saved browser session.
+    if (result.summary.http_status === 403 && !result.summary.retry_after_ms && this.createBrowser && !this.signal?.aborted) {
       try {
-        const refreshed = await this.recover({request:{...probe,headers:{}},signal:this.signal});
-        if (this.signal?.aborted) throw new Error('Interrupted');
-        if (refreshed?.version !== 1 || refreshed.request_url !== probe.url || refreshed.browser_closed !== true
-          || refreshed.user_agent !== this.connection.headers['user-agent']) throw new Error('Unverified browser');
-        const verified = contextMatches(refreshed.data,this.connection.reference,{requireLoginFlag:probe.operation === 'favorites'});
-        if (!verified.account_verified || !verified.delivery_verified) throw new OzonReadError('context_mismatch');
-        if (probe.operation === 'product') parseProductPage(refreshed.data,probe.external_id);
-        await importOzonConnection(this.root,{request:probe,reference:this.connection.reference},refreshed);
-        this.session = await OzonSession.open(join(this.directory,'session.json'),'bootstrap=disabled');
-        if (this.signal?.aborted) throw new Error('Interrupted');
-        // Exactly one control GET, with no redirect retries; normal parsing still applies below.
-        result = await requestOzonJson(request,{session:this.session,fetchImpl:this.fetchImpl,signal:this.signal,maxRedirects:0});
+        this.browser = await this.createBrowser({signal:this.signal});
+        this.source = 'browser';
+        if (request.operation === 'banks') await this.readBrowser(this.request('/product/'+request.external_id+'/'));
+        return await this.readBrowser(request,{loginFlag,context});
       } catch (error) {
         if (error instanceof OzonReadError) throw error;
         throw new OzonReadError(this.signal?.aborted ? 'interrupted' : 'access_limited');
@@ -77,6 +68,24 @@ export class OzonClient {
     }
     return result.data;
   }
+  async readBrowser(request, {loginFlag = false,context = true} = {}) {
+    try {
+      const result = await this.browser.read({...request,headers:{}});
+      if (this.signal?.aborted) throw new OzonReadError('interrupted');
+      if (result?.version !== 2 || result.request_url !== request.url || result.user_agent !== this.connection.headers['user-agent']) throw new OzonReadError('invalid_data');
+      if (!result.data || result.outcome !== 'json_received' || result.http_status !== 200) throw new OzonReadError(result.outcome,result.retry_after_ms || 0);
+      if (context) {
+        const verified = contextMatches(result.data,this.connection.reference,{requireLoginFlag:loginFlag});
+        if (!verified.account_verified || !verified.delivery_verified) throw new OzonReadError('context_mismatch');
+      }
+      if (request.operation === 'product') parseProductPage(result.data,request.external_id);
+      return result.data;
+    } catch (error) {
+      if (error instanceof OzonReadError) throw error;
+      throw new OzonReadError(this.signal?.aborted ? 'interrupted' : 'access_limited');
+    }
+  }
+  async close() {const browser = this.browser;this.browser = null;await browser?.close();}
   async lists() {
     const pages = [];
     let path = '/my/favorites?sorting=last_added', favorites;
