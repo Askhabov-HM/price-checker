@@ -59,6 +59,7 @@ export class OzonService {
         const lists = await this.client.lists();
         this.db.syncLists(lists.favorites,lists.cart,this.stamp());
       }
+      this.db.snapshotLists(check);
       const targets = id ? [this.db.product(itemSku(id))] : this.db.targets();
       if (targets.length > 100) throw new OzonReadError('invalid_data');
       this.db.progress(check,targets.length);
@@ -66,7 +67,7 @@ export class OzonService {
         target = product.sku;
         if (signal.aborted) throw new OzonReadError('interrupted');
         if (index) await this.pause(2500,undefined,{signal});
-        const result = await this.client.product(product.sku);
+        const result = await this.client.product(product.sku,product.url);
         this.db.observe(check,result,this.stamp());
         target = null;
       }

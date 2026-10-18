@@ -20,6 +20,7 @@ test('real HTTP pipeline persists two prices, survives restart, marks seller cha
   const client = () => new OzonClient(root,{fetchImpl:async (url,options) => {
     calls++; assert.equal(options.method,'GET'); assert.equal(options.redirect,'manual'); assert.match(options.headers.cookie,/synthetic-session/);
     assert.equal(new URL(url).origin,'https://www.ozon.ru');
+    if (new URL(url).searchParams.get('url').startsWith('/product/')) assert.equal(new URL(url).searchParams.get('url'),'/product/test-item-123/');
     return blocked ? new Response('private-response',{status:403}) : jsonResponse(ozonPage({seller}));
   }});
   let service = new OzonService(root,{client:client(),current:() => now});
@@ -30,6 +31,7 @@ test('real HTTP pipeline persists two prices, survives restart, marks seller cha
   let detail = service.db.detail(id,0);
   assert.equal(detail.product.regular_kopecks,100000); assert.equal(detail.product.ozon_card_kopecks,90000);
   assert.equal(detail.product.seller_id,'55'); assert.equal(detail.points.length,1);
+  assert.equal(detail.product.url,TEST_OZON_URL);
   await assert.rejects(service.start({id}),/пауза/);
   assert.equal(calls,2);
   await service.close();

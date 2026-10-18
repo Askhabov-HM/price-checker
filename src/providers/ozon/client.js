@@ -9,13 +9,15 @@ import {contextMatches, bankConditionsRequest} from './account-context.js';
 import {latestFavorites, parseCartPage, parseProductPage} from './parser.js';
 import {browserRecovery} from './recovery.js';
 import {importOzonConnection} from './connection.js';
+import {ozonProduct} from './url.js';
 
 export class OzonReadError extends Error {
   constructor(code, retry = 0) {
     const messages = {access_limited:'Ozon ограничил доступ. Проверки приостановлены.',login_required:'Нужно обновить вход в Ozon.',
       context_mismatch:'Аккаунт или адрес Ozon не подтверждён. Проверки приостановлены.',rate_limited:'Ozon попросил снизить частоту. Проверки приостановлены.',
       incomplete_data:'Получен неполный список Ozon. Предыдущий состав сохранён.',invalid_data:'Не удалось подтвердить данные Ozon.',
-      network_error:'Не удалось получить ответ Ozon. Повтор отложен.',interrupted:'Проверка Ozon остановлена.'};
+      network_error:'Не удалось получить ответ Ozon. Повтор отложен.',interrupted:'Проверка Ozon остановлена.',
+      redirect:'Ozon перенаправил запрос на неподтверждённую страницу. Проверки приостановлены.'};
     super(messages[code] || 'Ozon не вернул подтверждённые данные. Проверки приостановлены.');
     this.code = code; this.retry_after_ms = retry;
   }
@@ -91,8 +93,10 @@ export class OzonClient {
     try {cart = parseCartPage(data);} catch {throw new OzonReadError('incomplete_data');}
     return {favorites:favorites.items,cart:cart.items};
   }
-  async product(sku) {
-    const request = this.request('/product/'+sku+'/');
+  async product(sku, url = 'https://www.ozon.ru/product/'+sku+'/') {
+    const identity = ozonProduct(url);
+    if (identity.external_id !== sku) throw new OzonReadError('invalid_data');
+    const request = this.request(new URL(identity.url).pathname);
     const data = await this.read(request);
     try {
       let product = parseProductPage(data,sku);
@@ -100,7 +104,7 @@ export class OzonClient {
         const banks = bankConditionsRequest(data,request);
         if (banks) product = parseProductPage(data,sku,{external_id:sku,data:await this.read(banks,{context:false})});
       }
-      return product;
+      return {...product,url:identity.url};
     } catch (error) {if (error instanceof OzonReadError) throw error; throw new OzonReadError('invalid_data');}
   }
 }

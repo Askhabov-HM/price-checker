@@ -27,6 +27,13 @@ test('Ozon route shows real stored prices, isolated lists and a chart after one 
     await page.getByRole('button',{name:'Проверить',exact:true}).click();
     await expect(page.getByText('Тестовый товар Ozon',{exact:true})).toBeVisible();
     await expect(page.getByText('Продавец 55',{exact:true})).toBeVisible();
+    await expect(page.locator('#ozon-overview-chart .recharts-line-dot')).toHaveCount(1);
+    await expect(page.locator('.ozon-sparkline .recharts-line-dot')).toHaveCount(1);
+    await expect(page.getByText('Первая точка сохранена.',{exact:false})).toBeVisible();
+    await page.getByLabel('Тип цены Ozon').selectOption('regular');
+    await expect(page).toHaveURL(/price=regular/);
+    await expect(page.locator('#ozon-overview-chart .recharts-line-dot')).toHaveCount(1);
+    await page.getByLabel('Тип цены Ozon').selectOption('ozon_card');
     await page.getByRole('button',{name:'История',exact:true}).click();
     await expect(page.locator('#ozon-detail-chart')).toBeVisible();
     await expect(page.locator('#ozon-detail-chart .recharts-line-dot')).toHaveCount(1);
@@ -35,6 +42,7 @@ test('Ozon route shows real stored prices, isolated lists and a chart after one 
     await expect(page).toHaveURL(/price=regular/);
     await page.screenshot({path:testInfo.outputPath('ozon-desktop.png'),fullPage:true});
     await page.keyboard.press('Escape');
+    await page.screenshot({path:testInfo.outputPath('ozon-overview-desktop.png'),fullPage:true});
     await page.getByRole('button',{name:/Избранное · 0/}).click();
     await expect(page.getByText('Добавьте ссылку на товар или обновите списки аккаунта.',{exact:false})).toBeVisible();
     await page.getByRole('link',{name:'Randewoo',exact:true}).click();
