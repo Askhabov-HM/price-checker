@@ -1,0 +1,4 @@
+interface:
+  display_name: "Обновить базу из продакшена"
+  short_description: "Свежая прод-база локально с резервной копией"
+  default_prompt: "Используй $price-checker-sync-prod-db, чтобы обновить локальную базу Price Checker актуальной копией с продакшена."
