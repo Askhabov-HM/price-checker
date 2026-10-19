@@ -1,0 +1,849 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,11 +2,9 @@
+ 
+ ## Текущая задача Ozon
+ 
+-Расписания Randewoo и Ozon независимы и хранятся отдельно. Для каждого магазина выбирается ровно один режим: отмеченные часы по Москве (00:00–23:00; 24:00 означает 00:00) либо интервал 30, 60 или 120 минут. Изменение режима, времени или включения одного магазина не должно менять настройки другого. Существующие настройки сохранять при обновлениях; исходный интервал Ozon — 30 минут.
+-
+ Собирать всё избранное аккаунта и цены прямо из ответа избранного, без обхода карточек. Проходить пагинацию до конца. Нужны текущая цена (`PRICE`) и зачёркнутая (`ORIGINAL_PRICE`); неизвестные значения без сохранённой истории оставлять `null`.
+ 
+-Отсутствие товара в наличии не исключает его из слежения. При каждом общем сборе читать всё избранное и обновлять доступность, включая ранее недоступные товары. Пока товара нет в наличии, сохранять последнюю известную цену и исходную дату её получения; если истории нет, оставлять `null`. Сохранённую цену не выдавать за свежую. После возвращения товара автоматически сохранять свежие цены из избранного и сравнивать их с последней известной ценой, включая историю до возвращения. Повторное получение той же цены не сбрасывает последнее изменение. Для слежения использовать общий ответ избранного, без отдельных запросов карточек и поисковых перенаправлений. Недоступность отмечать синим в таблицах, истории и точках графиков; ошибки сбора отмечать красным.
++Недоступные товары исключены из повторных ценовых проверок: их карточки и поисковые перенаправления не запрашивать. Если цена уже известна, сохранять её вместе с исходной датой получения. Если товар стал недоступным после доступного состояния, сохранять последнюю цену, полученную пока он был доступен, без дополнительных запросов. Сохранённую цену не выдавать за свежую и не обновлять дату её получения. Если прежней цены нет, оставлять `null`. Доступность можно обновлять из общего ответа избранного.
+ 
+ Адрес, город и регион доставки не являются приоритетом или условием успешного сбора. Не тратить время на их настройку и проверку. Общий сбор не должен зависеть от корзины или товаров из наблюдения. Вход в нужный аккаунт проверять; при HTTP 403 получать данные через браузер.
+ 
+--- /dev/null
++++ b/docs/ozon-browser-session.md
+@@ -0,0 +1,13 @@
++# Авторизация серверного браузера и HTTP
++
++`scripts/ozon-browser.js` запускает самостоятельное окно Ozon с сохранённым профилем. Страница `/ozon/login` для него не нужна. Контроллер запускается отдельным серверным systemd-сервисом: основной Price Checker и Randewoo не перезапускаются.
++
++Контроллер работает от root только для разделения процессов между существующими пользователями: Chrome и его приватный CDP pipe принадлежат `ozonbrowser`, чтение конфигурации и сохранение HTTP-сессии выполняются от `pricechecker`. Секреты передаются через приватные stdin/stdout pipes, не через аргументы процессов и не через журналы. На всё время окна удерживается блокировка сборщика Ozon.
++
++Каждые пять секунд читается только состояние cookies через CDP, без сетевого запроса к Ozon. При первом запуске с действующим access token либо изменении cookies авторизации контроллер один раз читает избранное в том же браузере и сверяет авторизованный account ID с прежним эталоном. После подтверждения импортирует действующие cookies с доменом, путём и сроком, а также актуальный User-Agent, в `.secrets/ozon/session.json` и `connection.json` (0600). Остальные разрешённые заголовки сохраняются из существующей конфигурации. Другой аккаунт, гостевой ответ или ошибка Ozon не заменяют прежнюю HTTP-сессию. Ошибка сохранения явно показывается над экраном и записывается в журнал без секретов. Автоматических повторов одного неудачного состояния нет: новый экспорт запускается при следующем изменении cookies авторизации либо перед завершением сервиса.
++
++При штатной остановке контроллер повторно пытается сохранить подтверждённую авторизацию до закрытия Chrome. Принудительное завершение ОС или SIGKILL не гарантирует финальный экспорт; ранее сохранённая сессия остаётся на диске. Само закрытие вкладки просмотра не останавливает серверный процесс.
++
++Экран доступен только через SSH-туннель `127.0.0.1:16084 -> 127.0.0.1:6084`; WebSocket проверяет локальные Host и Origin. Порты CDP наружу не открываются. Расписание Ozon не включается. Актуальные cookies не гарантируют успешный HTTPS: антибот может отдельно блокировать HTTP-транспорт.
++
++На сервере браузер запускается командой `systemctl start price-checker-ozon-browser.service`, штатная остановка с финальным сохранением — `systemctl stop price-checker-ozon-browser.service`. Сервис не включён в автозагрузку; старый отдельный просмотр без синхронизации больше не используется. Рабочая копия контроллера установлена отдельно от основного релиза в `/opt/price-checker-ozon-browser-runtime/`. Конфигурация использует существующий `/etc/price-checker-ozon-recovery.env` и ограничивает сеанс 22 минутами (внутренний worker — 21 минутой). Обновлять контроллер и worker следует вместе, когда сервис остановлен.
+--- a/package.json
++++ b/package.json
+@@ -25,7 +25,7 @@
+     "test:e2e": "playwright test",
+     "test": "npm run build && npm run test:backend && npm run test:frontend",
+     "typecheck": "tsc --noEmit",
+-    "check": "npm run typecheck && node --check run.js && node --check src/auth.js && node --check src/client.js && node --check src/randewoo-transport.js && node --check src/randewoo-login.js && node --check src/database.js && node --check src/service.js && node --check src/web.js && node --check src/telegram.js && node --check src/codex-chat.js && node --check scripts/setup-auth.js && node --check scripts/build-frontend.js && node --check scripts/test-lab.js && node --check scripts/test-lab/fixture.js && node --check scripts/verify-test-lab.js && node --check scripts/probe-ozon.js && node --check scripts/ozon-network.js && node --check src/providers/ozon/url.js && node --check src/providers/ozon/probe.js && node --check src/providers/ozon/probe-store.js && node --check src/providers/ozon/network-capture.js && node --check src/providers/ozon/json-client.js && node --check src/providers/ozon/parser.js && node --check src/providers/ozon/snapshot.js && node --check scripts/ozon-server-check.js && node --check src/providers/ozon/session.js && node --check src/providers/ozon/account-context.js && node --check src/providers/ozon/account-check.js && node --check src/providers/ozon/database.js && node --check src/providers/ozon/client.js && node --check src/providers/ozon/connection.js && node --check src/providers/ozon/service.js && node --check scripts/ozon-connect.js && node --check scripts/ozon-check.js && node --check scripts/ozon-recovery-worker.js && node --check src/providers/ozon/recovery.js && node --check src/providers/ozon/browser-refresh.js && node --check scripts/ozon-sync.js && node --check src/schedule.js && node --check scripts/ozon-browser.js",
++    "check": "npm run typecheck && node --check run.js && node --check src/auth.js && node --check src/client.js && node --check src/randewoo-transport.js && node --check src/randewoo-login.js && node --check src/database.js && node --check src/service.js && node --check src/web.js && node --check src/telegram.js && node --check src/codex-chat.js && node --check scripts/setup-auth.js && node --check scripts/build-frontend.js && node --check scripts/test-lab.js && node --check scripts/test-lab/fixture.js && node --check scripts/verify-test-lab.js && node --check scripts/probe-ozon.js && node --check scripts/ozon-network.js && node --check src/providers/ozon/url.js && node --check src/providers/ozon/probe.js && node --check src/providers/ozon/probe-store.js && node --check src/providers/ozon/network-capture.js && node --check src/providers/ozon/json-client.js && node --check src/providers/ozon/parser.js && node --check src/providers/ozon/snapshot.js && node --check scripts/ozon-server-check.js && node --check src/providers/ozon/session.js && node --check src/providers/ozon/account-context.js && node --check src/providers/ozon/account-check.js && node --check src/providers/ozon/database.js && node --check src/providers/ozon/client.js && node --check src/providers/ozon/connection.js && node --check src/providers/ozon/service.js && node --check scripts/ozon-connect.js && node --check scripts/ozon-check.js && node --check scripts/ozon-recovery-worker.js && node --check src/providers/ozon/recovery.js && node --check src/providers/ozon/browser-refresh.js && node --check scripts/ozon-sync.js",
+     "ozon:server-check": "node scripts/ozon-server-check.js",
+     "ozon:connect": "node scripts/ozon-connect.js",
+     "ozon:check": "node scripts/ozon-check.js",
+--- /dev/null
++++ b/scripts/ozon-check-once.js
+@@ -0,0 +1,59 @@
++import {readFileSync} from 'node:fs';
++import {join} from 'node:path';
++import {OzonClient} from '../src/providers/ozon/client.js';
++import {OzonDatabase} from '../src/providers/ozon/database.js';
++import {writePrivateJson} from '../src/providers/ozon/session.js';
++import {acquireInstance} from '../src/instance.js';
++
++const root='/opt/price-checker/current',baselinePath=process.argv[2];
++const controller=new AbortController();
++process.once('SIGTERM',()=>controller.abort());process.once('SIGINT',()=>controller.abort());
++let db,client,release,check,committed=false;
++const startedAt=new Date().toISOString(),requests=[],failures=[];
++const output=join(root,'.secrets/ozon/once-check-last.json');
++try {
++  if(!/^\/var\/lib\/price-checker\/secrets\/ozon\/once-baseline-[0-9TZ]+\.json$/.test(baselinePath||''))throw Error('Invalid baseline path');
++  const baseline=JSON.parse(readFileSync(baselinePath,'utf8'));
++  release=await acquireInstance(join(root,'.data/ozon/collector.lock'));
++  db=new OzonDatabase(root);
++  const state=db.state();
++  if(state.not_before && Date.parse(state.not_before)>Date.now())throw Error('Ozon requested a later retry');
++  check=db.begin('schedule',startedAt);
++  client=new OzonClient(root,{fetchImpl:async(address,options)=>{
++    const outer=new URL(address),page=new URL(outer.searchParams.get('url'),'https://www.ozon.ru');
++    if(options.method!=='GET' || outer.origin!=='https://www.ozon.ru' || outer.pathname!=='/api/entrypoint-api.bx/page/json/v2'
++      || page.origin!==outer.origin || page.pathname!=='/my/favorites')throw Error('Only favorites pages may be requested');
++    const response=await fetch(address,options);requests.push({status:response.status});return response;
++  }});const contextDigest=await client.open(controller.signal);
++  const lists=await client.lists(),items=lists.favorites.map(item=>db.withSavedPrice(item));
++  const old=new Map(baseline.items.map(item=>[item.sku,item]));
++  const unavailable=items.filter(item=>['out_of_stock','unavailable'].includes(item.availability));
++  db.progress(check,items.length);
++  const changes=items.filter(item=>{
++    const before=old.get(item.external_id);
++    return before&&(before.listed_price_kopecks!==item.listed_price_kopecks || before.original_price_kopecks!==item.original_price_kopecks);
++  }).map(item=>({sku:item.external_id,title:item.title,before:old.get(item.external_id).listed_price_kopecks,after:item.listed_price_kopecks,
++    original_before:old.get(item.external_id).original_price_kopecks,original_after:item.original_price_kopecks}));
++  const present=new Set(items.map(item=>item.external_id)),finishedAt=new Date().toISOString();
++  const report={status:'success',started_at:startedAt,finished_at:finishedAt,baseline_at:baseline.captured_at,check_id:check,
++    count:items.length,priced:items.filter(item=>item.listed_price_kopecks!==null).length,
++    missing:items.filter(item=>item.listed_price_kopecks===null).map(item=>({sku:item.external_id,title:item.title})),
++    price_changes:changes,added:items.filter(item=>!old.has(item.external_id)).map(item=>item.external_id),
++    removed:baseline.items.filter(item=>!present.has(item.sku)).map(item=>item.sku),
++    unavailable_checked:0,unavailable_skipped:unavailable.length,retained_prices:unavailable.filter(item=>item.price_retained).length,
++    refreshed_prices:items.filter(item=>!['out_of_stock','unavailable'].includes(item.availability) && item.listed_price_kopecks!==null).length,
++    individual_product_requests:0,requests:requests.length,failures,schedule_enabled:!!db.state().schedule_enabled};
++  // Store availability changes while retaining old prices and their original dates.
++  db.bindContext(contextDigest,{legacyDigest:client.legacyContextDigest});
++  db.recordFavorites(check,items,finishedAt,client.source);
++  committed=true;
++  db.finish(check,'success',`Разовая проверка: ${items.length} товаров, обновлено цен ${report.refreshed_prices}, сохранено прежних ${report.retained_prices}, изменений ${changes.length}.`,finishedAt);
++  writePrivateJson(output,report);
++  console.log(JSON.stringify({...report,price_changes_count:changes.length,price_changes:undefined}));
++}catch(error){
++  const report={status:controller.signal.aborted?'interrupted':'error',started_at:startedAt,finished_at:new Date().toISOString(),check_id:check,
++    code:error.code||'incomplete_refresh',failures,requests:requests.length,previous_prices_preserved:!committed,prices_saved:committed};
++  if(db&&error.retry_after_ms>0)db.updateState({not_before:new Date(Date.now()+error.retry_after_ms).toISOString()});
++  if(db&&check)db.finish(check,report.status,committed?'Цены сохранены, но итоговый отчёт не завершён.':'Разовая проверка не завершена; прежние цены сохранены.',report.finished_at);
++  writePrivateJson(output,report);console.log(JSON.stringify(report));process.exitCode=1;
++}finally{await client?.close();db?.close();await release?.();}
+--- /dev/null
++++ b/scripts/ozon-unavailable-prices.js
+@@ -0,0 +1,71 @@
++import {join} from 'node:path';
++import {readFileSync} from 'node:fs';
++import {setTimeout as pause} from 'node:timers/promises';
++import {OzonClient} from '../src/providers/ozon/client.js';
++import {OzonDatabase} from '../src/providers/ozon/database.js';
++import {readUnavailablePrice} from '../src/providers/ozon/unavailable-price.js';
++import {writePrivateJson} from '../src/providers/ozon/session.js';
++import {acquireInstance} from '../src/instance.js';
++
++const root='/opt/price-checker/current';
++let db,release,check,client,stopping=false;
++const controller=new AbortController();
++process.once('SIGTERM',()=>{stopping=true;controller.abort();});
++process.once('SIGINT',()=>{stopping=true;controller.abort();});
++const results=[],requests=[];
++const report=()=>({checked:results.length,updated:results.filter(r=>r.price).length,
++  without_price:results.filter(r=>r.outcome==='no_price').length,errors:results.filter(r=>r.outcome==='error').length,
++  requests:requests.length,statuses:requests.reduce((counts,r)=>(counts[r.status]=(counts[r.status]||0)+1,counts),{}),
++  results});
++try {
++  release=await acquireInstance(join(root,'.data/ozon/collector.lock'));
++  db=new OzonDatabase(root);
++  let targets=db.db.prepare(`SELECT p.sku,p.url,p.title FROM membership m JOIN products p ON p.sku=m.sku
++    JOIN observations o ON o.id=(SELECT MAX(z.id) FROM observations z WHERE z.sku=p.sku AND z.status='ok')
++    WHERE m.list='favorites' AND o.availability IN ('out_of_stock','unavailable') ORDER BY m.position`).all();
++  if(process.argv.includes('--retry-errors')) {
++    const previous=JSON.parse(readFileSync(join(root,'.secrets/ozon/unavailable-price-update.json'),'utf8'));
++    const retry=new Set(previous.results.filter(r=>r.outcome==='error').map(r=>r.sku));
++    targets=targets.filter(product=>retry.has(product.sku));
++  }
++  client=new OzonClient(root);await client.open(controller.signal);
++  check=db.begin('manual',new Date().toISOString());db.progress(check,targets.length);
++  const insert=db.db.prepare(`INSERT INTO observations(check_id,sku,checked_at,status,availability,listed_price_kopecks,original_price_kopecks,message,source)
++    VALUES(?,?,?,'ok',?,?,?,?,'http')`);
++  for(const [index,product]of targets.entries()) {
++    if(stopping)throw Error('Interrupted');
++    if(index)await pause(500,undefined,{signal:controller.signal});
++    try {
++      const response=await readUnavailablePrice(client,product,{trace:requests,signal:controller.signal});
++      const now=new Date().toISOString();
++      if(response.price) {
++        const price=response.price;
++        db.transaction(()=>{
++          insert.run(check,product.sku,now,price.availability,price.listed_price_kopecks,price.original_price_kopecks,'Цена из '+price.field+'; доступность сохранена отдельно.');
++          db.db.prepare('UPDATE checks SET completed=completed+1 WHERE id=?').run(check);
++        });
++        results.push({sku:product.sku,title:product.title,outcome:'saved',price});
++      }else{
++        db.failure(check,product.sku,'Ответ Ozon не содержит подтверждённой цены этого товара.',now,'http');
++        results.push({sku:product.sku,title:product.title,outcome:'no_price'});
++        writePrivateJson(join(root,'.secrets/ozon/unavailable-price-responses',product.sku+'.json'),response.data);
++      }
++    }catch(error){
++      const code=error.code||'network_error';
++      db.failure(check,product.sku,'Цена недоступного товара не получена: '+code,new Date().toISOString(),'http');
++      results.push({sku:product.sku,title:product.title,outcome:'error',code});
++      if(error.retry_after_ms>0 || ['login_required','context_mismatch','rate_limited','access_limited'].includes(code))throw error;
++    }
++    writePrivateJson(join(root,'.secrets/ozon/unavailable-price-update.json'),{check_id:check,total:targets.length,...report()});
++    if((index+1)%10===0)console.log(JSON.stringify({progress:index+1,total:targets.length,updated:results.filter(r=>r.price).length}));
++  }
++  const summary=report(),status=summary.updated===targets.length?'success':'partial';
++  db.finish(check,status,`Цены недоступных товаров: получено ${summary.updated} из ${targets.length}.`,new Date().toISOString());
++  writePrivateJson(join(root,'.secrets/ozon/unavailable-price-update.json'),{check_id:check,total:targets.length,status,...summary});
++  console.log(JSON.stringify({check_id:check,total:targets.length,status,...summary,results:undefined,
++    missing:results.filter(r=>!r.price),book:results.find(r=>r.sku==='721295408')}));
++}catch(error){
++  if(db&&check)db.finish(check,stopping?'interrupted':'partial','Обновление недоступных товаров остановлено: '+(error.code||'interrupted'),new Date().toISOString());
++  if(check)writePrivateJson(join(root,'.secrets/ozon/unavailable-price-update.json'),{check_id:check,stopped:true,code:error.code||'interrupted',...report()});
++  console.log(JSON.stringify({stopped:true,code:error.code||'interrupted',...report(),results:undefined}));process.exitCode=1;
++}finally{await client?.close();db?.close();await release?.();}
+--- a/src/codex-chat.js
++++ b/src/codex-chat.js
+@@ -4,7 +4,7 @@
+ import {now} from './time.js';
+ 
+ const sessionPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+-const instructions = 'Ты отвечаешь владельцу Price Checker в личном Telegram-чате. Отвечай по-русски, понятно и кратко, если пользователь не просит подробностей. Это текстовая переписка. Не используй инструменты, не читай файлы, не выполняй команды. У тебя нет доступа к актуальным ценам и состоянию приложения; для них предложи /status, /check_randewoo или /check_ozon в зависимости от магазина. Не утверждай, что выполнил действие на сервере.';
++const instructions = 'Ты отвечаешь владельцу Price Checker в личном Telegram-чате. Отвечай по-русски, понятно и кратко, если пользователь не просит подробностей. Это текстовая переписка. Не используй инструменты, не читай файлы, не выполняй команды. У тебя нет доступа к актуальным ценам и состоянию приложения; для них предложи /status или /check. Не утверждай, что выполнил действие на сервере.';
+ const configuration = {
+   sandbox_mode: 'read-only', approval_policy: 'never', web_search: 'disabled',
+   'features.shell_tool': false, 'features.apps': false, 'features.plugins': false,
+--- a/src/providers/ozon/database.js
++++ b/src/providers/ozon/database.js
+@@ -45,10 +45,6 @@
+       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'source')) this.db.exec("ALTER TABLE observations ADD COLUMN source TEXT NOT NULL DEFAULT 'http'");
+       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'listed_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN listed_price_kopecks INTEGER');
+       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'original_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN original_price_kopecks INTEGER');
+-      const stateColumns = new Set(this.db.prepare('PRAGMA table_info(collector_state)').all().map(column => column.name));
+-      for (const [name,definition] of Object.entries({schedule_mode:"TEXT NOT NULL DEFAULT 'interval'",schedule:"TEXT NOT NULL DEFAULT '[\"00:00\"]'",interval_minutes:'INTEGER NOT NULL DEFAULT 30',schedule_anchor:'TEXT'})) {
+-        if (!stateColumns.has(name)) this.db.exec(`ALTER TABLE collector_state ADD COLUMN ${name} ${definition}`);
+-      }
+     } catch (error) {this.db.close(); throw error;}
+   }
+   close() {this.db.close();}
+@@ -145,8 +141,8 @@
+     this.db.prepare('INSERT INTO list_snapshots(check_id,list,sku,quantity) SELECT ?,list,sku,quantity FROM membership WHERE (? IS NULL OR list=?)').run(check,list,list);
+   }
+   state() {return this.db.prepare('SELECT * FROM collector_state WHERE id=1').get();}
+-  updateState({schedule_enabled,next_check,not_before,action_required,message,schedule_mode,schedule,interval_minutes,schedule_anchor}) {
+-    const fields = {schedule_enabled,next_check,not_before,action_required,message,schedule_mode,schedule,interval_minutes,schedule_anchor};
++  updateState({schedule_enabled,next_check,not_before,action_required,message}) {
++    const fields = {schedule_enabled,next_check,not_before,action_required,message};
+     for (const [key, value] of Object.entries(fields)) if (value !== undefined) this.db.prepare(`UPDATE collector_state SET ${key}=? WHERE id=1`).run(value);
+   }
+   checks() {return this.db.prepare('SELECT * FROM checks ORDER BY id DESC LIMIT 10').all();}
+@@ -176,26 +172,6 @@
+       const saved = this.db.prepare("INSERT OR IGNORE INTO observations(check_id,sku,checked_at,status,message,source) VALUES(?,?,?,'error',?,?)").run(check,sku,now,message,source);
+       if (saved.changes) this.db.prepare('UPDATE checks SET completed=completed+1 WHERE id=?').run(check);
+     });
+-  }
+-  priceSummary(sku) {
+-    const history = this.db.prepare(`SELECT checked_at,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks
+-      FROM observations WHERE sku=? AND status='ok' ORDER BY id`).all(sku);
+-    return Object.fromEntries([['listed','listed_price_kopecks'],['regular','regular_kopecks'],['ozon_card','ozon_card_kopecks']].map(([type,column]) => {
+-      let minimum = null, observations = 0, previous = null, last_change = null;
+-      for (const row of history) {
+-        const price = row[column];
+-        if (price === null) continue;
+-        observations++;
+-        minimum = minimum === null ? price : Math.min(minimum,price);
+-        // Keep known prices as the baseline across an absence, as Telegram does.
+-        // Retaining a price while unavailable must not create a fresh change.
+-        if (previous !== null && previous !== price && !['out_of_stock','unavailable'].includes(row.availability)) {
+-          last_change = {checked_at:row.checked_at,previous_price:previous,price,delta:price-previous};
+-        }
+-        previous = price;
+-      }
+-      return [type,{minimum,observations,last_change}];
+-    }));
+   }
+   row(product) {
+     const latest = this.db.prepare('SELECT * FROM observations WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);
+@@ -207,7 +183,6 @@
+       regular_kopecks:price?.regular_kopecks ?? null,ozon_card_kopecks:price?.ozon_card_kopecks ?? null,
+       availability:price?.availability || 'unknown',seller_id:seller?.seller_id || null,seller_name:seller?.seller_name || null,
+       seller_change:event || null,message:latest?.message || '',lists:this.db.prepare('SELECT list,quantity FROM membership WHERE sku=?').all(product.sku),
+-      price_summary:this.priceSummary(product.sku),
+       sparkline:this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,message FROM observations WHERE sku=? ORDER BY id DESC LIMIT 24').all(product.sku).reverse()};
+   }
+   dashboard(list = 'favorites') {
+--- a/src/providers/ozon/service.js
++++ b/src/providers/ozon/service.js
+@@ -4,40 +4,29 @@
+ import {ValidationError} from '../../errors.js';
+ import {OzonDatabase, itemSku} from './database.js';
+ import {OzonClient, OzonReadError} from './client.js';
++import {OZON_INTERVAL_MS} from './probe.js';
+ import {OzonLogin} from './login.js';
+-import {nextScheduledCheck, scheduleSettings} from '../../schedule.js';
+ 
+ export class OzonService {
+   constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify} = {}) {
+     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
+     this.running = null; this.closing = false;
+-    const state = this.db.state();
+-    if (!state.schedule_anchor) this.db.updateState({schedule_anchor:state.next_check || new Date(this.current()+state.interval_minutes*60000).toISOString()});
+     this.login = new OzonLogin(root,{notify,onAuthorized:() => {
+-      this.db.updateState({action_required:0,message:'',next_check:this.db.state().schedule_enabled ? nextScheduledCheck(this.scheduleConfig(),new Date(this.current())) : null});
++      this.db.updateState({action_required:0,message:'',next_check:this.db.state().schedule_enabled ? this.stamp() : null});
+     }});
+   }
+   stamp() {return new Date(this.current()).toISOString();}
+-  scheduleConfig() {
+-    const state = this.db.state();
+-    return {schedule_mode:state.schedule_mode,schedule:JSON.parse(state.schedule),interval_minutes:state.interval_minutes,
+-      schedule_anchor:state.schedule_anchor,schedule_enabled:!!state.schedule_enabled};
+-  }
+   status() {
+     const state = this.db.state(), checks = this.db.checks();
+     return {available:true,configured:this.client.configured(),running:!!this.running || checks[0]?.status === 'running',
+-      ...this.scheduleConfig(),next_check:state.schedule_enabled ? state.next_check : null,
++      schedule_enabled:!!state.schedule_enabled,interval_minutes:120,next_check:state.schedule_enabled ? state.next_check : null,
+       not_before:state.not_before,action_required:!!state.action_required,message:state.message,login:this.login.status(),checks};
+   }
+   settings(data) {
+-    const config = scheduleSettings(data,this.scheduleConfig());
+-    if (config.schedule_enabled && (!this.client.configured() || this.db.state().action_required)) throw new ValidationError('Сначала восстановите подключение Ozon.');
++    if (typeof data.schedule_enabled !== 'boolean') throw new ValidationError('Укажите состояние расписания Ozon.');
++    if (data.schedule_enabled && (!this.client.configured() || this.db.state().action_required)) throw new ValidationError('Сначала восстановите подключение Ozon.');
+     const state = this.db.state();
+-    const current = new Date(this.current()), schedule_anchor = new Date(current.getTime()+config.interval_minutes*60000).toISOString();
+-    const earliest = state.not_before && Date.parse(state.not_before)>current.getTime() ? new Date(state.not_before) : current;
+-    const next = config.schedule_enabled ? nextScheduledCheck({...config,schedule_anchor},earliest) : null;
+-    this.db.transaction(() => this.db.updateState({...config,schedule:JSON.stringify(config.schedule),schedule_anchor,
+-      schedule_enabled:Number(config.schedule_enabled),next_check:next}));
++    this.db.updateState({schedule_enabled:Number(data.schedule_enabled),next_check:data.schedule_enabled ? new Date(Math.max(this.current()+OZON_INTERVAL_MS,Date.parse(state.not_before) || 0)).toISOString() : null});
+   }
+   watch(url) {if (this.closing) throw new ValidationError('Приложение останавливается.'); return this.db.watch(url,true,this.stamp());}
+   unwatch(id) {const product = this.db.product(itemSku(id)); if (!product) throw new ValidationError('Товар Ozon не найден.'); this.db.watch(product.url,false,this.stamp());}
+@@ -76,8 +65,6 @@
+       if (!id) {
+         const lists = await this.client.lists();
+         if (signal.aborted) throw new OzonReadError('interrupted');
+-        // Re-read availability for every favorite, including unavailable items,
+-        // so returned products immediately resume recording fresh prices.
+         imported = lists.favorites;
+         this.db.recordFavorites(check,imported,this.stamp(),this.client.source || 'http');
+       } else this.db.snapshotLists(check);
+@@ -100,7 +87,7 @@
+         }
+         target = null;
+       }
+-      const next = this.db.state().schedule_enabled ? nextScheduledCheck(this.scheduleConfig(),new Date(this.current())) : null;
++      const next = new Date(this.current()+OZON_INTERVAL_MS).toISOString();
+       const message = imported !== null
+         ? `Избранное обновлено. Товаров: ${imported.length}. Цены получены: ${imported.filter(item => item.listed_price_kopecks !== null).length}.`
+         : failed ? `Проверено товаров: ${targets.length}. Не удалось получить цены: ${failed}. Прежние цены сохранены.` : `Проверено товаров: ${targets.length}.`;
+--- /dev/null
++++ b/src/providers/ozon/unavailable-price.js
+@@ -0,0 +1,81 @@
++import {OzonReadError} from './client.js';
++import {rublePrice} from './parser.js';
++import {accountMatches} from './account-context.js';
++import {ozonProduct,OZON_ORIGIN} from './url.js';
++import {OZON_JSON_PATH} from './session.js';
++import {readBounded,retryAfterMs} from './probe.js';
++
++function checkedAddress(value,previous,sku) {
++  if(typeof value!=='string' || /[\s\\]/.test(value))throw new OzonReadError('invalid_data');
++  const target=new URL(value,previous);
++  if(target.origin!==OZON_ORIGIN || target.pathname!==OZON_JSON_PATH || target.username || target.password || target.hash
++    || target.searchParams.getAll('url').length!==1 || [...target.searchParams.keys()].some(key=>!['url','__rr','page_changed'].includes(key))
++    || target.searchParams.has('page_changed') && (target.searchParams.getAll('page_changed').length!==1 || target.searchParams.get('page_changed')!=='true')
++    || target.searchParams.has('__rr') && !/^[12]$/.test(target.searchParams.get('__rr')))throw new OzonReadError('invalid_data');
++  const page=new URL(target.searchParams.get('url'),OZON_ORIGIN);
++  if(page.origin!==OZON_ORIGIN || page.username || page.password || page.hash)throw new OzonReadError('invalid_data');
++  if(page.pathname==='/search/' || page.pathname==='/search') {
++    if(page.searchParams.getAll('product_id').length!==1 || page.searchParams.get('product_id')!==sku)throw new OzonReadError('invalid_data');
++  }else if(ozonProduct(page.href).external_id!==sku)throw new OzonReadError('invalid_data');
++  return target.href;
++}
++
++function widgetValues(data,prefix) {
++  return Object.entries(data.widgetStates||{}).filter(([key])=>key.startsWith(prefix+'-')).map(([key,raw])=>({key,value:typeof raw==='string'?JSON.parse(raw):raw}));
++}
++
++export function unavailablePriceFields(data,sku) {
++  const matches=widgetValues(data,'webOutOfStock').filter(({value})=>{
++    try{return ozonProduct(new URL(value.common?.action?.link,OZON_ORIGIN).href).external_id===sku;}catch{return false;}
++  });
++  if(matches.length>1)throw new OzonReadError('invalid_data');
++  if(matches.length===1) {
++    const {key,value}=matches[0];
++    if(value.price?.priceStyle?.styleType!=='UNAVAILABLE')throw new OzonReadError('invalid_data');
++    const prices=Array.isArray(value.price.price)?value.price.price:[];
++    const price=rublePrice(prices.find(part=>part.textStyle==='PRICE')?.text);
++    if(price!==null)return {listed_price_kopecks:price,
++      original_price_kopecks:rublePrice(prices.find(part=>part.textStyle==='ORIGINAL_PRICE')?.text),
++      availability:'out_of_stock',field:'webOutOfStock.price.price[].text',widget:key};
++  }
++  const identities=widgetValues(data,'webDetailSKU');
++  const prices=widgetValues(data,'webPrice');
++  if(identities.length===1 && String(identities[0].value.copyText)===sku && prices.length===1) {
++    const value=prices[0].value,price=rublePrice(value.price);
++    if(price!==null && typeof value.isAvailable==='boolean')return {listed_price_kopecks:price,
++      original_price_kopecks:rublePrice(value.originalPrice),availability:value.isAvailable?'available':'out_of_stock',
++      field:'webPrice.price',widget:prices[0].key};
++  }
++  return null;
++}
++
++// Only this SKU's product page and its observed out-of-stock search redirect.
++// Recommendation tiles never supply the original product's price.
++export async function readUnavailablePrice(client,product,{trace=[],signal}={}) {
++  const sku=String(product.sku),request=client.request(new URL(product.url).pathname),visited=new Set();
++  if(request.external_id!==sku)throw new OzonReadError('invalid_data');
++  let address=request.url;
++  for(let hop=0;hop<4;hop++) {
++    address=checkedAddress(address,address,sku);
++    if(visited.has(address))throw new OzonReadError('redirect');visited.add(address);
++    const timeout=AbortSignal.timeout(20000),requestSignal=signal?AbortSignal.any([signal,timeout]):timeout;
++    const response=await client.fetchImpl(address,{method:'GET',headers:{...request.headers,accept:'application/json',cookie:await client.session.header(address)},redirect:'manual',signal:requestSignal});
++    trace.push({sku,status:response.status});
++    const retry=retryAfterMs(response.headers.get('retry-after'));
++    await client.session.absorb(response.headers,address);
++    if(retry>0 || response.status===429){await response.body?.cancel();throw new OzonReadError('rate_limited',retry);}
++    if(response.status>=300 && response.status<400) {
++      const location=response.headers.get('location');await response.body?.cancel();
++      if(![301,302,303,307,308].includes(response.status) || !location)throw new OzonReadError('redirect');
++      address=checkedAddress(location,address,sku);continue;
++    }
++    if(response.status!==200){await response.body?.cancel();throw new OzonReadError(response.status===401?'login_required':response.status===403?'access_limited':'http_error');}
++    if(!/^application\/(?:[a-z0-9.+-]+\+)?json(?:\s*;|$)/i.test(response.headers.get('content-type')||'')){await response.body?.cancel();throw new OzonReadError('unexpected_content');}
++    const payload=await readBounded(response,8*1024*1024);
++    if(payload.too_large)throw new OzonReadError('response_too_large');
++    const data=JSON.parse(payload.body);
++    if(!accountMatches(data,client.connection.reference,{requireLoginFlag:true}))throw new OzonReadError(data?.userInfo?.user?.isLoggedIn===false?'login_required':'context_mismatch');
++    return {price:unavailablePriceFields(data,sku),data};
++  }
++  throw new OzonReadError('redirect');
++}
+--- a/src/service.js
++++ b/src/service.js
+@@ -4,15 +4,13 @@
+ import {Database} from './database.js';
+ import {Randewoo, productUrl, quote} from './client.js';
+ import {AuthError, FetchError, ValidationError} from './errors.js';
+-import {now} from './time.js';
+-import {nextScheduledCheck, scheduledSlot, scheduleSettings} from './schedule.js';
++import {now, nextCheck, scheduleSlot} from './time.js';
+ import {RandewooLogin} from './randewoo-login.js';
+ 
+ export class Tracker {
+   constructor(root, {databasePath, client} = {}) {
+     this.root = root;
+     this.db = new Database(databasePath || join(root, '.data/prices.sqlite3'));
+-    if (!this.db.setting('schedule_anchor')) this.db.setSetting('schedule_anchor',new Date(Date.now()+30*60000).toISOString());
+     this.db.setSetting('last_started_slot', null);
+     this.client = client || new Randewoo(join(root, '.secrets/randewoo-session.json'));
+     this.randewooLogin = new RandewooLogin(this.client.transport, data => {
+@@ -69,15 +67,10 @@
+     this.db.setSetting('history_imported', true);
+   }
+ 
+-  scheduleConfig() {
+-    return {schedule:this.db.setting('schedule'),schedule_mode:this.db.setting('schedule_mode','hours'),
+-      interval_minutes:this.db.setting('interval_minutes',30),schedule_enabled:this.db.setting('schedule_enabled',true),
+-      schedule_anchor:this.db.setting('schedule_anchor')};
+-  }
+   status() {
+-    const config = this.scheduleConfig();
+-    return {running: this.running, checks: this.db.checks(), ...config, timezone: 'Europe/Moscow',
+-      next_check: config.schedule_enabled ? nextScheduledCheck(config) : null, session_present: existsSync(this.client.sessionPath || join(this.root, '.secrets/randewoo-session.json')),
++    const schedule = this.db.setting('schedule'), enabled = this.db.setting('schedule_enabled');
++    return {running: this.running, checks: this.db.checks(), schedule, schedule_enabled: enabled, timezone: 'Europe/Moscow',
++      next_check: enabled ? nextCheck(schedule) : null, session_present: existsSync(this.client.sessionPath || join(this.root, '.secrets/randewoo-session.json')),
+       auth_status: this.db.setting('auth_status', 'unknown'), auth_message: this.db.setting('auth_message', ''), csrf_token: null,
+       runtime: 'node.js', version: '1.0.0'};
+   }
+@@ -187,7 +180,7 @@
+       let message = 'Проверено товаров: ' + products.length;
+       if (errors.length) message += '. ' + errors.slice(0, 5).join('; ') + (errors.length > 5 ? '. Ещё ошибок: ' + (errors.length - 5) : '');
+       this.db.updateCheck(checkId, {status: errors.length ? 'partial' : 'success', message, finished_at: now()});
+-      this.db.setSetting('last_completed_slot', scheduledSlot(this.scheduleConfig()));
++      this.db.setSetting('last_completed_slot', scheduleSlot(this.db.setting('schedule')));
+       await this.db.backup(join(this.root, '.data/backups'));
+       return {check_id: checkId, count: products.length, errors: errors.length};
+     } catch {
+@@ -206,12 +199,15 @@
+   }
+ 
+   saveSettings(data) {
+-    const config = scheduleSettings(data,this.scheduleConfig()), current = new Date();
+-    const anchor = new Date(current.getTime()+config.interval_minutes*60000).toISOString();
++    const times = data.schedule;
++    if (!Array.isArray(times) || times.length < 1 || times.length > 24 || times.some(value => typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) {
++      throw new ValidationError('Укажите от 1 до 24 времён в формате ЧЧ:ММ');
++    }
++    if (typeof data.schedule_enabled !== 'boolean') throw new ValidationError('Некорректное состояние расписания');
+     this.db.transaction(() => {
+-      for (const [key,value] of Object.entries({...config,schedule_anchor:anchor})) this.db.setSetting(key,value);
+-      this.db.setSetting('last_completed_slot', scheduledSlot({...config,schedule_anchor:anchor},current));
+-      this.db.setSetting('last_started_slot', null);
++      this.db.setSetting('schedule', [...new Set(times)].sort());
++      this.db.setSetting('schedule_enabled', data.schedule_enabled);
++      this.db.setSetting('last_completed_slot', scheduleSlot(times));
+     });
+   }
+ 
+@@ -231,7 +227,7 @@
+ 
+   schedulerTick(current = new Date()) {
+     if (!this.db.setting('schedule_enabled', true)) return false;
+-    const slot = scheduledSlot(this.scheduleConfig(), current);
++    const slot = scheduleSlot(this.db.setting('schedule'), current);
+     if (slot && this.db.setting('last_completed_slot') !== slot && this.db.setting('last_started_slot') !== slot && this.startRefresh('schedule')) {
+       this.db.setSetting('last_started_slot', slot);
+       return true;
+--- a/src/telegram.js
++++ b/src/telegram.js
+@@ -1,23 +1,15 @@
+ import {readFileSync} from 'node:fs';
+ import {spawn} from 'node:child_process';
+-import {createHash} from 'node:crypto';
+ import {setTimeout as delay} from 'node:timers/promises';
+ import {parseResponse, quote} from './randewoo-transport.js';
+ import {now} from './time.js';
+ import {CodexChat, CodexRunner} from './codex-chat.js';
+-import {ValidationError} from './errors.js';
+ 
+ const methods = new Set(['getMe', 'getWebhookInfo', 'getUpdates', 'sendMessage', 'setMyCommands']);
+ const labels = {success: 'Успешно', partial: 'Есть ошибки', error: 'Ошибка', interrupted: 'Прервана'};
++const triggers = {schedule: 'По расписанию', manual: 'Из приложения', telegram: 'Из Telegram', cli: 'Из командной строки'};
+ const date = value => value ? new Intl.DateTimeFormat('ru-RU', {timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'short'}).format(new Date(value)) + ' МСК' : '—';
+-const reportDate = value => value ? new Intl.DateTimeFormat('ru-RU', {timeZone: 'Europe/Moscow',
+-  day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'}).format(new Date(value)) + ' МСК' : '—';
+-const stores = {
+-  randewoo: {name: 'Randewoo', emoji: '🌸', id: '5382276449241703317', path: '/cart'},
+-  ozon: {name: 'Ozon', emoji: '😎', id: '5463148170869482726', path: '/ozon'},
+-};
+-const reportFormat = 'price-checker-telegram-v1';
+-const delayedAfterMs = 5 * 60 * 1000;
++const money = value => (value / 100).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' ₽';
+ const short = (value, limit) => {
+   const text = String(value).slice(0, limit);
+   return /[\uD800-\uDBFF]$/.test(text) ? text.slice(0, -1) : text;
+@@ -90,83 +82,30 @@
+   close() {this.closed = true; for (const child of this.children) child.kill();}
+ }
+ 
+-function randewooChanges(db, check) {
+-  return db.all(`SELECT current.price,
++export function checkMessage(db, check) {
++  const lines = [`Price Checker · проверка №${check.id}`, `${labels[check.status] || check.status} · ${triggers[check.trigger] || 'Проверка'}`,
++    `Проверено товаров: ${check.completed}/${check.total}`, `Завершена: ${date(check.finished_at)}`];
++  const changes = db.all(`SELECT current.price,current.context,p.brand,p.name,
+     (SELECT old.price FROM observations old WHERE old.variant_id=current.variant_id AND old.context=current.context
+       AND old.id<current.id AND (old.check_id IS NULL OR old.check_id!=current.check_id)
+       AND old.status='ok' AND old.price IS NOT NULL ORDER BY old.id DESC LIMIT 1) AS previous_price
+-    FROM observations current
++    FROM observations current JOIN variants v ON v.id=current.variant_id JOIN products p ON p.id=v.product_id
+     WHERE current.check_id=? AND current.status='ok' AND current.price IS NOT NULL
+-      AND current.in_stock IS NOT 0
+       AND current.id=(SELECT MAX(last.id) FROM observations last WHERE last.check_id=current.check_id
+         AND last.variant_id=current.variant_id AND last.context=current.context)`, check.id)
+     .filter(row => row.previous_price != null && row.previous_price !== row.price);
+-}
+-
+-function ozonChanges(db, check) {
+-  return db.db.prepare(`SELECT current.listed_price_kopecks AS price,
+-    (SELECT old.listed_price_kopecks FROM observations old WHERE old.sku=current.sku AND old.id<current.id
+-      AND old.check_id!=current.check_id AND old.status='ok' AND old.listed_price_kopecks IS NOT NULL
+-      ORDER BY old.id DESC LIMIT 1) AS previous_price
+-    FROM observations current
+-    WHERE current.check_id=? AND current.status='ok' AND current.listed_price_kopecks IS NOT NULL
+-      AND (current.availability IS NULL OR current.availability NOT IN ('out_of_stock','unavailable'))
+-      AND current.id=(SELECT MAX(last.id) FROM observations last
+-        WHERE last.check_id=current.check_id AND last.sku=current.sku)`).all(check.id)
+-    .filter(row => row.previous_price != null && row.previous_price !== row.price);
+-}
+-
+-function outcome(store, check) {
+-  if (check.status === 'success') return {kind: 'success', icon: '✅'};
+-  if (check.status === 'interrupted') return {kind: 'interrupted', icon: '⏹', message: 'Проверка прервана.'};
+-  const message = check.message || '';
+-  const login = store === 'ozon' ? /Нужно обновить вход в Ozon\./.test(message)
+-    : /Сессия истекла: обновите вход в Randewoo|Добавьте действующую сессию Randewoo/.test(message);
+-  if (login) return {kind: 'login', icon: '🔐', message: 'Требуется повторный вход в аккаунт.'};
+-  if (check.status === 'partial') return {kind: 'partial', icon: '⚠️', message: 'Часть данных не удалось получить.'};
+-  if (/ограничил доступ|слишком много запросов|пауза.*Ozon/i.test(message)) {
+-    return {kind: 'limited', icon: '🔴', message: 'Магазин ограничил доступ. Проверка приостановлена.'};
+-  }
+-  return {kind: 'error', icon: '🔴', message: 'Не удалось выполнить проверку.'};
+-}
+-
+-function report(store, check, changes, previous = null) {
+-  const state = outcome(store, check), logo = stores[store];
+-  const reason = state.kind === 'success' ? null : createHash('sha256')
+-    .update(String(check.message || '').replace(/\d+/g, '#')).digest('hex');
+-  const down = changes.filter(row => row.price < row.previous_price).length;
+-  const up = changes.filter(row => row.price > row.previous_price).length;
+-  const recovered = state.kind === 'success' && previous && previous.kind !== 'success';
+-  const lines = [`${state.icon} ${logo.emoji} ${logo.name} · ${reportDate(check.finished_at)}`, ''];
+-  if (state.message) lines.push(state.message);
+-  if (recovered) lines.push('Проверка снова работает.');
+-  if (['success', 'partial'].includes(state.kind)) {
+-    if (state.message || recovered) lines.push('');
+-    if (down || up || state.kind === 'partial') lines.push(`📉 Снижений: ${down}`, `📈 Повышений: ${up}`);
+-    else lines.push('Изменений цен нет.');
+-  }
+-  return {format: reportFormat, store, kind: state.kind, reason, down, up,
+-    finishedAt: check.finished_at, text: lines.join('\n')};
+-}
+-
+-export function checkMessage(db, check) {return report('randewoo', check, randewooChanges(db, check)).text;}
+-export function ozonCheckMessage(db, check) {return report('ozon', check, ozonChanges(db, check)).text;}
+-
+-function publicSite(value) {
+-  try {
+-    const url = new URL(value);
+-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error();
+-    return url.origin;
+-  } catch {throw new TelegramError('configuration');}
++  lines.push(`Изменений цен: ${changes.length}`);
++  for (const row of changes.slice(0, 8)) lines.push(`${short((row.brand + ' ' + row.name).replace(/\s+/g, ' '), 90)} · ${row.context === 'cart' ? 'корзина' : 'сайт'}: ${money(row.previous_price)} → ${money(row.price)}`);
++  if (changes.length > 8) lines.push(`Ещё изменений: ${changes.length - 8}`);
++  if (check.status !== 'success') lines.push(short(check.message, 1500));
++  return short(lines.join('\n'), 4000);
+ }
+ 
+ export class TelegramBot {
+-  constructor(tracker, {api, ownerId, codexRunner, ozon, publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN,
+-    logger = entry => console.info(JSON.stringify(entry)), sleep = delay} = {}) {
++  constructor(tracker, {api, ownerId, codexRunner, logger = entry => console.info(JSON.stringify(entry)), sleep = delay} = {}) {
+     if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new TelegramError('configuration');
+-    this.tracker = tracker; this.ozon = ozon; this.db = tracker.db; this.api = api; this.ownerId = ownerId;
++    this.tracker = tracker; this.db = tracker.db; this.api = api; this.ownerId = ownerId;
+     this.logger = logger; this.sleep = sleep; this.abort = new AbortController();
+-    this.publicOrigin = publicSite(publicOrigin);
+     this.cursorKey = `telegram_check_cursor:${ownerId}`;
+     this.offsetKey = `telegram_offset:${ownerId}`;
+     this.db.run(`CREATE TABLE IF NOT EXISTS telegram_outbox(
+@@ -177,46 +116,7 @@
+       const latest = this.db.checks(1)[0];
+       this.db.setSetting(this.cursorKey, latest ? latest.id - (latest.status === 'running' ? 1 : 0) : 0);
+     }
+-    if (ozon) {
+-      this.ozonCursorKey = `telegram_ozon_check_cursor:${ownerId}`;
+-      // Ozon check IDs belong to a separate database and cannot reference Randewoo checks.
+-      this.db.run(`CREATE TABLE IF NOT EXISTS telegram_ozon_outbox(
+-        check_id INTEGER NOT NULL,owner_id INTEGER NOT NULL,text TEXT NOT NULL,
+-        attempts INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,delivered_at TEXT,
+-        PRIMARY KEY(check_id,owner_id))`);
+-      if (this.db.setting(this.ozonCursorKey) == null) {
+-        const latest = ozon.db.checks()[0];
+-        this.db.setSetting(this.ozonCursorKey, latest ? latest.id - (latest.status === 'running' ? 1 : 0) : 0);
+-      }
+-    }
+-    for (const store of ['randewoo', ...(ozon ? ['ozon'] : [])]) {
+-      const key = this.reportStateKey(store);
+-      if (this.db.setting(key) == null) {
+-        const cursor = this.db.setting(store === 'ozon' ? this.ozonCursorKey : this.cursorKey, 0);
+-        const check = store === 'ozon'
+-          ? ozon.db.db.prepare("SELECT * FROM checks WHERE id<=? AND finished_at IS NOT NULL AND status!='imported' ORDER BY id DESC LIMIT 1").get(cursor)
+-          : this.db.get("SELECT * FROM checks WHERE id<=? AND finished_at IS NOT NULL AND status!='imported' ORDER BY id DESC LIMIT 1", cursor);
+-        if (check) this.db.setSetting(key, {kind: outcome(store, check).kind, announced: false});
+-      }
+-    }
+-    if (codexRunner) this.chat = new CodexChat(this.db, {runner: codexRunner, ownerId, send: text => this.send(text, {service: false}), logger});
+-  }
+-
+-  reportStateKey(store) {return `telegram_report_state:${store}:${this.ownerId}`;}
+-
+-  enqueueReport(store, check) {
+-    if (check.status === 'imported') return;
+-    const previous = this.db.setting(this.reportStateKey(store));
+-    const changes = store === 'ozon' ? ozonChanges(this.ozon.db, check) : randewooChanges(this.db, check);
+-    const payload = report(store, check, changes, previous);
+-    // Keep useful partial price results, while silencing an unchanged failure.
+-    if (payload.kind === 'success' || !previous?.announced || payload.kind !== previous.kind
+-      || payload.reason !== previous.reason || payload.down || payload.up) {
+-      const table = store === 'ozon' ? 'telegram_ozon_outbox' : 'telegram_outbox';
+-      this.db.run(`INSERT OR IGNORE INTO ${table}(check_id,owner_id,text) VALUES(?,?,?)`,
+-        check.id, this.ownerId, JSON.stringify(payload));
+-    }
+-    this.db.setSetting(this.reportStateKey(store), {kind: payload.kind, reason: payload.reason, announced: true});
++    if (codexRunner) this.chat = new CodexChat(this.db, {runner: codexRunner, ownerId, send: text => this.send(text), logger});
+   }
+ 
+   log(event, error) {
+@@ -233,95 +133,36 @@
+       // Wait for its final outcome, including a possible backup error.
+       if (check.id === this.tracker.client.checkId) break;
+       this.db.transaction(() => {
+-        this.enqueueReport('randewoo', check);
++        if (check.status !== 'imported') this.db.run('INSERT OR IGNORE INTO telegram_outbox(check_id,owner_id,text) VALUES(?,?,?)',
++          check.id, this.ownerId, checkMessage(this.db, check));
+         this.db.setSetting(this.cursorKey, check.id);
+       });
+     }
+-    if (this.ozon && !this.ozon.running) {
+-      const checks = this.ozon.db.db.prepare("SELECT * FROM checks WHERE id>? AND finished_at IS NOT NULL AND status!='running' ORDER BY id")
+-        .all(this.db.setting(this.ozonCursorKey, 0));
+-      for (const check of checks) {
+-        this.db.transaction(() => {
+-          this.enqueueReport('ozon', check);
+-          this.db.setSetting(this.ozonCursorKey, check.id);
+-        });
+-      }
+-    }
+   }
+ 
+   deliverPending() {
+     if (!this.deliveryPromise) this.deliveryPromise = (async () => {
+-      for (const table of ['telegram_outbox', ...(this.ozon ? ['telegram_ozon_outbox'] : [])]) {
+-        while (!this.abort.signal.aborted) {
+-          const row = this.db.get(`SELECT * FROM ${table} WHERE owner_id=? AND delivered_at IS NULL AND next_attempt_ms<=? ORDER BY check_id LIMIT 1`, this.ownerId, Date.now());
+-          if (!row) break;
+-          try {
+-            let payload;
+-            try {payload = JSON.parse(row.text);} catch { /* Upgrade an older queued report without losing it. */ }
+-            if (payload?.format !== reportFormat) {
+-              const store = table === 'telegram_ozon_outbox' ? 'ozon' : 'randewoo';
+-              const check = store === 'ozon' ? this.ozon.db.db.prepare('SELECT * FROM checks WHERE id=?').get(row.check_id)
+-                : this.db.get('SELECT * FROM checks WHERE id=?', row.check_id);
+-              if (!check) throw new TelegramError('missing_check');
+-              payload = report(store, check, store === 'ozon' ? ozonChanges(this.ozon.db, check) : randewooChanges(this.db, check));
+-              this.db.run(`UPDATE ${table} SET text=? WHERE check_id=? AND owner_id=?`, JSON.stringify(payload), row.check_id, this.ownerId);
+-            }
+-            await this.send(payload);
+-            this.db.run(`UPDATE ${table} SET delivered_at=? WHERE check_id=? AND owner_id=?`, now(), row.check_id, this.ownerId);
+-            this.log('telegram_check_delivered');
+-          } catch (error) {
+-            if (!this.abort.signal.aborted) {
+-              this.db.run(`UPDATE ${table} SET attempts=attempts+1,next_attempt_ms=? WHERE check_id=? AND owner_id=?`,
+-                Date.now() + retryDelay(error, row.attempts), row.check_id, this.ownerId);
+-              this.log('telegram_delivery_failed', error);
+-            }
+-            break;
++      while (!this.abort.signal.aborted) {
++        const row = this.db.get('SELECT * FROM telegram_outbox WHERE owner_id=? AND delivered_at IS NULL AND next_attempt_ms<=? ORDER BY check_id LIMIT 1', this.ownerId, Date.now());
++        if (!row) break;
++        try {
++          await this.send(row.text);
++          this.db.run('UPDATE telegram_outbox SET delivered_at=? WHERE check_id=? AND owner_id=?', now(), row.check_id, this.ownerId);
++          this.log('telegram_check_delivered');
++        } catch (error) {
++          if (!this.abort.signal.aborted) {
++            this.db.run('UPDATE telegram_outbox SET attempts=attempts+1,next_attempt_ms=? WHERE check_id=? AND owner_id=?',
++              Date.now() + retryDelay(error, row.attempts), row.check_id, this.ownerId);
++            this.log('telegram_delivery_failed', error);
+           }
++          break;
+         }
+       }
+     })().finally(() => {this.deliveryPromise = null;});
+     return this.deliveryPromise;
+   }
+ 
+-  send(value, {service = true} = {}) {
+-    const payload = value?.format === reportFormat ? value : null;
+-    let text = payload ? payload.text : String(value);
+-    if (payload?.finishedAt && Date.now() - Date.parse(payload.finishedAt) > delayedAfterMs) {
+-      text += '\n\n🕒 Отчёт доставлен с задержкой.';
+-    }
+-    text = short(text, 4000);
+-    const data = {chat_id: this.ownerId, text, link_preview_options: {is_disabled: true}};
+-    if (service) {
+-      const login = payload?.kind === 'login';
+-      const ozonLogin = login && payload.store === 'ozon';
+-      const path = ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
+-      const url = this.publicOrigin + path;
+-      data.reply_markup = {inline_keyboard: [[{text: ozonLogin ? '🔐 Войти в Ozon'
+-        : login ? '🔐 Подключить Randewoo' : '🌐 Открыть сайт', url}]]};
+-      const entities = [];
+-      for (const logo of Object.values(stores)) {
+-        const offset = text.indexOf(`${logo.emoji} ${logo.name}`);
+-        if (offset < 0) continue;
+-        entities.push({type: 'custom_emoji', offset, length: logo.emoji.length, custom_emoji_id: logo.id});
+-        const start = offset + logo.emoji.length + 1, end = text.indexOf('\n', start);
+-        entities.push({type: 'bold', offset: start, length: (end < 0 ? text.length : end) - start});
+-      }
+-      if (entities.length) data.entities = entities;
+-    }
+-    return this.api.call('sendMessage', data);
+-  }
+-
+-  async notifyOzonLogin() {
+-    // The completed check and the login callback describe the same event.
+-    this.discoverChecks();
+-    await this.deliverPending();
+-    const key = this.reportStateKey('ozon');
+-    const previous = this.db.setting(key);
+-    if (previous?.kind === 'login' && previous.announced) return;
+-    const payload = report('ozon', {status: 'error', message: 'Нужно обновить вход в Ozon.', finished_at: now()}, []);
+-    await this.send(payload);
+-    this.db.setSetting(key, {kind: 'login', reason: payload.reason, announced: true});
+-  }
++  send(text) {return this.api.call('sendMessage', {chat_id: this.ownerId, text: short(text, 4000), link_preview_options: {is_disabled: true}});}
+ 
+   async handleUpdate(update) {
+     if (!Number.isSafeInteger(update?.update_id) || update.update_id < this.db.setting(this.offsetKey, 0)) return;
+@@ -339,45 +180,23 @@
+       if (result === 'invalid') await this.send('Отправь непустое текстовое сообщение до 16 000 символов.');
+       return;
+     }
+-    // Persist before dispatch so a restart cannot repeat a collection command.
++    // Persist before dispatch: an interrupted /check must not start a second collection after restart.
+     this.db.setSetting(this.offsetKey, update.update_id + 1);
+     if (!allowed) return;
+     const command = /^\/([a-z_]+)(?:@([a-z0-9_]+))?(?:\s|$)/i.exec(message.text);
+     if (command?.[2] && command[2].toLowerCase() !== this.username?.toLowerCase()) return;
+     switch (command?.[1].toLowerCase()) {
+-      case 'check_randewoo': {
++      case 'check': {
+         const started = this.tracker.startRefresh('telegram');
+-        await this.send(started ? '▶️ Проверка Randewoo запущена. Результат придёт после завершения.' : '⏳ Проверка Randewoo уже выполняется или приложение останавливается.');
+-        return;
+-      }
+-      case 'check_ozon': {
+-        if (!this.ozon) {await this.send('Проверка Ozon пока недоступна в приложении.'); return;}
+-        try {
+-          await this.ozon.start({trigger:'telegram'});
+-        } catch (error) {
+-          await this.send(error instanceof ValidationError ? `Ozon: ${error.message}` : 'Не удалось запустить проверку Ozon.');
+-          return;
+-        }
+-        await this.send('▶️ Проверка Ozon запущена. Результат придёт после завершения.');
+-        return;
+-      }
+-      case 'check': {
+-        await this.send('Выбери магазин:\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon');
++        await this.send(started ? 'Проверка цен запущена. Пришлю результат после завершения.' : 'Проверка уже выполняется или приложение останавливается. Новую проверку не запускал.');
+         return;
+       }
+       case 'status': {
+         const status = this.tracker.status(), latest = status.checks[0];
+-        const lines = ['ℹ️ Price Checker', '', '🌸 Randewoo', status.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
++        const lines = ['Price Checker', status.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
+           `Следующая проверка: ${date(status.next_check)}`, `Расписание: ${status.schedule_enabled ? 'включено' : 'выключено'}`];
+         if (latest) lines.push(`Последняя проверка: №${latest.id}, ${labels[latest.status] || 'Выполняется'}, ${latest.completed}/${latest.total}`);
+         if (['expired', 'error'].includes(status.auth_status)) lines.push('Подключение Randewoo требует внимания. Открой приложение для проверки сессии.');
+-        if (this.ozon) {
+-          const ozon = this.ozon.status(), latest = ozon.checks[0];
+-          lines.push('', '😎 Ozon', ozon.running ? 'Проверка выполняется.' : 'Проверка не выполняется.',
+-            `Следующая проверка: ${date(ozon.next_check)}`, `Расписание: ${ozon.schedule_enabled ? 'включено' : 'выключено'}`);
+-          if (latest) lines.push(`Последняя проверка: №${latest.id}, ${labels[latest.status] || 'Выполняется'}, ${latest.completed}/${latest.total}`);
+-          if (ozon.action_required) lines.push('Подключение Ozon требует внимания.');
+-        } else lines.push('', 'Ozon: недоступен в приложении.');
+         if (this.chat) lines.push(`Codex: сообщений в работе или ожидают доставки — ${this.chat.pending()}.`);
+         await this.send(lines.join('\n')); return;
+       }
+@@ -387,7 +206,7 @@
+           : 'Дождись ответов на сообщения в очереди, затем отправь /new.');
+         return;
+       default:
+-        await this.send('Price Checker подключён.\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon\n/check — выбрать магазин\n/status — состояние магазинов и расписаний\n/help — команды'
++        await this.send('Price Checker подключён.\n/check — проверить цены\n/status — состояние и следующая проверка\n/help — команды'
+           + (this.chat ? '\n/new — новый диалог с Codex\n\nОбычные текстовые сообщения передаю Codex. Контекст диалога сохраняется.' : ''));
+     }
+   }
+@@ -398,9 +217,8 @@
+     this.username = me.username;
+     const webhook = await this.api.call('getWebhookInfo');
+     if (webhook?.url) throw new TelegramError('webhook_configured');
+-    await this.api.call('setMyCommands', {commands: [{command: 'check_randewoo', description: 'Проверить цены Randewoo'},
+-      {command: 'check_ozon', description: 'Проверить избранное Ozon'}, {command: 'check', description: 'Выбрать магазин для проверки'},
+-      {command: 'status', description: 'Состояние магазинов и расписаний'}, {command: 'help', description: 'Показать команды'},
++    await this.api.call('setMyCommands', {commands: [{command: 'check', description: 'Проверить цены'},
++      {command: 'status', description: 'Состояние и следующая проверка'}, {command: 'help', description: 'Показать команды'},
+       ...(this.chat ? [{command: 'new', description: 'Новый диалог с Codex'}] : [])]});
+     this.log('telegram_ready');
+   }
+@@ -451,7 +269,7 @@
+   }
+ }
+ 
+-export function createTelegramBot(tracker, env = process.env, logger = entry => console.info(JSON.stringify(entry)), {ozon} = {}) {
++export function createTelegramBot(tracker, env = process.env, logger = entry => console.info(JSON.stringify(entry))) {
+   const file = env.PRICE_CHECKER_TELEGRAM_TOKEN_FILE, owner = env.PRICE_CHECKER_TELEGRAM_OWNER_ID;
+   if (!file && !owner) return null;
+   try {
+@@ -461,7 +279,7 @@
+       try {codexRunner = new CodexRunner({executable: env.PRICE_CHECKER_CODEX_EXECUTABLE, workspace: env.PRICE_CHECKER_CODEX_WORKSPACE});}
+       catch {logger({time: now(), event: 'telegram_ai_disabled', reason: 'configuration'});}
+     }
+-    return new TelegramBot(tracker, {ownerId: Number(owner), logger, codexRunner, ozon, publicOrigin: env.PRICE_CHECKER_PUBLIC_ORIGIN,
++    return new TelegramBot(tracker, {ownerId: Number(owner), logger, codexRunner,
+       api: new TelegramApi({token: readFileSync(file, 'utf8').trim(), proxy: env.PRICE_CHECKER_TELEGRAM_PROXY})});
+   } catch {
+     logger({time: now(), event: 'telegram_disabled', reason: 'configuration'});
