@@ -89,12 +89,14 @@ export class OzonClient {
     }
   }
   async close() {const browser = this.browser;this.browser = null;await browser?.close();}
-  async lists() {
-    const pages = [];
+  async lists({limit = null} = {}) {
+    const pages = [], visited = new Set();
     let path = '/my/favorites?sorting=last_added', favorites;
-    for (let page = 0; page < 5; page++) {
+    while (true) {
+      if (visited.has(path)) throw new OzonReadError('incomplete_data');
+      visited.add(path);
       pages.push(await this.read(this.request(path),{loginFlag:true}));
-      try {favorites = latestFavorites(pages,30);} catch {throw new OzonReadError('invalid_data');}
+      try {favorites = latestFavorites(pages,limit);} catch {throw new OzonReadError('invalid_data');}
       if (favorites.complete) break;
       if (!favorites.next_page) throw new OzonReadError('incomplete_data');
       path = favorites.next_page;

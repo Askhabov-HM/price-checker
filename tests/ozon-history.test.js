@@ -52,6 +52,36 @@ test('partial and failed checks never add an old price or an unavailable item to
   assert.equal(last.regular.status,'missing');assert.equal(last.regular.complete,false);
 });
 
+test('unavailable favorites retain their original price date and resume comparison when they return', t => {
+  const db = database(t);
+  const favorite = (price, availability = 'available') => ({external_id: '123', url: 'https://www.ozon.ru/product/123/',
+    title: 'Synthetic favorite', availability, listed_price_kopecks: price, original_price_kopecks: 15000});
+  const collect = (hour, products) => {
+    const id = db.begin('manual', stamp(hour));
+    db.recordFavorites(id, products, stamp(hour)); db.finish(id, 'success', '', stamp(hour));
+  };
+  collect(1, [favorite(10000)]);
+  collect(2, [favorite(null, 'out_of_stock')]);
+  let row = db.dashboard('favorites').items[0];
+  assert.equal(row.listed_price_kopecks, 10000);
+  assert.equal(row.price_at, stamp(1));
+  assert.equal(row.availability, 'out_of_stock');
+  assert.equal(row.price_summary.listed.last_change, null);
+  collect(3, [favorite(null, 'out_of_stock')]);
+  assert.equal(db.detail('ozon:item:123', 0).points.length, 2);
+  collect(4, [favorite(9000)]);
+  row = db.dashboard('favorites').items[0];
+  assert.equal(row.price_at, stamp(4));
+  assert.deepEqual(row.price_summary.listed.last_change,
+    {checked_at: stamp(4), previous_price: 10000, price: 9000, delta: -1000});
+  collect(5, [favorite(9000)]);
+  assert.equal(db.dashboard('favorites').items[0].price_summary.listed.last_change.checked_at, stamp(4));
+  collect(6, [favorite(9000), {...favorite(null, 'unavailable'), external_id: '456', url: 'https://www.ozon.ru/product/456/'}]);
+  const unknown = db.dashboard('favorites').items.find(item => item.sku === '456');
+  assert.equal(unknown.listed_price_kopecks, null);
+  assert.equal(unknown.original_price_kopecks, null);
+});
+
 test('unfinished runs and legacy observations with unknown list membership do not invent overview points', t => {
   const db = database(t), a = product('123');db.syncLists([a],[],stamp(1));
   const legacy = db.begin('browser',stamp(2));db.observe(legacy,a,stamp(2));db.finish(legacy,'success','',stamp(2));

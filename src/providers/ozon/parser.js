@@ -74,7 +74,15 @@ function favoritesNext(value) {
 
 export function parseFavoritesPage(data) {
   const grids = widgets(data, 'tileGridDesktop').filter(({key}) => /^tileGridDesktop-\d+-default-\d+$/.test(key));
-  if (!grids.length) throw invalid();
+  if (!grids.length) {
+    // The observed final pagination response contains only its page separator,
+    // without a grid or paginator. Never accept this as the initial list page.
+    const keys = Object.keys(data.widgetStates), separators = widgets(data,'separator');
+    if (keys.length === 1 && /^separator-\d+-default-(?:[2-9]|\d{2,})$/.test(keys[0])
+      && separators.length === 1 && Number.isFinite(separators[0].value.height)
+      && !Object.hasOwn(data,'nextPage')) return {items:[],sorting:null,next_page:null,pagination_known:true};
+    throw invalid();
+  }
   const items = grids.flatMap(({value}) => {
     if (!Array.isArray(value.items)) throw invalid();
     return value.items.map(favorite).filter(Boolean);
@@ -92,7 +100,7 @@ export function parseFavoritesPage(data) {
 }
 
 export function latestFavorites(pages, limit = 30) {
-  if (!Array.isArray(pages) || !pages.length || !Number.isInteger(limit) || limit < 1 || limit > 100) throw invalid();
+  if (!Array.isArray(pages) || !pages.length || limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw invalid();
   const items = [], seen = new Set();
   let last;
   for (const [index, data] of pages.entries()) {
@@ -102,7 +110,7 @@ export function latestFavorites(pages, limit = 30) {
     for (const item of page.items) {
       if (seen.has(item.external_id)) continue;
       seen.add(item.external_id); items.push(item);
-      if (items.length === limit) return {items, limit, complete: true};
+      if (limit !== null && items.length === limit) return {items, limit, complete: true};
     }
     if (page.pagination_known && !page.next_page) return {items, limit, complete: true};
   }

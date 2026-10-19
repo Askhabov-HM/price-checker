@@ -7,6 +7,7 @@ import {PriceChart} from './price-chart';
 import {invalidatePrices, mutate} from '@/lib/api';
 import {date, imageUrl, rub} from '@/lib/format';
 import {detectedAgo, hasRecentChange} from '@/lib/price-changes';
+import {isUnavailable} from '@/lib/availability';
 import type {ChangePeriod, Filter, ListId, ProductRow, Sort} from '@/lib/types';
 
 export function selectProducts(items: ProductRow[], search: string, filter: Filter, sort: Sort, changeDays: ChangePeriod = 7, nowMs = Date.now()) {
@@ -37,23 +38,27 @@ function Root({children, changeDays = 7, nowMs = Date.now(), list = 'cart', ...p
 }
 function Toolbar() {
   const {search, filter, sort, changeDays, onChange} = useTable();
+  return <ProductFilters {...{search, filter, sort, changeDays, onChange}} />;
+}
+export function ProductFilters({search, filter, sort, changeDays, onChange, idPrefix = '', searchLabel = 'Поиск товаров', searchPlaceholder = 'Найти аромат или бренд', unavailableLabel = 'Нет в наличии / объёма'}:
+  Pick<TableState, 'search' | 'filter' | 'sort' | 'changeDays' | 'onChange'> & {idPrefix?: string; searchLabel?: string; searchPlaceholder?: string; unavailableLabel?: string}) {
   return <div className="toolbar">
-    <label className="search"><span>⌕</span><Input id="search" type="search" className="border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent" placeholder="Найти аромат или бренд" aria-label="Поиск товаров" value={search} onChange={event => onChange({search: event.target.value})} /></label>
-    <select id="filter" aria-label="Фильтр товаров" value={filter} onChange={event => onChange({filter: event.target.value as Filter})}>{Object.entries({all: 'Все товары', changed: 'Изменились недавно', drops: 'Подешевели', rises: 'Подорожали', minimum: 'Минимальная цена', unavailable: 'Нет в наличии / объёма', errors: 'Нужна проверка'}).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-    <label className="change-period-label"><span>Период изменений</span><select id="change-days" aria-label="Период изменений" value={changeDays} onChange={event => onChange({changeDays: Number(event.target.value) as ChangePeriod})}>{([7, 14, 30] as const).map(days => <option key={days} value={days}>За {days} дней</option>)}</select></label>
-    <select id="sort" aria-label="Сортировка товаров" value={sort} onChange={event => onChange({sort: event.target.value as Sort})}>{Object.entries({recent: 'Сначала последние изменения', name: 'По названию', 'price-asc': 'Сначала дешевле', 'price-desc': 'Сначала дороже', delta: 'По снижению цены'}).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+    <label className="search"><span>⌕</span><Input id={`${idPrefix}search`} type="search" className="border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent" placeholder={searchPlaceholder} aria-label={searchLabel} value={search} onChange={event => onChange({search: event.target.value})} /></label>
+    <select id={`${idPrefix}filter`} aria-label="Фильтр товаров" value={filter} onChange={event => onChange({filter: event.target.value as Filter})}>{Object.entries({all: 'Все товары', changed: 'Изменились недавно', drops: 'Подешевели', rises: 'Подорожали', minimum: 'Минимальная цена', unavailable: unavailableLabel, errors: 'Нужна проверка'}).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+    <label className="change-period-label"><span>Период изменений</span><select id={`${idPrefix}change-days`} aria-label="Период изменений" value={changeDays} onChange={event => onChange({changeDays: Number(event.target.value) as ChangePeriod})}>{([7, 14, 30] as const).map(days => <option key={days} value={days}>За {days} дней</option>)}</select></label>
+    <select id={`${idPrefix}sort`} aria-label="Сортировка товаров" value={sort} onChange={event => onChange({sort: event.target.value as Sort})}>{Object.entries({recent: 'Сначала последние изменения', name: 'По названию', 'price-asc': 'Сначала дешевле', 'price-desc': 'Сначала дороже', delta: 'По снижению цены'}).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
   </div>;
 }
-export function PriceChange({item, changeDays = 7, nowMs = Date.now()}: {item: ProductRow; changeDays?: ChangePeriod; nowMs?: number}) {
-  const statusLabel = item.status === 'error' ? 'Нет свежих данных' : item.status === 'missing' ? 'Нет варианта' : item.status === 'pending' ? 'Ожидает проверки' : null;
+export function PriceChange({item, changeDays = 7, nowMs = Date.now(), unavailable = false}: {item: Pick<ProductRow, 'status' | 'last_change' | 'observations'>; changeDays?: ChangePeriod; nowMs?: number; unavailable?: boolean}) {
+  const statusLabel = item.status === 'error' ? 'Нет свежих данных' : unavailable ? 'Товар недоступен' : item.status === 'missing' ? 'Нет варианта' : item.status === 'pending' ? 'Ожидает проверки' : null;
   const change = item.last_change;
-  if (!change) return <span className="muted">{statusLabel || (item.observations > 1 ? 'Цена не менялась' : 'Первая проверка')}</span>;
+  if (!change) return <span className={unavailable ? 'muted availability-unavailable' : 'muted'}>{statusLabel || (item.observations > 1 ? 'Цена не менялась' : item.observations === 1 ? 'Первая проверка' : 'Нет цен для сравнения')}</span>;
   const recent = hasRecentChange(item, changeDays, nowMs);
   return <div className="last-price-change">
-    <span className={`change ${recent ? change.delta < 0 ? 'down' : 'up' : 'historic'}`}>{change.delta < 0 ? '↘' : '↗'} {rub(Math.abs(change.delta))}{change.previous_price > 0 && <small>{change.delta > 0 ? '+' : '−'}{(Math.abs(change.delta) / change.previous_price * 100).toFixed(1).replace('.', ',')}%</small>}</span>
-    <small className="change-prices">{rub(change.previous_price)} → {rub(change.price)}</small>
+    <span className={`change ${unavailable ? 'unavailable' : recent ? change.delta < 0 ? 'down' : 'up' : 'historic'}`}>{change.delta < 0 ? '↘' : '↗'} {rub(Math.abs(change.delta))}{change.previous_price > 0 && <small>{change.delta > 0 ? '+' : '−'}{(Math.abs(change.delta) / change.previous_price * 100).toFixed(1).replace('.', ',')}%</small>}</span>
+    <small className={`change-prices${unavailable ? ' availability-unavailable' : ''}`}>{rub(change.previous_price)} → {rub(change.price)}</small>
     <time dateTime={change.checked_at} title={`Обнаружено ${date(change.checked_at, {year: 'numeric', second: '2-digit'})}`}>Обнаружено {detectedAgo(change.checked_at, nowMs)}</time>
-    {statusLabel && <small className="stale-label">{statusLabel}</small>}
+    {statusLabel && <small className={`stale-label${unavailable ? ' availability-unavailable' : ''}`}>{statusLabel}</small>}
   </div>;
 }
 function ProductImage({item}: {item: ProductRow}) {
@@ -67,8 +72,8 @@ function Rows() {
   return <><div className="table-wrap"><table className="products-table"><thead><tr>{['ТОВАР', 'ЦЕНА СЕЙЧАС', 'ПОСЛЕДНЕЕ ИЗМЕНЕНИЕ', 'МИНИМУМ', 'ИСТОРИЯ', 'НАЛИЧИЕ', 'Наблюдение', 'Моя корзина'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody id="product-rows">
     {visible.map(item => <tr key={item.id} data-id={item.id} tabIndex={0} aria-label={`История: ${item.brand} ${item.name}`} onClick={() => onSelect(item.id)} onKeyDown={event => {if (event.target === event.currentTarget && event.key === 'Enter') {event.preventDefault(); onSelect(item.id);}}}>
       <td><div className="product-cell"><ProductImage item={item} /><div className="product-info"><span className="product-brand">{item.brand}</span><strong>{item.name}</strong><small>{item.label} · {item.sku ? `арт. ${item.sku}` : 'артикул уточняется'}</small></div></div></td>
-      <td><span className={`price ${item.status === 'error' ? 'stale-price' : ''}`}>{rub(item.price)}</span>{item.status === 'error' && item.price != null && <small className="stale-label">Последняя известная</small>}</td>
-      <td><PriceChange item={item} changeDays={changeDays} nowMs={nowMs} /></td><td><span className="minimum">{rub(item.minimum)}</span></td>
+      <td><span className={`price ${isUnavailable(item) ? 'price-unavailable' : item.status === 'error' ? 'stale-price' : ''}`}>{rub(item.price)}</span>{item.status === 'error' && item.price != null && <small className="stale-label">Последняя известная</small>}</td>
+      <td><PriceChange item={item} changeDays={changeDays} nowMs={nowMs} unavailable={isUnavailable(item)} /></td><td><span className="minimum">{rub(item.minimum)}</span></td>
       <td><PriceChart.Root points={item.sparkline}><PriceChart.Plot small /></PriceChart.Root><small className="sparkline-label">{item.observations} проверок</small></td>
       <td><span className={`stock ${item.status === 'error' ? 'warning' : item.in_stock ? '' : 'neutral'}`}>{item.status === 'error' ? 'Ошибка проверки' : item.status === 'missing' ? 'Нет варианта 1,5 мл' : item.in_stock == null ? 'Ожидает проверки' : item.in_stock ? 'В наличии' : 'Нет в наличии'}</span></td>
       <td><Button variant="ghost" size="icon" className={`watch-button ${item.watching ? 'selected' : ''}`} aria-label={item.watching ? 'Убрать из наблюдения' : 'Добавить в наблюдение'} disabled={watch.isPending} onClick={event => {event.stopPropagation(); watch.mutate(item);}}><Star size={19} fill={item.watching ? 'currentColor' : 'none'} /></Button></td>

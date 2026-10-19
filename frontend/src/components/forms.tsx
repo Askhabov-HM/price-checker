@@ -5,8 +5,11 @@ import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
 import {invalidatePrices, mutate} from '@/lib/api';
-import type {Status} from '@/lib/types';
+import type {ScheduleSettings, Status} from '@/lib/types';
 import {RandewooConnection} from './randewoo-connection';
+import {ScheduleFields} from './schedule-fields';
+import {invalidateOzon, ozonMutate} from '@/lib/ozon';
+import type {OzonStatus} from '@/lib/ozon';
 
 export function AddDialog({open, onClose, destination = 'watching'}: {open: boolean; onClose: () => void; destination?: 'watching' | 'my-cart'}) {
   return <Dialog open={open} onOpenChange={value => {if (!value) onClose();}}>{open && <AddForm destination={destination} onClose={onClose} />}</Dialog>;
@@ -20,22 +23,38 @@ export function SettingsDialog({status, open, onClose}: {status?: Status; open: 
   return <Dialog open={open} onOpenChange={value => {if (!value) onClose();}}>{open && status && <SettingsForm status={status} onClose={onClose} />}</Dialog>;
 }
 function SettingsForm({status, onClose}: {status: Status; onClose: () => void}) {
-  const [schedule, setSchedule] = useState(status.schedule.join(', ')), [enabled, setEnabled] = useState(status.schedule_enabled);
+  const [schedule, setSchedule] = useState<ScheduleSettings>({schedule:status.schedule,schedule_enabled:status.schedule_enabled,
+    schedule_mode:status.schedule_mode ?? 'hours',interval_minutes:status.interval_minutes ?? 30});
   // Session fields are transient and are destroyed when the dialog closes.
   const [cookie, setCookie] = useState(''), [agent, setAgent] = useState(navigator.userAgent);
   const save = useMutation({
     mutationFn: async () => {
-      await mutate('/api/settings', {schedule: schedule.split(/[,;\s]+/).map(value => value.trim()).filter(Boolean), schedule_enabled: enabled});
+      await mutate('/api/settings', schedule);
       if (cookie.trim()) await mutate('/api/session', {cookie, user_agent: agent});
     },
     onSuccess: async () => {setCookie(''); await invalidatePrices(); onClose();},
   });
   const submit = (event: FormEvent) => {event.preventDefault(); save.mutate();};
-  return <DialogContent id="settings-dialog" className="max-h-[90vh] overflow-y-auto sm:max-w-[540px]"><DialogHeader><DialogTitle>Настройки</DialogTitle><DialogDescription>Расписание проверок и подключение Randewoo</DialogDescription></DialogHeader><form id="settings-form" onSubmit={submit} className="grid gap-4">
-    <Label htmlFor="schedule-input">Время проверок по Москве</Label><Input id="schedule-input" required value={schedule} onChange={event => setSchedule(event.target.value)} placeholder="00:30, 09:00, 14:00, 20:00" /><p className="text-xs text-muted-foreground">В формате ЧЧ:ММ, через запятую. После сна выполняется одна проверка за последний пропущенный интервал.</p>
-    <Label className="flex items-center gap-2"><input id="schedule-enabled" type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} /> Проверять автоматически, пока приложение работает</Label>
+  return <DialogContent id="settings-dialog" className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]"><DialogHeader><DialogTitle>Настройки Randewoo</DialogTitle><DialogDescription>Изменения применяются только к Randewoo. Расписание Ozon сохраняется отдельно.</DialogDescription></DialogHeader><form id="settings-form" onSubmit={submit} className="grid gap-4">
+    <ScheduleFields value={schedule} onChange={setSchedule} prefix="randewoo" disabled={save.isPending}/>
     <details><summary className="cursor-pointer text-sm text-primary">Обновить данные авторизации</summary><div className="mt-4 grid gap-3"><p className="text-xs text-muted-foreground">Заголовки Cookie и User-Agent из своего запроса /cart в DevTools. Значения сохраняются только локально.</p><Label htmlFor="session-cookie">Cookie</Label><Input id="session-cookie" type="password" autoComplete="off" spellCheck={false} value={cookie} onChange={event => setCookie(event.target.value)} /><Label htmlFor="session-agent">User-Agent</Label><Input id="session-agent" value={agent} onChange={event => setAgent(event.target.value)} /></div></details>
     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
     <div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={onClose}>Отмена</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? 'Сохраняем…' : 'Сохранить'}</Button></div>
   </form><RandewooConnection message={status.auth_message} /></DialogContent>;
+}
+
+export function OzonSettingsDialog({status,open,onClose}: {status?: OzonStatus; open: boolean; onClose: () => void}) {
+  return <Dialog open={open} onOpenChange={value => {if (!value) onClose();}}>{open && status && <OzonSettingsForm status={status} onClose={onClose}/>}</Dialog>;
+}
+function OzonSettingsForm({status,onClose}: {status: OzonStatus; onClose: () => void}) {
+  const [schedule,setSchedule] = useState<ScheduleSettings>({schedule:status.schedule ?? ['00:00'],schedule_enabled:status.schedule_enabled,
+    schedule_mode:status.schedule_mode ?? 'interval',interval_minutes:status.interval_minutes});
+  const save = useMutation({mutationFn:() => ozonMutate('settings',schedule),onSuccess:async () => {await invalidateOzon(); onClose();}});
+  return <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]"><DialogHeader><DialogTitle>Настройки Ozon</DialogTitle><DialogDescription>Изменения применяются только к Ozon. Расписание Randewoo сохраняется отдельно.</DialogDescription></DialogHeader>
+    <form className="grid gap-4" onSubmit={event => {event.preventDefault(); save.mutate();}}>
+      <ScheduleFields value={schedule} onChange={setSchedule} prefix="ozon" disabled={save.isPending}/>
+      {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
+      <div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={onClose}>Отмена</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? 'Сохраняем…' : 'Сохранить'}</Button></div>
+    </form>
+  </DialogContent>;
 }

@@ -2,6 +2,7 @@ import {createContext, lazy, Suspense, useContext, useMemo, type ReactNode} from
 import {usePreferences} from '@/lib/store';
 import type {ChartScale, PricePoint} from '@/lib/types';
 import {Button} from '@/components/ui/button';
+import {isUnavailable} from '@/lib/availability';
 
 export function chartData(points: PricePoint[], scale: ChartScale, total = false) {
   let series = 0;
@@ -9,12 +10,15 @@ export function chartData(points: PricePoint[], scale: ChartScale, total = false
   const rows = points.map((point, index) => {
     const previous = points[index - 1];
     const failed = point.status === 'error';
+    const unavailable = isUnavailable(point);
     const price = point.price != null && Number.isFinite(point.price) ? point.price : null;
-    if (index && (previous.price == null || price == null || previous.status === 'error' || failed || total && previous.composition !== point.composition)) series++;
+    if (index && (previous.price == null || price == null || previous.status === 'error' || failed || isUnavailable(previous) || unavailable || total && previous.composition !== point.composition)) series++;
     const errorPrice = failed ? price ?? lastPrice : null;
+    const unavailablePrice = unavailable ? price ?? lastPrice : null;
     if (!failed && price != null) lastPrice = price;
     return {...point, index, x: scale === 'checks' ? index : new Date(point.checked_at).getTime(), series,
-      chartPrice: failed ? null : price, errorPrice, errorBaseline: failed && errorPrice == null ? 0 : null};
+      chartPrice: failed || unavailable ? null : price, errorPrice, errorBaseline: failed && errorPrice == null ? 0 : null,
+      unavailablePrice, unavailableBaseline: unavailable && unavailablePrice == null ? 0 : null};
   });
   const seriesIds = [...new Set(rows.filter(row => row.chartPrice != null).map(row => row.series))];
   return {rows: rows.map(row => ({...row, ...Object.fromEntries(seriesIds.map(id => [`series${id}`, row.series === id ? row.chartPrice : null]))})), seriesIds};
@@ -37,7 +41,7 @@ function ScaleControls({detail = false}: {detail?: boolean}) {
     <div className="chart-scale" role="group" aria-label="Шкала графика">
       {(['time', 'checks'] as const).map(scale => <Button key={scale} type="button" variant="ghost" data-chart-scale={scale} className={chartScale === scale ? 'active' : ''} aria-pressed={chartScale === scale} onClick={() => setChartScale(scale)}>{scale === 'time' ? 'По времени' : 'По проверкам'}</Button>)}
     </div>
-    <p className="chart-scale-hint">{chartScale === 'checks' ? 'Проверки расположены равномерно, независимо от времени.' : 'Расстояния соответствуют времени между проверками.'}{points.some(point => point.status === 'error') && ' Красные точки — ошибки проверки.'}</p>
+    <p className="chart-scale-hint">{chartScale === 'checks' ? 'Проверки расположены равномерно, независимо от времени.' : 'Расстояния соответствуют времени между проверками.'}{points.some(isUnavailable) && ' Синие точки — товара нет в наличии; показана последняя известная цена, если она есть.'}{points.some(point => point.status === 'error') && ' Красные точки — ошибки проверки.'}</p>
   </div>;
 }
 const LazyPlot = lazy(() => import('./price-chart-plot'));

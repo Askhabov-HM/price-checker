@@ -4,7 +4,7 @@ import {isAbsolute} from 'node:path';
 import {now} from './time.js';
 
 const sessionPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const instructions = 'Ты отвечаешь владельцу Price Checker в личном Telegram-чате. Отвечай по-русски, понятно и кратко, если пользователь не просит подробностей. Это текстовая переписка. Не используй инструменты, не читай файлы, не выполняй команды. У тебя нет доступа к актуальным ценам и состоянию приложения; для них предложи /status или /check. Не утверждай, что выполнил действие на сервере.';
+const instructions = 'Ты отвечаешь владельцу Price Checker в личном Telegram-чате. Отвечай по-русски, понятно и кратко, если пользователь не просит подробностей. Это текстовая переписка. Не используй инструменты, не читай файлы, не выполняй команды. У тебя нет доступа к актуальным ценам и состоянию приложения; для них предложи /status, /check_randewoo или /check_ozon в зависимости от магазина. Не утверждай, что выполнил действие на сервере.';
 const configuration = {
   sandbox_mode: 'read-only', approval_policy: 'never', web_search: 'disabled',
   'features.shell_tool': false, 'features.apps': false, 'features.plugins': false,

@@ -5,6 +5,8 @@ import {createBrowserReader,browserCookieParams} from '../src/providers/ozon/bro
 import {RECOVERY_LIMIT} from '../src/providers/ozon/recovery.js';
 import {validateCapturedRequest} from '../src/providers/ozon/network-capture.js';
 import {createBrowserView} from '../src/providers/ozon/browser-view.js';
+import {createHash} from 'node:crypto';
+import {pathMatch} from 'tough-cookie';
 
 // Socket-activated by systemd as ozonbrowser, never run by the web process as root.
 let display, chrome, view, closing = false;
@@ -90,6 +92,11 @@ try {
     return child;
   });
   let expected = 1;
+  const exportCookies = async () => {
+    const {cookies} = await call('Storage.getCookies');
+    return cookies.filter(cookie => ['.ozon.ru','ozon.ru','www.ozon.ru'].includes(cookie.domain)
+      && pathMatch(new URL(request.url).pathname,cookie.path));
+  };
   while (true) {
     if (input.version !== 2 || input.id !== expected++) throw Error('Invalid sequence');
     let result;
@@ -98,6 +105,14 @@ try {
       await cleanup();result = {version:2,browser_closed:true};
     } else if (login) {
       if (input.login === 'start' && input.id === 1) result = {version:2,view:{port:view.port,password:view.password}};
+      else if (input.login === 'state') {
+        const cookies = await exportCookies();
+        const identity = cookies.filter(cookie => ['__Secure-access-token','__Secure-refresh-token','__Secure-user-id'].includes(cookie.name))
+          .map(cookie => [cookie.domain,cookie.path,cookie.name,cookie.value,cookie.expires])
+          .sort((left,right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+        result = {version:2,signature:createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
+          has_auth:cookies.some(cookie => cookie.name === '__Secure-access-token' && cookie.value && (cookie.session || cookie.expires*1000 > Date.now()))};
+      }
       else if (input.login === 'phone') {
         const {targetInfos} = await call('Target.getTargets');
         const target = targetInfos.find(target => target.type === 'page' && target.url.startsWith('https://www.ozon.ru/'));
@@ -118,8 +133,7 @@ try {
       } else if (input.login === 'finish') {
         result = await browser.read(request);
         if (result.data?.userInfo?.user?.isLoggedIn === true) {
-          const {cookies} = await call('Storage.getCookies');
-          result.exported = {cookies:cookies.filter(cookie => ['.ozon.ru','ozon.ru','www.ozon.ru'].includes(cookie.domain))};
+          result.exported = {cookies:await exportCookies()};
         }
       } else throw Error('Invalid login action');
     } else result = await browser.read(input.request);

@@ -45,6 +45,10 @@ export class OzonDatabase {
       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'source')) this.db.exec("ALTER TABLE observations ADD COLUMN source TEXT NOT NULL DEFAULT 'http'");
       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'listed_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN listed_price_kopecks INTEGER');
       if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'original_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN original_price_kopecks INTEGER');
+      const stateColumns = new Set(this.db.prepare('PRAGMA table_info(collector_state)').all().map(column => column.name));
+      for (const [name,definition] of Object.entries({schedule_mode:"TEXT NOT NULL DEFAULT 'interval'",schedule:"TEXT NOT NULL DEFAULT '[\"00:00\"]'",interval_minutes:'INTEGER NOT NULL DEFAULT 30',schedule_anchor:'TEXT'})) {
+        if (!stateColumns.has(name)) this.db.exec(`ALTER TABLE collector_state ADD COLUMN ${name} ${definition}`);
+      }
     } catch (error) {this.db.close(); throw error;}
   }
   close() {this.db.close();}
@@ -87,16 +91,49 @@ export class OzonDatabase {
       this.db.prepare('INSERT INTO membership(sku,list,quantity,position) VALUES(?,?,?,?)').run(product.external_id,list,product.quantity || 1,position);
     }
   }
+  withSavedPrice(product) {
+    if (!['out_of_stock','unavailable'].includes(product.availability)) return product;
+    const previous = this.db.prepare("SELECT availability FROM observations WHERE sku=? AND status='ok' ORDER BY id DESC LIMIT 1").get(product.external_id);
+    const becameUnavailable = previous && !['out_of_stock','unavailable'].includes(previous.availability);
+    const saved = this.db.prepare(`SELECT * FROM observations WHERE sku=? AND status='ok'
+      AND (listed_price_kopecks IS NOT NULL OR regular_kopecks IS NOT NULL OR ozon_card_kopecks IS NOT NULL)
+      AND (?=0 OR availability NOT IN ('out_of_stock','unavailable'))
+      ORDER BY id DESC LIMIT 1`).get(product.external_id,Number(!!becameUnavailable));
+    return {...product,listed_price_kopecks:saved?.listed_price_kopecks ?? null,
+      original_price_kopecks:saved?.original_price_kopecks ?? null,
+      regular_kopecks:saved?.regular_kopecks ?? null,ozon_card_kopecks:saved?.ozon_card_kopecks ?? null,
+      seller_id:saved?.seller_id ?? null,seller_name:saved?.seller_name ?? null,
+      price_at:saved?.checked_at ?? null,price_retained:!!saved,price_source:saved?.source ?? product.price_source};
+  }
   recordFavorites(check, favorites, now, source = 'http') {
-    if (!['http','browser'].includes(source) || !Array.isArray(favorites) || favorites.length > 30) throw invalid();
+    if (!['http','browser'].includes(source) || !Array.isArray(favorites)) throw invalid();
     this.transaction(() => {
       this.replaceList('favorites',favorites,now);
       this.snapshotLists(check,'favorites');
-      const insert = this.db.prepare("INSERT INTO observations(check_id,sku,checked_at,status,availability,listed_price_kopecks,original_price_kopecks,source) VALUES(?,?,?,'ok',?,?,?,?)");
+      const insert = this.db.prepare(`INSERT INTO observations(check_id,sku,checked_at,status,availability,
+        listed_price_kopecks,original_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,seller_name,message,source)
+        VALUES(?,?,?,'ok',?,?,?,?,?,?,?,?,?)`);
       for (const product of favorites) {
-        const price = product.listed_price_kopecks ?? null, original = product.original_price_kopecks ?? null;
+        const current = this.withSavedPrice(product);
+        const price = current.listed_price_kopecks ?? null, original = current.original_price_kopecks ?? null;
+        const priceSource = current.price_source ?? source;
+        if (!['http','browser'].includes(priceSource)) throw invalid();
         if ([price,original].some(value => value !== null && (!Number.isSafeInteger(value) || value <= 0))) throw invalid();
-        insert.run(check,product.external_id,now,product.availability,price,original,source);
+        const unavailable = ['out_of_stock','unavailable'].includes(product.availability);
+        if (unavailable) {
+          const latest = this.db.prepare('SELECT * FROM observations WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.external_id);
+          // Unchanged unavailable items do not receive another price observation.
+          if (latest?.status === 'ok' && latest.availability === product.availability
+            && latest.listed_price_kopecks === price && latest.original_price_kopecks === original
+            && latest.regular_kopecks === (current.regular_kopecks ?? null)
+            && latest.ozon_card_kopecks === (current.ozon_card_kopecks ?? null)) continue;
+        }
+        const stamp = current.price_retained ? current.price_at : now;
+        const message = unavailable ? current.price_retained
+          ? `Товар недоступен; сохранена цена от ${stamp}. Статус получен ${now}; цена не запрашивалась.`
+          : 'Товар недоступен; сохранённой цены нет, цена не запрашивалась.' : '';
+        insert.run(check,product.external_id,stamp,product.availability,price,original,
+          current.regular_kopecks ?? null,current.ozon_card_kopecks ?? null,current.seller_id ?? null,current.seller_name ?? null,message,priceSource);
       }
       this.db.prepare('UPDATE checks SET total=?,completed=? WHERE id=?').run(favorites.length,favorites.length,check);
     });
@@ -108,8 +145,8 @@ export class OzonDatabase {
     this.db.prepare('INSERT INTO list_snapshots(check_id,list,sku,quantity) SELECT ?,list,sku,quantity FROM membership WHERE (? IS NULL OR list=?)').run(check,list,list);
   }
   state() {return this.db.prepare('SELECT * FROM collector_state WHERE id=1').get();}
-  updateState({schedule_enabled,next_check,not_before,action_required,message}) {
-    const fields = {schedule_enabled,next_check,not_before,action_required,message};
+  updateState({schedule_enabled,next_check,not_before,action_required,message,schedule_mode,schedule,interval_minutes,schedule_anchor}) {
+    const fields = {schedule_enabled,next_check,not_before,action_required,message,schedule_mode,schedule,interval_minutes,schedule_anchor};
     for (const [key, value] of Object.entries(fields)) if (value !== undefined) this.db.prepare(`UPDATE collector_state SET ${key}=? WHERE id=1`).run(value);
   }
   checks() {return this.db.prepare('SELECT * FROM checks ORDER BY id DESC LIMIT 10').all();}
@@ -140,6 +177,26 @@ export class OzonDatabase {
       if (saved.changes) this.db.prepare('UPDATE checks SET completed=completed+1 WHERE id=?').run(check);
     });
   }
+  priceSummary(sku) {
+    const history = this.db.prepare(`SELECT checked_at,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks
+      FROM observations WHERE sku=? AND status='ok' ORDER BY id`).all(sku);
+    return Object.fromEntries([['listed','listed_price_kopecks'],['regular','regular_kopecks'],['ozon_card','ozon_card_kopecks']].map(([type,column]) => {
+      let minimum = null, observations = 0, previous = null, last_change = null;
+      for (const row of history) {
+        const price = row[column];
+        if (price === null) continue;
+        observations++;
+        minimum = minimum === null ? price : Math.min(minimum,price);
+        // Keep known prices as the baseline across an absence, as Telegram does.
+        // Retaining a price while unavailable must not create a fresh change.
+        if (previous !== null && previous !== price && !['out_of_stock','unavailable'].includes(row.availability)) {
+          last_change = {checked_at:row.checked_at,previous_price:previous,price,delta:price-previous};
+        }
+        previous = price;
+      }
+      return [type,{minimum,observations,last_change}];
+    }));
+  }
   row(product) {
     const latest = this.db.prepare('SELECT * FROM observations WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);
     const price = this.db.prepare("SELECT * FROM observations WHERE sku=? AND status='ok' ORDER BY id DESC LIMIT 1").get(product.sku);
@@ -150,6 +207,7 @@ export class OzonDatabase {
       regular_kopecks:price?.regular_kopecks ?? null,ozon_card_kopecks:price?.ozon_card_kopecks ?? null,
       availability:price?.availability || 'unknown',seller_id:seller?.seller_id || null,seller_name:seller?.seller_name || null,
       seller_change:event || null,message:latest?.message || '',lists:this.db.prepare('SELECT list,quantity FROM membership WHERE sku=?').all(product.sku),
+      price_summary:this.priceSummary(product.sku),
       sparkline:this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,message FROM observations WHERE sku=? ORDER BY id DESC LIMIT 24').all(product.sku).reverse()};
   }
   dashboard(list = 'favorites') {

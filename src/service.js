@@ -4,13 +4,15 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {Database} from './database.js';
 import {Randewoo, productUrl, quote} from './client.js';
 import {AuthError, FetchError, ValidationError} from './errors.js';
-import {now, nextCheck, scheduleSlot} from './time.js';
+import {now} from './time.js';
+import {nextScheduledCheck, scheduledSlot, scheduleSettings} from './schedule.js';
 import {RandewooLogin} from './randewoo-login.js';
 
 export class Tracker {
   constructor(root, {databasePath, client} = {}) {
     this.root = root;
     this.db = new Database(databasePath || join(root, '.data/prices.sqlite3'));
+    if (!this.db.setting('schedule_anchor')) this.db.setSetting('schedule_anchor',new Date(Date.now()+30*60000).toISOString());
     this.db.setSetting('last_started_slot', null);
     this.client = client || new Randewoo(join(root, '.secrets/randewoo-session.json'));
     this.randewooLogin = new RandewooLogin(this.client.transport, data => {
@@ -67,10 +69,15 @@ export class Tracker {
     this.db.setSetting('history_imported', true);
   }
 
+  scheduleConfig() {
+    return {schedule:this.db.setting('schedule'),schedule_mode:this.db.setting('schedule_mode','hours'),
+      interval_minutes:this.db.setting('interval_minutes',30),schedule_enabled:this.db.setting('schedule_enabled',true),
+      schedule_anchor:this.db.setting('schedule_anchor')};
+  }
   status() {
-    const schedule = this.db.setting('schedule'), enabled = this.db.setting('schedule_enabled');
-    return {running: this.running, checks: this.db.checks(), schedule, schedule_enabled: enabled, timezone: 'Europe/Moscow',
-      next_check: enabled ? nextCheck(schedule) : null, session_present: existsSync(this.client.sessionPath || join(this.root, '.secrets/randewoo-session.json')),
+    const config = this.scheduleConfig();
+    return {running: this.running, checks: this.db.checks(), ...config, timezone: 'Europe/Moscow',
+      next_check: config.schedule_enabled ? nextScheduledCheck(config) : null, session_present: existsSync(this.client.sessionPath || join(this.root, '.secrets/randewoo-session.json')),
       auth_status: this.db.setting('auth_status', 'unknown'), auth_message: this.db.setting('auth_message', ''), csrf_token: null,
       runtime: 'node.js', version: '1.0.0'};
   }
@@ -180,7 +187,7 @@ export class Tracker {
       let message = 'Проверено товаров: ' + products.length;
       if (errors.length) message += '. ' + errors.slice(0, 5).join('; ') + (errors.length > 5 ? '. Ещё ошибок: ' + (errors.length - 5) : '');
       this.db.updateCheck(checkId, {status: errors.length ? 'partial' : 'success', message, finished_at: now()});
-      this.db.setSetting('last_completed_slot', scheduleSlot(this.db.setting('schedule')));
+      this.db.setSetting('last_completed_slot', scheduledSlot(this.scheduleConfig()));
       await this.db.backup(join(this.root, '.data/backups'));
       return {check_id: checkId, count: products.length, errors: errors.length};
     } catch {
@@ -199,15 +206,12 @@ export class Tracker {
   }
 
   saveSettings(data) {
-    const times = data.schedule;
-    if (!Array.isArray(times) || times.length < 1 || times.length > 24 || times.some(value => typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) {
-      throw new ValidationError('Укажите от 1 до 24 времён в формате ЧЧ:ММ');
-    }
-    if (typeof data.schedule_enabled !== 'boolean') throw new ValidationError('Некорректное состояние расписания');
+    const config = scheduleSettings(data,this.scheduleConfig()), current = new Date();
+    const anchor = new Date(current.getTime()+config.interval_minutes*60000).toISOString();
     this.db.transaction(() => {
-      this.db.setSetting('schedule', [...new Set(times)].sort());
-      this.db.setSetting('schedule_enabled', data.schedule_enabled);
-      this.db.setSetting('last_completed_slot', scheduleSlot(times));
+      for (const [key,value] of Object.entries({...config,schedule_anchor:anchor})) this.db.setSetting(key,value);
+      this.db.setSetting('last_completed_slot', scheduledSlot({...config,schedule_anchor:anchor},current));
+      this.db.setSetting('last_started_slot', null);
     });
   }
 
@@ -227,7 +231,7 @@ export class Tracker {
 
   schedulerTick(current = new Date()) {
     if (!this.db.setting('schedule_enabled', true)) return false;
-    const slot = scheduleSlot(this.db.setting('schedule'), current);
+    const slot = scheduledSlot(this.scheduleConfig(), current);
     if (slot && this.db.setting('last_completed_slot') !== slot && this.db.setting('last_started_slot') !== slot && this.startRefresh('schedule')) {
       this.db.setSetting('last_started_slot', slot);
       return true;

@@ -1,12 +1,14 @@
 import {queryOptions} from '@tanstack/react-query';
 import {authOptions, queryClient, request} from './api';
-import type {Check, PricePoint} from './types';
+import type {ChangePeriod, Check, Filter, PriceChangeEvent, PricePoint, ScheduleSettings, Sort} from './types';
+import {hasRecentChange} from './price-changes';
 
 export type OzonList = 'watching' | 'favorites' | 'cart';
 export type OzonPrice = 'listed' | 'ozon_card' | 'regular';
 export interface OzonStatus {
   available: boolean; configured: boolean; running: boolean; schedule_enabled: boolean;
-  interval_minutes: number; next_check: string | null; not_before: string | null;
+  interval_minutes: ScheduleSettings['interval_minutes']; next_check: string | null; not_before: string | null;
+  schedule_mode?: ScheduleSettings['schedule_mode']; schedule?: string[];
   action_required: boolean; message: string; checks: Check[];
   login?: {available: boolean; required: boolean; active: boolean; expires_at: string | null; phone_hint: string | null};
 }
@@ -19,6 +21,7 @@ export interface OzonItem {
   availability: string; checked_at: string | null; price_at: string | null; message: string;
   lists: {list: OzonList; quantity: number}[];
   sparkline: OzonChartPoint[];
+  price_summary?: Record<OzonPrice, {minimum: number | null; observations: number; last_change: PriceChangeEvent | null}>;
 }
 export interface OzonChartPoint {
   checked_at: string; status: 'ok' | 'error'; availability: string;
@@ -36,6 +39,31 @@ export interface OzonDetail {product: OzonItem; points: OzonPoint[]; seller_even
 
 export function ozonPrice(point: Pick<OzonChartPoint,'listed_price_kopecks' | 'regular_kopecks' | 'ozon_card_kopecks'>, price: OzonPrice) {
   return price === 'listed' ? point.listed_price_kopecks : price === 'regular' ? point.regular_kopecks : point.ozon_card_kopecks;
+}
+export function ozonUnavailable(item: Pick<OzonChartPoint, 'availability'>) {
+  return ['out_of_stock', 'unavailable'].includes(item.availability);
+}
+export function selectOzonProducts(items: OzonItem[], query: string, filter: Filter, sort: Sort, price: OzonPrice, changeDays: ChangePeriod, nowMs: number) {
+  const search = query.toLocaleLowerCase('ru');
+  const change = (item: OzonItem) => item.price_summary?.[price].last_change ?? null;
+  const recent = (item: OzonItem) => hasRecentChange({last_change:change(item)}, changeDays, nowMs);
+  const visible = items.filter(item => `${item.title} ${item.sku}`.toLocaleLowerCase('ru').includes(search)).filter(item => {
+    const summary = item.price_summary?.[price], current = ozonPrice(item,price);
+    return filter === 'all' || filter === 'changed' && recent(item)
+      || filter === 'drops' && recent(item) && change(item)!.delta < 0
+      || filter === 'rises' && recent(item) && change(item)!.delta > 0
+      || filter === 'minimum' && item.status === 'ok' && !ozonUnavailable(item) && current != null && !!summary && current === summary.minimum && summary.observations > 1
+      || filter === 'unavailable' && ozonUnavailable(item)
+      || filter === 'errors' && (['error','pending'].includes(item.status) || !ozonUnavailable(item) && current == null);
+  });
+  const byName = (a: OzonItem, b: OzonItem) => a.title.localeCompare(b.title,'ru') || a.sku.localeCompare(b.sku);
+  return visible.sort((a,b) => {
+    if (sort === 'price-asc') return (ozonPrice(a,price) ?? Infinity) - (ozonPrice(b,price) ?? Infinity) || byName(a,b);
+    if (sort === 'price-desc') return (ozonPrice(b,price) ?? -Infinity) - (ozonPrice(a,price) ?? -Infinity) || byName(a,b);
+    if (sort === 'delta') return (recent(a) ? change(a)!.delta : Infinity) - (recent(b) ? change(b)!.delta : Infinity) || byName(a,b);
+    if (sort === 'recent') return (change(b) ? Date.parse(change(b)!.checked_at) : -Infinity) - (change(a) ? Date.parse(change(a)!.checked_at) : -Infinity) || byName(a,b);
+    return byName(a,b);
+  });
 }
 export function ozonProductPoints(points: OzonChartPoint[], price: OzonPrice): PricePoint[] {
   return points.map(point => ({...point,price:ozonPrice(point,price),

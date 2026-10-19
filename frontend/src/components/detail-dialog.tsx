@@ -5,6 +5,7 @@ import {Button} from '@/components/ui/button';
 import {PriceChart} from './price-chart';
 import {detailOptions} from '@/lib/api';
 import {date, rub} from '@/lib/format';
+import {isUnavailable} from '@/lib/availability';
 import type {DetailData, Period, PriceContext} from '@/lib/types';
 
 type DetailState = {id: number | null; context: PriceContext; days: Period; onClose: () => void; onPeriod: (days: Period) => void};
@@ -32,6 +33,6 @@ function Chart() {
 }
 function History() {
   const {data} = useDetail();
-  return <div className="detail-table-wrap"><table className="history-table"><thead><tr><th>Проверка</th><th>Цена</th><th>Наличие / результат</th></tr></thead><tbody id="detail-history">{data?.points.toReversed().map((point, index) => <tr key={index}><td>{date(point.checked_at, {second: '2-digit'})}</td><td><strong>{rub(point.price)}</strong></td><td>{point.status === 'error' ? point.message : point.status === 'missing' ? 'Вариант 1,5 мл не найден' : point.in_stock ? 'В наличии' : 'Нет в наличии'}</td></tr>)}{!data?.points.length && <tr><td colSpan={3} className="empty-state">В этом периоде ещё нет проверок.</td></tr>}</tbody></table></div>;
+  return <div className="detail-table-wrap"><table className="history-table"><thead><tr><th>Проверка</th><th>Цена</th><th>Наличие / результат</th></tr></thead><tbody id="detail-history">{data?.points.toReversed().map((point, index) => <tr key={index}><td>{date(point.checked_at, {second: '2-digit'})}</td><td className={isUnavailable(point) ? 'price-unavailable' : undefined}><strong>{rub(point.price)}</strong></td><td className={isUnavailable(point) ? 'availability-unavailable' : undefined}>{point.status === 'error' ? point.message : point.status === 'missing' ? 'Вариант 1,5 мл не найден' : point.in_stock ? 'В наличии' : 'Нет в наличии'}</td></tr>)}{!data?.points.length && <tr><td colSpan={3} className="empty-state">В этом периоде ещё нет проверок.</td></tr>}</tbody></table></div>;
 }
 export const DetailDialog = {Root, Content, Toolbar, Chart, History};

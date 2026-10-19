@@ -20,7 +20,7 @@ function setup(t, {root = temporary(t), runner = fakeRunner()} = {}) {
   const tracker = new Tracker(root, {client: {}}), logs = [], sent = [];
   cleanup(t, () => tracker.close());
   const api = {async call(method, data) {if (method === 'sendMessage') sent.push(data.text); return true;}, close() {}};
-  const bot = new TelegramBot(tracker, {ownerId, api, codexRunner: runner, logger: entry => logs.push(entry)});
+  const bot = new TelegramBot(tracker, {ownerId, api, publicOrigin: 'https://prices.example', codexRunner: runner, logger: entry => logs.push(entry)});
   cleanup(t, () => bot.close());
   return {tracker, bot, chat: bot.chat, runner, api, logs, sent, root};
 }
@@ -70,7 +70,7 @@ test('waiting for Codex never blocks /status or /check and parallel AI workers s
   assert.equal(fixture.tracker.db.get('SELECT session_id FROM telegram_dialogues').session_id, sessionA);
   assert.equal(fixture.chat.processNext(), processing);
   await fixture.bot.handleUpdate(update(2, '/status'));
-  await fixture.bot.handleUpdate(update(3, '/check'));
+  await fixture.bot.handleUpdate(update(3, '/check_randewoo'));
   assert.equal(checks, 1); assert.equal(fixture.runner.calls.length, 1);
   assert.match(fixture.sent[0], /Codex:.*1/);
   done(); await processing;

@@ -95,6 +95,33 @@ test('a full refresh saves both favorites prices without reading cards, cart or 
   assert.equal(service.db.listHistory('watching',0).length,0);
 });
 
+test('full refresh reads all favorites beyond five pages and accepts the final separator page', async t => {
+  const root = temporary(t); await connectTestOzon(root);
+  const calls = [];
+  const client = new OzonClient(root, {browser: null, fetchImpl: async address => {
+    const path = new URL(address).searchParams.get('url'); calls.push(path);
+    const page = Number(new URL(path, 'https://www.ozon.ru').searchParams.get('page') || 1);
+    const data = ozonPage();
+    if (page === 8) {
+      data.widgetStates = {'separator-1-default-8': JSON.stringify({height: 20})};
+      delete data.nextPage;
+    } else {
+      data.widgetStates['tileGridDesktop-8-default-1'] = JSON.stringify({items:
+        Array.from({length: 6}, (_, index) => favoriteTile(String(1000 + (page - 1) * 6 + index)))});
+      data.nextPage = `/my/favorites?sorting=last_added&page=${page + 1}`;
+    }
+    return jsonResponse(data);
+  }});
+  const service = new OzonService(root, {client}); cleanup(t, () => service.close());
+  await service.start(); await service.running;
+  assert.equal(calls.length, 8);
+  assert.ok(calls.every(path => path.startsWith('/my/favorites?')));
+  assert.equal(service.status().checks[0].status, 'success');
+  assert.equal(service.status().checks[0].completed, 42);
+  assert.equal(service.db.dashboard('favorites').items.length, 42);
+  assert.equal(service.db.dashboard('favorites').items.at(-1).listed_price_kopecks, 95000);
+});
+
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let mode = 'wrong';
@@ -115,7 +142,7 @@ test('wrong account and incomplete lists cannot overwrite existing membership or
   assert.equal(service.status().checks[0].status,'error');
 });
 
-test('schedule is opt-in, respects the two-hour delay and never overlaps a manual check', async t => {
+test('schedule is opt-in, defaults to thirty minutes and never overlaps a manual check', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let now = Date.now(), calls = 0;
   const service = new OzonService(root,{current:() => now,client:new OzonClient(root,{fetchImpl:async () => {calls++; return jsonResponse(ozonPage());}})});
@@ -123,7 +150,7 @@ test('schedule is opt-in, respects the two-hour delay and never overlaps a manua
   await service.startScheduler(); await service.tick(); assert.equal(calls,0);
   service.settings({schedule_enabled:true});
   await service.tick(); assert.equal(calls,0);
-  now += OZON_INTERVAL_MS+1;
+  now += 30*60000+1;
   await service.tick(); await service.running;
   assert.equal(calls,1); // Empty but complete favorites; no cart or product requests.
   assert.equal(service.status().checks[0].trigger,'schedule');

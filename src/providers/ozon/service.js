@@ -4,29 +4,40 @@ import {acquireInstance, AlreadyRunning} from '../../instance.js';
 import {ValidationError} from '../../errors.js';
 import {OzonDatabase, itemSku} from './database.js';
 import {OzonClient, OzonReadError} from './client.js';
-import {OZON_INTERVAL_MS} from './probe.js';
 import {OzonLogin} from './login.js';
+import {nextScheduledCheck, scheduleSettings} from '../../schedule.js';
 
 export class OzonService {
   constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify} = {}) {
     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
     this.running = null; this.closing = false;
+    const state = this.db.state();
+    if (!state.schedule_anchor) this.db.updateState({schedule_anchor:state.next_check || new Date(this.current()+state.interval_minutes*60000).toISOString()});
     this.login = new OzonLogin(root,{notify,onAuthorized:() => {
-      this.db.updateState({action_required:0,message:'',next_check:this.db.state().schedule_enabled ? this.stamp() : null});
+      this.db.updateState({action_required:0,message:'',next_check:this.db.state().schedule_enabled ? nextScheduledCheck(this.scheduleConfig(),new Date(this.current())) : null});
     }});
   }
   stamp() {return new Date(this.current()).toISOString();}
+  scheduleConfig() {
+    const state = this.db.state();
+    return {schedule_mode:state.schedule_mode,schedule:JSON.parse(state.schedule),interval_minutes:state.interval_minutes,
+      schedule_anchor:state.schedule_anchor,schedule_enabled:!!state.schedule_enabled};
+  }
   status() {
     const state = this.db.state(), checks = this.db.checks();
     return {available:true,configured:this.client.configured(),running:!!this.running || checks[0]?.status === 'running',
-      schedule_enabled:!!state.schedule_enabled,interval_minutes:120,next_check:state.schedule_enabled ? state.next_check : null,
+      ...this.scheduleConfig(),next_check:state.schedule_enabled ? state.next_check : null,
       not_before:state.not_before,action_required:!!state.action_required,message:state.message,login:this.login.status(),checks};
   }
   settings(data) {
-    if (typeof data.schedule_enabled !== 'boolean') throw new ValidationError('Укажите состояние расписания Ozon.');
-    if (data.schedule_enabled && (!this.client.configured() || this.db.state().action_required)) throw new ValidationError('Сначала восстановите подключение Ozon.');
+    const config = scheduleSettings(data,this.scheduleConfig());
+    if (config.schedule_enabled && (!this.client.configured() || this.db.state().action_required)) throw new ValidationError('Сначала восстановите подключение Ozon.');
     const state = this.db.state();
-    this.db.updateState({schedule_enabled:Number(data.schedule_enabled),next_check:data.schedule_enabled ? new Date(Math.max(this.current()+OZON_INTERVAL_MS,Date.parse(state.not_before) || 0)).toISOString() : null});
+    const current = new Date(this.current()), schedule_anchor = new Date(current.getTime()+config.interval_minutes*60000).toISOString();
+    const earliest = state.not_before && Date.parse(state.not_before)>current.getTime() ? new Date(state.not_before) : current;
+    const next = config.schedule_enabled ? nextScheduledCheck({...config,schedule_anchor},earliest) : null;
+    this.db.transaction(() => this.db.updateState({...config,schedule:JSON.stringify(config.schedule),schedule_anchor,
+      schedule_enabled:Number(config.schedule_enabled),next_check:next}));
   }
   watch(url) {if (this.closing) throw new ValidationError('Приложение останавливается.'); return this.db.watch(url,true,this.stamp());}
   unwatch(id) {const product = this.db.product(itemSku(id)); if (!product) throw new ValidationError('Товар Ozon не найден.'); this.db.watch(product.url,false,this.stamp());}
@@ -65,6 +76,8 @@ export class OzonService {
       if (!id) {
         const lists = await this.client.lists();
         if (signal.aborted) throw new OzonReadError('interrupted');
+        // Re-read availability for every favorite, including unavailable items,
+        // so returned products immediately resume recording fresh prices.
         imported = lists.favorites;
         this.db.recordFavorites(check,imported,this.stamp(),this.client.source || 'http');
       } else this.db.snapshotLists(check);
@@ -87,7 +100,7 @@ export class OzonService {
         }
         target = null;
       }
-      const next = new Date(this.current()+OZON_INTERVAL_MS).toISOString();
+      const next = this.db.state().schedule_enabled ? nextScheduledCheck(this.scheduleConfig(),new Date(this.current())) : null;
       const message = imported !== null
         ? `Избранное обновлено. Товаров: ${imported.length}. Цены получены: ${imported.filter(item => item.listed_price_kopecks !== null).length}.`
         : failed ? `Проверено товаров: ${targets.length}. Не удалось получить цены: ${failed}. Прежние цены сохранены.` : `Проверено товаров: ${targets.length}.`;

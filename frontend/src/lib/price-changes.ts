@@ -1,7 +1,7 @@
 import type {ChangePeriod, ProductRow} from './types';
 
 const day = 86400000;
-export function hasRecentChange(item: ProductRow, days: ChangePeriod, nowMs = Date.now()) {
+export function hasRecentChange(item: Pick<ProductRow, 'last_change'>, days: ChangePeriod, nowMs = Date.now()) {
   if (!item.last_change || item.last_change.delta === 0) return false;
   const detected = Date.parse(item.last_change.checked_at);
   return Number.isFinite(detected) && detected <= nowMs && detected >= nowMs - days * day;

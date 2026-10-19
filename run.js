@@ -67,7 +67,11 @@ async function main() {
     const {createTelegramBot} = await import('./src/telegram.js');
     const {createOzonService} = await import('./src/providers/ozon/service.js');
     tracker = new Tracker(root);
-    telegram = createTelegramBot(tracker);
+    if (!args.once) ozon = createOzonService(root,{notify:() => {
+      if (!telegram) throw new Error('Telegram unavailable');
+      return telegram.notifyOzonLogin();
+    }});
+    telegram = createTelegramBot(tracker,process.env,undefined,{ozon});
     if (args.once) {
       telegram?.start({polling: false});
       const result = await tracker.refreshNow('cli');
@@ -78,7 +82,6 @@ async function main() {
     const {ensureFrontend} = await import('./scripts/build-frontend.js');
     await ensureFrontend();
     const controlToken = randomBytes(32).toString('base64url');
-    ozon = createOzonService(root,{notify:telegram ? text => telegram.send(text) : undefined});
     server = makeServer(tracker, {onShutdown: signal, controlToken, ozon});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');

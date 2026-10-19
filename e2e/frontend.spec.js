@@ -252,12 +252,28 @@ test('10% discount toggles independently in both carts, persists, and leaves sou
 
 test('settings validate schedules and never persist session fields in browser storage', async ({page}) => {
   await page.locator('#settings-button').click();
-  await page.getByLabel('Время проверок по Москве').fill('25:00');
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('checkbox', {name: 'Проверять автоматически', exact: true}).check();
+  await dialog.getByRole('radio', {name: 'В выбранные часы', exact: true}).check();
+  for (const time of lab.tracker.status().schedule) {
+    await dialog.getByRole('checkbox', {name: time, exact: true}).click();
+  }
+  await expect(dialog.locator('.schedule-hours input:checked, .schedule-legacy input:checked')).toHaveCount(0);
   await page.getByRole('button', {name: 'Сохранить', exact: true}).click();
-  await expect(page.getByRole('dialog').getByRole('alert')).toBeVisible();
-  await page.getByLabel('Время проверок по Москве').fill('09:00, 20:00');
+  await expect(dialog.getByRole('alert')).toBeVisible();
+  await dialog.getByRole('checkbox', {name: '09:00', exact: true}).check();
+  await dialog.getByRole('checkbox', {name: '20:00', exact: true}).check();
   await page.getByRole('button', {name: 'Сохранить', exact: true}).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
+  expect(lab.tracker.status().schedule).toEqual(['09:00', '20:00']);
+  expect(lab.tracker.status().schedule_mode).toBe('hours');
+  await page.locator('#settings-button').click();
+  await dialog.getByRole('radio', {name: 'С интервалом', exact: true}).check();
+  await dialog.getByRole('combobox', {name: 'Интервал проверок', exact: true}).selectOption('60');
+  await page.getByRole('button', {name: 'Сохранить', exact: true}).click();
+  await expect(dialog).toHaveCount(0);
+  expect(lab.tracker.status().schedule_mode).toBe('interval');
+  expect(lab.tracker.status().interval_minutes).toBe(60);
   expect(lab.tracker.status().schedule).toEqual(['09:00', '20:00']);
   await page.locator('#settings-button').click();
   await page.getByText('Обновить данные авторизации', {exact: true}).click();

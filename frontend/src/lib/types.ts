@@ -68,11 +68,19 @@ export interface Check {
   completed: number;
   message: string;
 }
+export interface ScheduleSettings {
+  schedule_mode: 'hours' | 'interval';
+  schedule: string[];
+  interval_minutes: 30 | 60 | 120;
+  schedule_enabled: boolean;
+}
 export interface Status {
   running: boolean;
   checks: Check[];
   schedule: string[];
   schedule_enabled: boolean;
+  schedule_mode?: ScheduleSettings['schedule_mode'];
+  interval_minutes?: ScheduleSettings['interval_minutes'];
   next_check: string | null;
   auth_status: string;
   auth_message: string;
