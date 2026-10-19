@@ -1,0 +1,23 @@
+--- a/src/telegram.js
++++ b/src/telegram.js
+@@ -13,8 +13,8 @@
+ const reportDate = value => value ? new Intl.DateTimeFormat('ru-RU', {timeZone: 'Europe/Moscow',
+   day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'}).format(new Date(value)) + ' МСК' : '—';
+ const stores = {
+-  randewoo: {name: 'Randewoo', emoji: '🌸', id: '5382276449241703317'},
+-  ozon: {name: 'Ozon', emoji: '😎', id: '5463148170869482726'},
++  randewoo: {name: 'Randewoo', emoji: '🌸', id: '5382276449241703317', path: '/cart'},
++  ozon: {name: 'Ozon', emoji: '😎', id: '5463148170869482726', path: '/ozon'},
+ };
+ const reportFormat = 'price-checker-telegram-v1';
+ const delayedAfterMs = 5 * 60 * 1000;
+@@ -294,7 +294,8 @@
+     if (service) {
+       const login = payload?.kind === 'login';
+       const ozonLogin = login && payload.store === 'ozon';
+-      const url = ozonLogin ? this.publicOrigin + '/ozon/login' : this.publicOrigin;
++      const path = ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
++      const url = this.publicOrigin + path;
+       data.reply_markup = {inline_keyboard: [[{text: ozonLogin ? '🔐 Войти в Ozon'
+         : login ? '🔐 Подключить Randewoo' : '🌐 Открыть сайт', url}]]};
+       const entities = [];

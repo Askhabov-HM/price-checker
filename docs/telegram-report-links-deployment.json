@@ -1,0 +1,25 @@
+{
+  "kind": "telegram-report-links",
+  "revision": "25e8091ba519b54d335823378c05616a64bacf50+worktree-56712f4d72aa+stock-blue-6a88ab1a7972+telegram-75004ed9e43f+telegram-links-28eaf5d0355b",
+  "base_release": "/opt/price-checker/releases/manual-20261019T155532Z-telegram-75004ed9e43f-vwi7h_f3",
+  "release": "/opt/price-checker/releases/manual-20261019T162144Z-telegram-links-28eaf5d0355b-919b47er",
+  "changed_runtime_files": [
+    "src/telegram.js"
+  ],
+  "sha256": "28eaf5d0355b31a7368bcf1b647077193636bc56eb08fab278cf27cfc1f74594",
+  "routes": {
+    "randewoo": "/cart",
+    "ozon": "/ozon",
+    "ozon_login": "/ozon/login"
+  },
+  "syntax": "passed",
+  "tests": "not run; no user approval",
+  "prepared_at": "2026-10-19T16:21:52.971602+00:00",
+  "backups": [
+    "backups/pre-deploy-20261019T162144Z-telegram-links-28eaf5d0355b.sqlite3",
+    "ozon/backups/pre-deploy-20261019T162144Z-telegram-links-28eaf5d0355b.sqlite3"
+  ],
+  "activated_at": "2026-10-19T16:21:57.311121+00:00",
+  "service": "active",
+  "telegram_ready": true
+}

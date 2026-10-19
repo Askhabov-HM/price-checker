@@ -1,0 +1,64 @@
+{
+  "kind": "telegram-report-format",
+  "revision": "25e8091ba519b54d335823378c05616a64bacf50+worktree-56712f4d72aa+stock-blue-6a88ab1a7972+telegram-75004ed9e43f",
+  "base_release": "/opt/price-checker/releases/manual-20261019T110825Z-stock-blue-6a88ab1a7972-_xthlflc",
+  "release": "/opt/price-checker/releases/manual-20261019T155532Z-telegram-75004ed9e43f-vwi7h_f3",
+  "prepared_at": "2026-10-19T15:55:41.016539+00:00",
+  "files": {
+    "src/telegram.js": "7e9dc9945a8b91d0be3f82bae587ceefb4d70fb95cb661a9132a08d0b79b80bd",
+    "run.js": "f7e6fe0db93aa4f09e53842d1c4971d1c63d797b9041839c21c07b300710ad64",
+    "tests/telegram.test.js": "1b9f6117d1481f6a6489f39eb02d631260576f7ad4d5502e2410cf790c22f6d0",
+    "tests/codex-chat.test.js": "d470f5b46f34fcceded8e2d6080a2d36338df691408722895cf92ccccdfe149a",
+    "e2e/frontend.spec.js": "adf5f01e8c288d0d6f96945c0691006087e594c68bd88254ea3e6c231daaec84",
+    "README.md": "3c74fcdaf887451c2c9fb6cfac9e2dc53b84ee446f399d17919bda13c83a8485",
+    "docs/telegram-message-format.md": "897d30daf213d163258da5f854dc9292e441fcc606d5d9deb7d5e3a3c5dbf758",
+    "docs/telegram-report-format.patch": "59a8ed0bdad2542c682e1541588eee17ddf0f4ecd6b1984009c6c82b5af52a7e",
+    "assets/telegram/randewoo-emoji.png": "8b24dd58878b2590916c7ed1b1197f0d16a06ec3a5788ff6d5f36010ad48058a",
+    "assets/telegram/randewoo-logo-source.png": "7ab14fe6ed3b423d7dab2441b6b7ff9a060782735964fd430db12023b553da3e",
+    "assets/telegram/randewoo-emoji.prompt.md": "1db9be662ca53dd6df5f8ebea77ccc206d7ee041889a2bfb934ece393f258bbd"
+  },
+  "preserved_source_files": 75,
+  "frontend_bundle_preserved": true,
+  "validation": {
+    "static": {
+      "phase": "static",
+      "exit_code": 0,
+      "seconds": 7.3
+    },
+    "backend": {
+      "phase": "backend",
+      "exit_code": 0,
+      "seconds": 53.1
+    },
+    "frontend": {
+      "phase": "frontend",
+      "exit_code": 0,
+      "seconds": 25.9
+    },
+    "deployment": {
+      "phase": "deployment",
+      "exit_code": 0,
+      "seconds": 0.4
+    },
+    "browser-tests": {
+      "phase": "browser-tests",
+      "exit_code": 0,
+      "passed": 14,
+      "runs": "13 scenarios passed in full run; corrected settings scenario passed separately"
+    }
+  },
+  "backups": [
+    {
+      "provider": "randewoo",
+      "source": "prices.sqlite3",
+      "backup": "backups/pre-deploy-20261019T155541Z-75004ed9e43f.sqlite3"
+    },
+    {
+      "provider": "ozon",
+      "source": "ozon/prices.sqlite3",
+      "backup": "ozon/backups/pre-deploy-20261019T155541Z-75004ed9e43f.sqlite3"
+    }
+  ],
+  "activated_at": "2026-10-19T15:55:42.492151+00:00",
+  "health": "ok"
+}
