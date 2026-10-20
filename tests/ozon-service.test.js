@@ -10,20 +10,20 @@ import {OzonSession} from '../src/providers/ozon/session.js';
 import {OZON_INTERVAL_MS} from '../src/providers/ozon/probe.js';
 import {acquireInstance} from '../src/instance.js';
 import {temporary, cleanup, item} from './helpers.js';
-import {TEST_OZON_URL, connectTestOzon, ozonPage, jsonResponse, favoriteTile} from './ozon-fixture.js';
+import {TEST_OZON_URL, connectTestOzon, ozonPage, jsonResponse, favoriteTile,responseBrowser} from './ozon-fixture.js';
 
-test('real HTTP pipeline persists two prices, survives restart, marks seller changes and preserves prices on 403', async t => {
+test('the browser pipeline persists two prices, survives restart, marks seller changes and preserves prices on 403', async t => {
   const root = temporary(t), randewoo = new Database(join(root,'.data/prices.sqlite3'));
   randewoo.variant(item()); randewoo.close();
   const before = readFileSync(join(root,'.data/prices.sqlite3'));
   await connectTestOzon(root);
   let now = Date.now(), seller = '55', blocked = false, calls = 0;
-  const client = () => new OzonClient(root,{fetchImpl:async (url,options) => {
-    calls++; assert.equal(options.method,'GET'); assert.equal(options.redirect,'manual'); assert.match(options.headers.cookie,/synthetic-session/);
+  const client = () => new OzonClient(root,{browser:responseBrowser(async (url,options) => {
+    calls++; assert.equal(options.credentials,'include');assert.equal(options.redirect,'error');
     assert.equal(new URL(url).origin,'https://www.ozon.ru');
     if (new URL(url).searchParams.get('url').startsWith('/product/')) assert.equal(new URL(url).searchParams.get('url'),'/product/test-item-123/');
     return blocked ? new Response('private-response',{status:403}) : jsonResponse(ozonPage({seller}));
-  }});
+  })});
   let service = new OzonService(root,{client:client(),current:() => now});
   const id = service.watch(TEST_OZON_URL);
   assert.equal(service.status().schedule_enabled,false);
@@ -61,8 +61,8 @@ test('real HTTP pipeline persists two prices, survives restart, marks seller cha
 test('only an explicit source pause or a 429 creates a manual backoff',async t => {
   for (const [status,retry,wait] of [[503,null,0],[403,'120',120000],[429,null,6*3600000],[429,'30000',30000000]]) {
     const root=temporary(t);await connectTestOzon(root);const now=Date.now();
-    const service=new OzonService(root,{current:() => now,client:new OzonClient(root,{browser:null,fetchImpl:async () =>
-      new Response('',{status,headers:retry ? {'Retry-After':retry} : {}})})});
+    const service=new OzonService(root,{current:() => now,client:new OzonClient(root,{browser:responseBrowser(async () =>
+      new Response('',{status,headers:retry ? {'Retry-After':retry} : {}}))})});
     cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);await service.start({id});await service.running;
     assert.equal(service.status().not_before,wait ? new Date(now+wait).toISOString() : null);
     assert.equal(service.status().schedule_enabled,false);
@@ -71,13 +71,13 @@ test('only an explicit source pause or a 429 creates a manual backoff',async t =
 
 test('a full refresh saves both favorites prices without reading cards, cart or delivery',async t => {
   const root=temporary(t);await connectTestOzon(root);const calls=[];
-  const client=new OzonClient(root,{browser:null,fetchImpl:async url => {
+  const client=new OzonClient(root,{browser:responseBrowser(async url => {
     const page=new URL(url).searchParams.get('url');
     calls.push(page);assert.equal(page,'/my/favorites?sorting=last_added');
     const data=ozonPage();delete data.location;delete data.widgetStates['addressBookBarWeb-1-default-1'];
     data.widgetStates['tileGridDesktop-8-default-1']=JSON.stringify({items:[favoriteTile(),favoriteTile('456',{price:'1 373 ₽',original:null})]});
     return jsonResponse(data);
-  }});
+  })});
   const service=new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
   const first=service.watch(TEST_OZON_URL),second=service.watch('https://www.ozon.ru/product/456/');
   const unwatched=service.watch('https://www.ozon.ru/product/789/');
@@ -98,7 +98,7 @@ test('a full refresh saves both favorites prices without reading cards, cart or 
 test('full refresh reads all favorites beyond five pages and accepts the final separator page', async t => {
   const root = temporary(t); await connectTestOzon(root);
   const calls = [];
-  const client = new OzonClient(root, {browser: null, fetchImpl: async address => {
+  const client = new OzonClient(root, {browser:responseBrowser(async address => {
     const path = new URL(address).searchParams.get('url'); calls.push(path);
     const page = Number(new URL(path, 'https://www.ozon.ru').searchParams.get('page') || 1);
     const data = ozonPage();
@@ -111,7 +111,7 @@ test('full refresh reads all favorites beyond five pages and accepts the final s
       data.nextPage = `/my/favorites?sorting=last_added&page=${page + 1}`;
     }
     return jsonResponse(data);
-  }});
+  })});
   const service = new OzonService(root, {client}); cleanup(t, () => service.close());
   await service.start(); await service.running;
   assert.equal(calls.length, 8);
@@ -125,11 +125,11 @@ test('full refresh reads all favorites beyond five pages and accepts the final s
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let mode = 'wrong';
-  const service = new OzonService(root,{client:new OzonClient(root,{fetchImpl:async () => {
+  const service = new OzonService(root,{client:new OzonClient(root,{browser:responseBrowser(async () => {
     const page = ozonPage({account:mode === 'wrong' ? 999 : 123});
     if (mode === 'partial') delete page.nextPage;
     return jsonResponse(page);
-  }})});
+  })})});
   cleanup(t,() => service.close());
   const id = service.watch(TEST_OZON_URL);
   service.db.syncLists([{external_id:'123',url:TEST_OZON_URL,title:'Saved favorite'}],[],new Date().toISOString());
@@ -145,7 +145,7 @@ test('wrong account and incomplete lists cannot overwrite existing membership or
 test('schedule is opt-in, defaults to thirty minutes and never overlaps a manual check', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let now = Date.now(), calls = 0;
-  const service = new OzonService(root,{current:() => now,client:new OzonClient(root,{fetchImpl:async () => {calls++; return jsonResponse(ozonPage());}})});
+  const service = new OzonService(root,{current:() => now,client:new OzonClient(root,{browser:responseBrowser(async () => {calls++; return jsonResponse(ozonPage());})})});
   cleanup(t,() => service.close());
   await service.startScheduler(); await service.tick(); assert.equal(calls,0);
   service.settings({schedule_enabled:true});
@@ -189,10 +189,10 @@ test('browser-cookie import selects only the Ozon first-party partition and resp
 
 test('a guest response requests owner login only after the collection browser and lock are closed',async t => {
   const root=temporary(t);await connectTestOzon(root);let notifications=0,mode='guest';
-  const service=new OzonService(root,{client:new OzonClient(root,{browser:null,fetchImpl:async () => {
+  const service=new OzonService(root,{client:new OzonClient(root,{browser:responseBrowser(async () => {
     const data=ozonPage({account:mode==='guest' ? 0 : 999});
     data.userInfo.user.isLoggedIn=mode!=='guest';return jsonResponse(data);
-  }})});
+  })})});
   cleanup(t,() => service.close());
   service.login.require=async () => {notifications++;const release=await acquireInstance(join(root,'.data/ozon/collector.lock'));await release();};
   await service.start();await service.running;

@@ -1,5 +1,7 @@
 import {accountContext} from '../src/providers/ozon/account-context.js';
 import {importOzonConnection} from '../src/providers/ozon/connection.js';
+import {createBrowserReader} from '../src/providers/ozon/browser-refresh.js';
+import {runInNewContext} from 'node:vm';
 
 export const TEST_OZON_URL = 'https://www.ozon.ru/product/test-item-123/';
 export function favoriteTile(sku = '123', {price = '950 ₽', original = '1 500 ₽',available = true} = {}) {
@@ -26,3 +28,25 @@ export async function connectTestOzon(root, {cookies,current} = {}) {
     reference:accountContext(ozonPage())},{cookies:cookies || [{name:'session',value:'synthetic-session',domain:'.ozon.ru',path:'/',secure:true,httpOnly:true,session:true}]},{current});
 }
 export const jsonResponse = value => new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
+
+// Execute the real in-page reader with synthetic responses, never a real browser/socket.
+export const responseBrowser = fetchImpl => async () => {
+  let reader,page;
+  const call = async (method,params) => {
+    if (method === 'Browser.getVersion') return {userAgent:'Synthetic test browser'};
+    if (method === 'Target.createTarget') return {targetId:'synthetic'};
+    if (method === 'Target.attachToTarget') return {sessionId:'synthetic'};
+    if (method === 'Page.navigate') page = new URL(params.url);
+    if (method === 'Runtime.evaluate') return {result:{value:params.awaitPromise
+      ? await runInNewContext(params.expression,{fetch:fetchImpl,AbortSignal,TextDecoder,Uint8Array,Date})
+      : {origin:page.origin,path:page.pathname,ready:'complete'}}};
+    return {};
+  };
+  return {
+    async read(request) {
+      reader ??= await createBrowserReader(call,request,{pause:async () => {}});
+      return reader.read(request);
+    },
+    async close() {},
+  };
+};
