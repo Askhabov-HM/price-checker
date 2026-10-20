@@ -60,20 +60,21 @@ test('a browser 403 stops the queue and cannot open another browser or fall back
   service.watch(TEST_OZON_URL);service.watch('https://www.ozon.ru/product/456/');
   await service.start();await service.running;
   assert.equal(http(),0);assert.equal(browsers,1);assert.equal(reads,1);assert.equal(closed,1);
-  assert.equal(service.status().action_required,true);assert.equal(service.status().not_before,null);
+  assert.equal(service.status().action_required,false);assert.equal(service.status().not_before,null);
   assert.equal(service.db.detail('ozon:item:123',0).points.length,0);
   assert.equal(service.db.detail('ozon:item:456',0).points.length,0);
 });
 
 test('a different account, SKU, user agent or request identity cannot save browser prices',async t => {
   const http=forbidHttp(t);
-  for (const change of [value => {value.data = ozonPage({account:999});},
-    value => {value.data = ozonPage({sku:'456'});},value => {value.user_agent='different';},value => {value.request_url='https://other.test/';},value => {value.version=1;}]) {
+  for (const [change,actionRequired] of [[value => {value.data = ozonPage({account:999});},true],
+    [value => {value.data = ozonPage({sku:'456'});},false],[value => {value.user_agent='different';},false],
+    [value => {value.request_url='https://other.test/';},false],[value => {value.version=1;},false]]) {
     const root = temporary(t);await connectTestOzon(root);
     const client = new OzonClient(root,{browser:async () => fakeBrowser(async request => {const value=exported(request);change(value);return value;})});
     const service = new OzonService(root,{client});cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);
     await service.start({id});await service.running;
-    assert.equal(http(),0);assert.equal(service.db.detail(id,0).product.regular_kopecks,null);assert.equal(service.status().action_required,true);
+    assert.equal(http(),0);assert.equal(service.db.detail(id,0).product.regular_kopecks,null);assert.equal(service.status().action_required,actionRequired);
   }
 });
 

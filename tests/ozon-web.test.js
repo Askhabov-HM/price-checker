@@ -7,12 +7,12 @@ import {OzonClient} from '../src/providers/ozon/client.js';
 import {makeServer,listen} from '../src/web.js';
 import {Authentication,createCredentials} from '../src/auth.js';
 import {temporary,cleanup} from './helpers.js';
-import {connectTestOzon,TEST_OZON_URL,ozonPage,jsonResponse} from './ozon-fixture.js';
+import {connectTestOzon,TEST_OZON_URL,ozonPage,jsonResponse,responseBrowser} from './ozon-fixture.js';
 
 test('Ozon route and API use shared authentication, CSRF and namespaced IDs without exposing connection secrets', async t => {
   const root = temporary(t), tracker = new Tracker(root);
   await connectTestOzon(root);
-  const ozon = new OzonService(root,{client:new OzonClient(root,{fetchImpl:async () => jsonResponse(ozonPage())})});
+  const ozon = new OzonService(root,{client:new OzonClient(root,{browser:responseBrowser(async () => jsonResponse(ozonPage()))})});
   const auth = new Authentication(await createCredentials('test-owner','synthetic-login-password'));
   const server = makeServer(tracker,{ozon,auth}), port = await listen(server,0), base = 'http://127.0.0.1:'+port;
   cleanup(t,async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await ozon.close(); await tracker.close();});

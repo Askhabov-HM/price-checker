@@ -124,8 +124,10 @@ function outcome(store, check) {
     : /Сессия истекла: обновите вход в Randewoo|Добавьте действующую сессию Randewoo/.test(message);
   if (login) return {kind: 'login', icon: '🔐', message: 'Требуется повторный вход в аккаунт.'};
   if (check.status === 'partial') return {kind: 'partial', icon: '⚠️', message: 'Часть данных не удалось получить.'};
-  if (/ограничил доступ|слишком много запросов|пауза.*Ozon/i.test(message)) {
-    return {kind: 'limited', icon: '🔴', message: 'Магазин ограничил доступ. Проверка приостановлена.'};
+  if (/ограничил доступ|снизить частоту|слишком много запросов|пауза.*Ozon/i.test(message)) {
+    return {kind: 'limited', icon: '🔴', message: store === 'ozon'
+      ? 'Магазин временно ограничил доступ. Следующая попытка — по расписанию с учётом паузы источника.'
+      : 'Магазин ограничил доступ. Проверка приостановлена.'};
   }
   return {kind: 'error', icon: '🔴', message: 'Не удалось выполнить проверку.'};
 }

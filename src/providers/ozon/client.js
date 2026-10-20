@@ -12,13 +12,13 @@ import {ozonProduct} from './url.js';
 
 export class OzonReadError extends Error {
   constructor(code, retry = 0) {
-    const messages = {access_limited:'Ozon ограничил доступ. Проверки приостановлены.',login_required:'Нужно обновить вход в Ozon.',
-      context_mismatch:'Аккаунт Ozon не подтверждён. Проверки приостановлены.',rate_limited:'Ozon попросил снизить частоту. Проверки приостановлены.',
+    const messages = {access_limited:'Ozon временно ограничил доступ. Предыдущие данные сохранены.',login_required:'Нужно обновить вход в Ozon.',
+      context_mismatch:'Аккаунт Ozon не подтверждён. Проверки приостановлены.',rate_limited:'Ozon попросил снизить частоту. Повтор после паузы источника.',
       incomplete_data:'Получен неполный список Ozon. Предыдущий состав сохранён.',invalid_data:'Не удалось подтвердить данные Ozon.',
       network_error:'Не удалось получить ответ Ozon.',interrupted:'Проверка Ozon остановлена.',
-      browser_unverified:'Не удалось подтвердить серверный браузер Ozon. Проверки приостановлены.',
+      browser_unverified:'Не удалось подтвердить серверный браузер Ozon. Предыдущие данные сохранены.',
       redirect:'Карточка Ozon перенаправляет на неподтверждённую страницу.'};
-    super(messages[code] || 'Ozon не вернул подтверждённые данные. Проверки приостановлены.');
+    super(messages[code] || 'Ozon не вернул подтверждённые данные. Предыдущие данные сохранены.');
     this.code = code; this.retry_after_ms = retry;
   }
 }

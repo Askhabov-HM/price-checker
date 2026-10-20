@@ -7,6 +7,17 @@ import {OzonClient, OzonReadError} from './client.js';
 import {OzonLogin} from './login.js';
 import {nextScheduledCheck, scheduleSettings} from '../../schedule.js';
 
+const legacyRetryMessages = new Set([
+  'Ozon ограничил доступ. Проверки приостановлены.',
+  'Ozon попросил снизить частоту. Проверки приостановлены.',
+  'Не удалось подтвердить серверный браузер Ozon. Проверки приостановлены.',
+  'Предыдущая проверка Ozon прервана.',
+  'Проверка Ozon прервана. Проверьте подключение перед повтором.',
+  'Не удалось проверить Ozon. Предыдущие данные сохранены.',
+  'Ozon не вернул подтверждённые данные. Проверки приостановлены.',
+  ...['access_limited','rate_limited','incomplete_data','invalid_data','network_error','browser_unverified','interrupted','http_error'].map(code => new OzonReadError(code).message),
+]);
+
 export class OzonService {
   constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify} = {}) {
     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
@@ -18,6 +29,19 @@ export class OzonService {
     }});
   }
   stamp() {return new Date(this.current()).toISOString();}
+  nextAttempt(notBefore = null) {
+    if (!this.db.state().schedule_enabled) return null;
+    // A slot exactly at the end of Retry-After is already allowed.
+    const earliest = Math.max(this.current(),(Date.parse(notBefore) || 0)-1);
+    return nextScheduledCheck(this.scheduleConfig(),new Date(earliest));
+  }
+  resumeScheduledError() {
+    const state = this.db.state();
+    if (!state.action_required || !legacyRetryMessages.has(state.message) || this.db.checks()[0]?.status === 'running') return;
+    this.db.updateState({action_required:0,next_check:this.nextAttempt(state.not_before),message:state.schedule_enabled
+      ? 'Последний сбор завершился ошибкой. Следующая попытка — по расписанию.'
+      : 'Последний сбор завершился ошибкой. Можно повторить сбор.'});
+  }
   scheduleConfig() {
     const state = this.db.state();
     return {schedule_mode:state.schedule_mode,schedule:JSON.parse(state.schedule),interval_minutes:state.interval_minutes,
@@ -109,11 +133,14 @@ export class OzonService {
     } catch (error) {
       const known = error instanceof OzonReadError;
       if (known && error.code === 'login_required') this.loginNeeded = true;
-      const message = known ? error.message : signal.aborted ? 'Проверка Ozon остановлена.' : 'Не удалось проверить Ozon. Предыдущие данные сохранены.';
+      const message = known ? error.message : error instanceof ValidationError ? 'Нужно проверить конфигурацию подключения Ozon.'
+        : signal.aborted ? 'Проверка Ozon остановлена.' : 'Не удалось проверить Ozon. Предыдущие данные сохранены.';
       if (target) this.db.failure(check,target,message,this.stamp(),this.client.source || 'browser');
-      const wait = Math.max(known ? error.retry_after_ms : 0,known && error.code === 'rate_limited' ? 6*3600000 : 0);
-      const next = wait ? new Date(Math.min(this.current()+wait,8.64e15)).toISOString() : null;
-      this.db.updateState({not_before:next,next_check:next,action_required:1,message});
+      const actionRequired = error instanceof ValidationError || known && ['login_required','context_mismatch'].includes(error.code);
+      const wait = Math.max(known ? error.retry_after_ms : 0,0);
+      const notBefore = wait ? new Date(Math.min(this.current()+wait,8.64e15-86400000)).toISOString() : null;
+      const next = actionRequired ? null : this.nextAttempt(notBefore);
+      this.db.updateState({not_before:notBefore,next_check:next,action_required:Number(actionRequired),message});
       this.db.finish(check,signal.aborted ? 'interrupted' : 'error',message,this.stamp());
     } finally {await this.client.close?.();}
   }
@@ -122,6 +149,7 @@ export class OzonService {
     try {release = await acquireInstance(join(this.root,'.data/ozon/collector.lock')); this.db.recover(this.stamp());} catch { /* A CLI check may own the lock. */ }
     finally {await release?.();}
     if (this.closing) return;
+    this.resumeScheduledError();
     if (this.db.state().action_required && this.db.state().message === 'Нужно обновить вход в Ozon.') await this.login.require();
     this.timer = setInterval(() => {this.tick().catch(() => {});},30000);
     this.timer.unref();
