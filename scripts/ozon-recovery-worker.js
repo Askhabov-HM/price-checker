@@ -64,6 +64,7 @@ try {
   if (login && request.operation !== 'favorites') throw Error('Invalid login target');
   if (!['product','favorites','cart'].includes(request.operation)) throw Error('Invalid target');
   const options = ozonBrowserOptions();
+  const startupUrl = warmup ? 'https://www.ozon.ru/my/favorites?sorting=last_added' : 'about:blank';
   display = spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0',options.screen,'-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
   display.once('exit',() => {if (persistent && !closing) void cleanup().finally(() => process.exit(1));});
   const number = await new Promise((resolve,reject) => {
@@ -75,7 +76,7 @@ try {
     ...ozonBrowserProxyArgs(),
     ...options.chromeArgs,
     '--user-data-dir='+profile,'--remote-debugging-pipe',
-    '--no-first-run','--no-default-browser-check','about:blank',
+    '--no-first-run','--no-default-browser-check',startupUrl,
   ],{env:{...process.env,DISPLAY:':'+number},stdio:['ignore','ignore','ignore','pipe','pipe']});
   let sequence = 0, buffer = Buffer.alloc(0); const pending = new Map();
   const fail = () => {for (const item of pending.values()) {clearTimeout(item.timer);item.reject(Error('Browser closed'));}pending.clear();};
@@ -105,7 +106,7 @@ try {
     const saved = await call('Storage.getCookies');
     const cookies = browserCookieSeed(seed,saved.cookies);
     if (cookies.length) await call('Storage.setCookies',{cookies});
-    return browser = await createBrowserReader(call,captured,{interactiveLogin:login,
+    return browser = await createBrowserReader(call,captured,{interactiveLogin:login,reuseOpenPage:warmup,
       ...(persistent ? {onFailure:snapshot => failureStore.save({at:new Date().toISOString(),outcome:'browser_error',http_status:null,snapshot})} : {})});
   };
   if (!warmup) await initialize(request,input.cookies || []);

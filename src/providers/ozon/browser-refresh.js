@@ -42,16 +42,28 @@ export function browserCookieSeed(cookies, existing, now = Date.now()) {
 }
 
 // Navigate once, then use the same authenticated page for the rest of the queue.
-export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms)),interactiveLogin = false,onFailure} = {}) {
+export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms)),interactiveLogin = false,reuseOpenPage = false,onFailure} = {}) {
   const request = validateCapturedRequest(captured);
   if (!['product','favorites','cart'].includes(request.operation)) throw new Error('Unsupported recovery target');
   const page = new URL(request.url).searchParams.get('url');
   const version = await call('Browser.getVersion');
-  const {targetId} = await call('Target.createTarget',{url:'about:blank'});
+  let existing;
+  if (reuseOpenPage) {
+    const {targetInfos} = await call('Target.getTargets');
+    const destination = new URL('https://www.ozon.ru'+page);
+    existing = targetInfos.find(target => {
+      try {
+        const url = new URL(target.url);
+        return target.type === 'page' && url.origin === destination.origin
+          && url.pathname.replace(/\/$/,'') === destination.pathname.replace(/\/$/,'');
+      } catch {return false;}
+    });
+  }
+  const {targetId} = existing || await call('Target.createTarget',{url:'about:blank'});
   const {sessionId} = await call('Target.attachToTarget',{targetId,flatten:true});
   try {
     await call('Page.enable',{},sessionId);
-    await call('Page.navigate',{url:'https://www.ozon.ru'+page},sessionId);
+    if (!existing) await call('Page.navigate',{url:'https://www.ozon.ru'+page},sessionId);
     let ready = false;
     for (let i = 0; i < 40; i++) {
       await pause(500);

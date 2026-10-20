@@ -1,5 +1,5 @@
 // One process owns the Chrome profile; connections lease it for a whole collection.
-// No Ozon requests or page reloads are made while it is idle.
+// Chrome opens favorites once at startup; idle maintenance does not reload it.
 export function browserIdleMs(env = process.env) {
   const minutes = env.OZON_BROWSER_IDLE_MINUTES ?? '0';
   if (!/^(?:0|[1-9]\d{0,3})$/.test(minutes) || Number(minutes) > 1440) throw Error('Invalid Ozon browser idle timeout');
@@ -34,7 +34,7 @@ export class PersistentBrowserPool {
     try {return await this.inspection;}
     finally {this.inspection=null;void this.drain();}
   }
-  // Start Chrome on about:blank without navigating or reading Ozon while idle.
+  // Start Chrome with favorites open, without invoking the price collector.
   async ensureWarm() {
     if (this.closed || this.idleMs !== 0 || this.active || this.queue.length || this.available) return;
     const lease = await this.acquire();

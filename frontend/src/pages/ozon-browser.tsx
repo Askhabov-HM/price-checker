@@ -68,7 +68,7 @@ export function OzonBrowserPage() {
       </div>}
       {!historical && state?.mode === 'collecting' && <p className="text-sm text-muted-foreground">Сбор выполняется. Если кадр уже получен, ниже показан последний снимок до сбора; новый появится после завершения.</p>}
       {!historical && state?.mode === 'login' && <p className="text-sm text-muted-foreground">Окно входа доступно на <Link to="/ozon/login" search={search} className="underline">странице входа</Link>. Его содержимое здесь не записывается.</p>}
-      {!historical && state?.mode === 'blank' && <p className="text-sm text-muted-foreground">Сейчас открыта пустая вкладка about:blank. Сборщик откроет избранное при следующем сборе.</p>}
+      {!historical && state?.mode === 'blank' && <p className="text-sm text-muted-foreground">Сейчас открыта пустая вкладка about:blank. При запуске браузерная служба открывает избранное Ozon; здесь отображается её фактическое состояние.</p>}
       {snapshot && <div className="min-w-0 rounded-lg border bg-muted/30 px-4 py-3">
         <p className="break-words text-sm font-medium">{snapshot.title || (snapshot.url === 'about:blank' ? 'Пустая вкладка' : 'Страница без заголовка')}</p>
         <p className="mt-1 break-all text-xs text-muted-foreground">{snapshot.url || 'Адрес страницы недоступен'}</p>
