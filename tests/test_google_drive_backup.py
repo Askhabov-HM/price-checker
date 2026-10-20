@@ -67,6 +67,8 @@ class DriveBackupTests(unittest.TestCase):
         stage = self.root / 'recovered' / 'staging'
         manifest = backup.create_snapshots(self.data, stage)
         self.assertEqual(backup.validate_recovery(stage.parent), manifest)
+        self.assertEqual({entry['provider']: entry['signature'] for entry in manifest['databases']},
+                         backup.current_signatures(self.data))
         for entry in manifest['databases']:
             self.assertEqual(entry['counts']['observations'], 3)
             self.assertEqual(entry['first_observation'], '2023-01-01T00:00:00Z')
@@ -111,6 +113,14 @@ class DriveBackupTests(unittest.TestCase):
         backup.atomic_json(stage / 'manifest.json', manifest)
         with self.assertRaises(backup.BackupError):
             backup.validate_recovery(stage.parent)
+
+    def test_initial_manifests_with_schema_cookies_remain_recoverable(self):
+        stage = self.root / 'recovered' / 'staging'
+        manifest = backup.create_snapshots(self.data, stage)
+        for entry in manifest['databases']:
+            entry['signature']['schema'] = 1
+        backup.atomic_json(stage / 'manifest.json', manifest)
+        self.assertEqual(backup.validate_recovery(stage.parent), manifest)
 
     def test_staging_refuses_extra_files_instead_of_uploading_them(self):
         stage = self.root / 'staging'

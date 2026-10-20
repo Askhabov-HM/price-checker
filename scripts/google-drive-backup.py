@@ -74,8 +74,11 @@ def validate_provider(connection, provider):
 def signature(connection):
     check = connection.execute("SELECT id,status,finished_at FROM checks WHERE finished_at IS NOT NULL AND status<>'running' ORDER BY id DESC LIMIT 1").fetchone()
     observation = connection.execute('SELECT MAX(id) FROM observations').fetchone()[0]
-    return {'check': list(check) if check else None, 'observation': observation,
-            'schema': connection.execute('PRAGMA schema_version').fetchone()[0]}
+    # SQLite's schema cookie changes when copying into a new database. Compare
+    # the actual schema so a valid copy does not trigger another upload forever.
+    schema = connection.execute("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").fetchall()
+    fingerprint = hashlib.sha256(json.dumps(schema).encode('utf-8')).hexdigest()
+    return {'check': list(check) if check else None, 'observation': observation, 'schema': fingerprint}
 
 
 def describe(path, provider):
@@ -165,7 +168,9 @@ def validate_recovery(target):
         if path.is_symlink() or not path.is_file():
             raise BackupError(f'Missing {provider} recovery file')
         actual = describe(path, provider)
-        if actual != entry:
+        # Scheduling signatures are not recovery evidence. Older v1 manifests
+        # stored SQLite schema cookies here; keep those existing copies readable.
+        if {k: v for k, v in actual.items() if k != 'signature'} != {k: v for k, v in entry.items() if k != 'signature'}:
             raise BackupError(f'{provider} recovery differs from the snapshot manifest')
     return manifest
 
@@ -194,7 +199,7 @@ class Backup:
         environment = dict(os.environ, RESTIC_REPOSITORY=self.config['repository'],
                            RESTIC_PASSWORD_FILE=self.config['password_file'],
                            RESTIC_CACHE_DIR=str(self.work / 'cache'),
-                           RCLONE_CONFIG=self.config['rclone_config'])
+                           RCLONE_CONFIG=self.config['rclone_config'], RCLONE_FAST_LIST='true')
         command = [self.config.get('restic', '/usr/bin/restic'), '-o',
                    'rclone.program=' + self.config.get('rclone', '/usr/bin/rclone'), *arguments]
         try:
