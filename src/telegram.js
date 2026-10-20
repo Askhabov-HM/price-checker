@@ -291,7 +291,16 @@ export class TelegramBot {
     if (payload?.finishedAt && Date.now() - Date.parse(payload.finishedAt) > delayedAfterMs) {
       text += '\n\n🕒 Отчёт доставлен с задержкой.';
     }
-    text = short(text, 4000);
+    if (payload) {
+      const provider = payload.store === 'ozon' ? this.ozon : this.tracker;
+      const status = provider?.status?.();
+      const next = status?.next_check;
+      const time = status?.action_required ? 'требуется вход' : next
+        ? new Intl.DateTimeFormat('ru-RU', {timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit'}).format(new Date(next))
+        : 'не запланирована';
+      const footer = '\n\nСледующая проверка: ' + time;
+      text = short(text, 4000 - footer.length) + footer;
+    } else text = short(text, 4000);
     const data = {chat_id: this.ownerId, text, link_preview_options: {is_disabled: true}};
     if (service) {
       const login = payload?.kind === 'login';

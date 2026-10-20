@@ -387,3 +387,23 @@ test('shutdown cancels long polling and does not wait for the timeout', async ()
   api.close(); await assert.rejects(request, /stopped/);
   assert.equal(api.children.size, 0);
 });
+
+
+test('reports end with the current store next check in Moscow time, after delay notices', async t => {
+  const {bot, tracker, api} = setup(t);
+  tracker.status = () => ({next_check: '2026-10-21T21:05:00Z'});
+  bot.ozon = {status: () => ({next_check: '2026-10-21T07:30:00Z'})};
+  const payload = {format: 'price-checker-telegram-v1', text: 'Report', finishedAt: '2020-01-01T00:00:00Z'};
+  await bot.send({...payload, store: 'randewoo'});
+  assert.match(api.calls.at(-1).data.text, /с задержкой\.\n\nСледующая проверка: 00:05$/);
+  await bot.send({...payload, store: 'ozon'});
+  assert.match(api.calls.at(-1).data.text, /Следующая проверка: 10:30$/);
+  bot.ozon.status = () => ({next_check: null});
+  await bot.send({...payload, store: 'ozon'});
+  assert.match(api.calls.at(-1).data.text, /Следующая проверка: не запланирована$/);
+  bot.ozon.status = () => ({next_check: '2026-10-21T07:30:00Z', action_required: true});
+  await bot.send({...payload, store: 'ozon'});
+  assert.match(api.calls.at(-1).data.text, /Следующая проверка: требуется вход$/);
+  await bot.send('Chat reply', {service: false});
+  assert.equal(api.calls.at(-1).data.text, 'Chat reply');
+});
