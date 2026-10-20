@@ -32,6 +32,14 @@ def prepare_key():
     return key
 
 
+def require_develop_workspace():
+    if run('git', '-C', str(REPO), 'symbolic-ref', '--quiet', '--short', 'HEAD') != 'develop':
+        raise RuntimeError('Codex workspace must use the develop branch')
+    if (run('git', '-C', str(REPO), 'config', '--get', 'branch.develop.remote') != 'origin'
+            or run('git', '-C', str(REPO), 'config', '--get', 'branch.develop.merge') != 'refs/heads/develop'):
+        raise RuntimeError('Codex workspace must track origin/develop')
+
+
 def install(source, name, email):
     key = prepare_key()
     with urllib.request.urlopen('https://api.github.com/meta', timeout=30) as response:
@@ -40,12 +48,13 @@ def install(source, name, email):
     known.write_text(''.join('github.com ' + key + '\n' for key in keys))
     ssh_command = f'ssh -i {key} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={known} -o HostKeyAlias=github.com -o Hostname=ssh.github.com -p 443'
     if not REPO.exists():
-        run('git', '-c', 'core.sshCommand=' + ssh_command, 'clone', REMOTE, str(REPO))
+        run('git', '-c', 'core.sshCommand=' + ssh_command, 'clone', '--branch', 'develop', REMOTE, str(REPO))
     REPO.chmod(0o755)
     if run('git', '-C', str(REPO), 'remote', 'get-url', 'origin') != REMOTE:
         raise RuntimeError('Unexpected repository remote')
     if run('git', '-C', str(REPO), 'status', '--porcelain'):
         raise RuntimeError('Preserve existing repository changes before installation')
+    require_develop_workspace()
     for setting, value in [('core.sshCommand', ssh_command), ('user.name', name), ('user.email', email)]:
         run('git', '-C', str(REPO), 'config', setting, value)
     # Independent SSH process escapes the web service's filesystem sandbox.
