@@ -5,7 +5,7 @@ import {validateCapturedRequest} from './network-capture.js';
 export const RECOVERY_SOCKET = '/run/price-checker-ozon-recovery.sock';
 export const RECOVERY_LIMIT = 12 * 1024 * 1024;
 
-// One private socket and one browser for the remaining reads in this collection.
+// A connection leases the browser for one collection. The service owns its lifetime.
 export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_SOCKET, timeoutMs = 60000} = {}) {
   if (!existsSync(path) || signal?.aborted) throw new Error('Browser unavailable');
   const socket = connect(path);
@@ -37,6 +37,7 @@ export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_S
     socket.write(output);
   });
   return {
+    resume() {return send({resume:true});},
     read(request) {const verified = validateCapturedRequest(request);return send({request:{...verified,headers:{}},...(sequence === 0 ? {cookies} : {})});},
     login(action, data = {}) {
       if (!['start','phone','finish'].includes(action)) throw new Error('Unsupported login action');
@@ -44,8 +45,19 @@ export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_S
     },
     async close() {
       if (closed) return;
-      try {await send({close:true},5000);} catch { /* Disconnect also terminates the worker. */ }
+      try {await send({close:true},5000);} catch { /* The server also releases disconnected leases. */ }
       finally {fail();}
     },
   };
+}
+
+export async function resumeBrowserCollection(options = {},settings = {}) {
+  if (!existsSync(settings.path || RECOVERY_SOCKET)) return null;
+  let channel;
+  try {
+    channel = browserCollection(options,settings);
+    if ((await channel.resume()).available === true) return channel;
+  } catch { /* Only probes availability; collections always use the browser. */ }
+  await channel?.close();
+  return null;
 }

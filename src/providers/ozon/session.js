@@ -1,11 +1,13 @@
 import {readFileSync, statSync, lstatSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {Cookie, CookieJar, domainMatch, pathMatch} from 'tough-cookie';
+import {Cookie, CookieJar, cookieCompare, domainMatch, pathMatch} from 'tough-cookie';
 import {OZON_ORIGIN} from './url.js';
 import {ValidationError} from '../../errors.js';
 
 export const OZON_JSON_PATH = '/api/entrypoint-api.bx/page/json/v2';
+export const OZON_COOKIE_PARTITION = Object.freeze({topLevelSite:'https://ozon.ru',hasCrossSiteAncestor:false});
+const jarOptions = {prefixSecurity:'strict',allowSpecialUseDomain:false};
 const invalid = () => new ValidationError('Не удалось прочитать приватную HTTP-сессию Ozon.');
 
 function scopedUrl(value) {
@@ -45,7 +47,9 @@ export class OzonSession {
   constructor(header, {path = null, current = Date.now} = {}) {
     this.bootstrap = bootstrapPairs(header);
     this.shadowed = new Set();
-    this.jar = new CookieJar(undefined, {prefixSecurity: 'strict', allowSpecialUseDomain: false});
+    this.jar = new CookieJar(undefined, jarOptions);
+    // This jar represents only the fixed first-party Ozon partition above.
+    this.partitionedJar = new CookieJar(undefined, jarOptions);
     this.path = path;
     this.current = current;
   }
@@ -58,28 +62,34 @@ export class OzonSession {
       const saved = JSON.parse(readFileSync(path, 'utf8'));
       if (saved.provider !== 'ozon-http-session' || saved.version !== 1 || !Array.isArray(saved.shadowed)
         || saved.shadowed.some(key => typeof key !== 'string' || key.length > 200)
-        || !Array.isArray(saved.jar?.cookies) || saved.jar.cookies.length > 200) throw invalid();
+        || !Array.isArray(saved.jar?.cookies)
+        || saved.partitionedJar !== undefined && !Array.isArray(saved.partitionedJar?.cookies)
+        || saved.jar.cookies.length+(saved.partitionedJar?.cookies.length || 0) > 200) throw invalid();
       session.bootstrap = bootstrapPairs(saved.bootstrap);
       session.shadowed = new Set(saved.shadowed);
       session.jar = await CookieJar.deserialize({...saved.jar, prefixSecurity: 'strict', rejectPublicSuffixes: true,
         enableLooseMode: false, allowSpecialUseDomain: false});
-      for (const cookie of saved.jar.cookies) {
+      if (saved.partitionedJar) session.partitionedJar = await CookieJar.deserialize({...saved.partitionedJar,
+        prefixSecurity:'strict',rejectPublicSuffixes:true,enableLooseMode:false,allowSpecialUseDomain:false});
+      for (const cookie of [...saved.jar.cookies,...(saved.partitionedJar?.cookies || [])]) {
         if (!['ozon.ru', 'www.ozon.ru'].includes(cookie.domain) || !pathMatch(OZON_JSON_PATH, cookie.path)) throw invalid();
       }
+      if (saved.partitionedJar?.cookies.some(cookie => cookie.secure !== true)) throw invalid();
       return session;
     } catch {throw invalid();}
   }
 
   async header(url) {
     scopedUrl(url);
-    const candidates = await this.jar.getCookies(url, {expire: false});
     const learned = [];
-    for (const cookie of candidates) {
-      if (cookie.expiryTime() <= this.current()) await this.jar.store.removeCookie(cookie.domain, cookie.path, cookie.key);
-      else learned.push(cookie);
+    for (const jar of [this.jar,this.partitionedJar]) {
+      for (const cookie of await jar.getCookies(url,{expire:false})) {
+        if (cookie.expiryTime() <= this.current()) await jar.store.removeCookie(cookie.domain,cookie.path,cookie.key);
+        else learned.push(cookie);
+      }
     }
     const pairs = [...this.bootstrap].filter(([key]) => !this.shadowed.has(key)).map(([key, value]) => key + '=' + value);
-    return [...pairs, ...learned.map(cookie => cookie.cookieString())].join('; ');
+    return [...pairs, ...learned.sort(cookieCompare).map(cookie => cookie.cookieString())].join('; ');
   }
 
   async absorb(headers, address) {
@@ -89,6 +99,9 @@ export class OzonSession {
       if (value.length > 50000) continue;
       const parsed = Cookie.parse(value);
       if (!parsed) continue;
+      const partitioned = parsed.extensions?.some(extension => extension.toLowerCase() === 'partitioned');
+      if (partitioned && !parsed.secure) continue;
+      const jar = partitioned ? this.partitionedJar : this.jar;
       try {
         // Persist an absolute deadline. Accessing a cookie must not prolong Max-Age.
         if (parsed.maxAge != null) {
@@ -96,9 +109,9 @@ export class OzonSession {
           parsed.expires = new Date(age <= 0 ? 0 : Math.min(8640000000000000, this.current() + age * 1000));
           parsed.maxAge = null;
         }
-        const cookie = await this.jar.setCookie(parsed, url, {now: new Date(this.current())});
+        const cookie = await jar.setCookie(parsed, url, {now: new Date(this.current())});
         if (!cookie || !domainMatch(url.hostname, cookie.domain) || !pathMatch(url.pathname, cookie.path)) {
-          if (cookie) await this.jar.store.removeCookie(cookie.domain, cookie.path, cookie.key);
+          if (cookie) await jar.store.removeCookie(cookie.domain, cookie.path, cookie.key);
           continue;
         }
         this.shadowed.add(cookie.key);
@@ -110,17 +123,22 @@ export class OzonSession {
   }
 
   async browserCookies() {
-    const cookies = await this.jar.getCookies(OZON_ORIGIN+OZON_JSON_PATH,{expire:false});
-    return cookies.filter(cookie => cookie.expiryTime() > this.current()).map(cookie => ({name:cookie.key,value:cookie.value,
-      domain:cookie.domain,hostOnly:!!cookie.hostOnly,path:cookie.path,secure:!!cookie.secure,httpOnly:!!cookie.httpOnly,
-      ...(cookie.sameSite ? {sameSite:cookie.sameSite} : {}),
-      ...(Number.isFinite(cookie.expiryTime()) ? {expires:cookie.expiryTime()/1000} : {})}));
+    const result = [];
+    for (const [jar,partitioned] of [[this.jar,false],[this.partitionedJar,true]]) {
+      const cookies = await jar.getCookies(OZON_ORIGIN+OZON_JSON_PATH,{expire:false});
+      result.push(...cookies.filter(cookie => cookie.expiryTime() > this.current()).map(cookie => ({name:cookie.key,value:cookie.value,
+        domain:cookie.domain,hostOnly:!!cookie.hostOnly,path:cookie.path,secure:!!cookie.secure,httpOnly:!!cookie.httpOnly,
+        ...(cookie.sameSite ? {sameSite:cookie.sameSite} : {}),
+        ...(partitioned ? {partitionKey:{...OZON_COOKIE_PARTITION}} : {}),
+        ...(Number.isFinite(cookie.expiryTime()) ? {expires:cookie.expiryTime()/1000} : {})})));
+    }
+    return result;
   }
 
   async save() {
     if (!this.path) return;
     writePrivateJson(this.path, {provider: 'ozon-http-session', version: 1,
       bootstrap: [...this.bootstrap].map(([key, value]) => key + '=' + value).join('; '),
-      shadowed: [...this.shadowed], jar: await this.jar.serialize()});
+      shadowed: [...this.shadowed], jar: await this.jar.serialize(),partitionedJar:await this.partitionedJar.serialize()});
   }
 }

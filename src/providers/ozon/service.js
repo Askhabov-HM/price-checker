@@ -79,7 +79,7 @@ export class OzonService {
         // Re-read availability for every favorite, including unavailable items,
         // so returned products immediately resume recording fresh prices.
         imported = lists.favorites;
-        this.db.recordFavorites(check,imported,this.stamp(),this.client.source || 'http');
+        this.db.recordFavorites(check,imported,this.stamp(),this.client.source || 'browser');
       } else this.db.snapshotLists(check);
       // The full refresh is complete after reading favorites; only an explicit
       // single-product request may open a product card.
@@ -92,11 +92,11 @@ export class OzonService {
         if (index) await this.pause(2500,undefined,{signal});
         try {
           const result = await this.client.product(product.sku,product.url);
-          this.db.observe(check,result,this.stamp(),this.client.source || 'http');
+          this.db.observe(check,result,this.stamp(),this.client.source || 'browser');
         } catch (error) {
           if (!(error instanceof OzonReadError) || error.retry_after_ms > 0
             || !['redirect','invalid_data','network_error','http_error','unexpected_content','response_too_large'].includes(error.code)) throw error;
-          this.db.failure(check,product.sku,error.message,this.stamp(),this.client.source || 'http');failed++;
+          this.db.failure(check,product.sku,error.message,this.stamp(),this.client.source || 'browser');failed++;
         }
         target = null;
       }
@@ -110,7 +110,7 @@ export class OzonService {
       const known = error instanceof OzonReadError;
       if (known && error.code === 'login_required') this.loginNeeded = true;
       const message = known ? error.message : signal.aborted ? 'Проверка Ozon остановлена.' : 'Не удалось проверить Ozon. Предыдущие данные сохранены.';
-      if (target) this.db.failure(check,target,message,this.stamp(),this.client.source || 'http');
+      if (target) this.db.failure(check,target,message,this.stamp(),this.client.source || 'browser');
       const wait = Math.max(known ? error.retry_after_ms : 0,known && error.code === 'rate_limited' ? 6*3600000 : 0);
       const next = wait ? new Date(Math.min(this.current()+wait,8.64e15)).toISOString() : null;
       this.db.updateState({not_before:next,next_check:next,action_required:1,message});

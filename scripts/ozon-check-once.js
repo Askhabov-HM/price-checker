@@ -1,6 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {OzonClient} from '../src/providers/ozon/client.js';
+import {browserCollection} from '../src/providers/ozon/recovery.js';
 import {OzonDatabase} from '../src/providers/ozon/database.js';
 import {writePrivateJson} from '../src/providers/ozon/session.js';
 import {acquireInstance} from '../src/instance.js';
@@ -19,11 +20,17 @@ try {
   const state=db.state();
   if(state.not_before && Date.parse(state.not_before)>Date.now())throw Error('Ozon requested a later retry');
   check=db.begin('schedule',startedAt);
-  client=new OzonClient(root,{fetchImpl:async(address,options)=>{
-    const outer=new URL(address),page=new URL(outer.searchParams.get('url'),'https://www.ozon.ru');
-    if(options.method!=='GET' || outer.origin!=='https://www.ozon.ru' || outer.pathname!=='/api/entrypoint-api.bx/page/json/v2'
-      || page.origin!==outer.origin || page.pathname!=='/my/favorites')throw Error('Only favorites pages may be requested');
-    const response=await fetch(address,options);requests.push({status:response.status});return response;
+  client=new OzonClient(root,{browser:async options=>{
+    const channel=browserCollection(options);
+    return {
+      async read(request){
+        const outer=new URL(request.url),page=new URL(outer.searchParams.get('url'),'https://www.ozon.ru');
+        if(request.method!=='GET' || outer.origin!=='https://www.ozon.ru' || outer.pathname!=='/api/entrypoint-api.bx/page/json/v2'
+          || page.origin!==outer.origin || page.pathname!=='/my/favorites')throw Error('Only favorites pages may be requested');
+        const response=await channel.read(request);requests.push({status:response.http_status});return response;
+      },
+      close:()=>channel.close(),
+    };
   }});const contextDigest=await client.open(controller.signal);
   const lists=await client.lists(),items=lists.favorites.map(item=>db.withSavedPrice(item));
   const old=new Map(baseline.items.map(item=>[item.sku,item]));

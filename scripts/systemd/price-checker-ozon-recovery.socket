@@ -1,13 +1,12 @@
 [Unit]
-Description=On-demand Ozon session refresh
+Description=Private socket for the shared Ozon browser
 
 [Socket]
 ListenStream=/run/price-checker-ozon-recovery.sock
 SocketUser=pricechecker
 SocketGroup=pricechecker
 SocketMode=0600
-Accept=yes
-MaxConnections=1
+Accept=no
 RemoveOnStop=yes
 
 [Install]

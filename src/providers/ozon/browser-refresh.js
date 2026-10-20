@@ -1,7 +1,7 @@
 import {validateCapturedRequest} from './network-capture.js';
 import {ozonProduct} from './url.js';
 import {pathMatch} from 'tough-cookie';
-import {OZON_JSON_PATH} from './session.js';
+import {OZON_JSON_PATH,OZON_COOKIE_PARTITION} from './session.js';
 
 export function browserCookieParams(cookies, now = Date.now()) {
   if (!Array.isArray(cookies) || cookies.length > 200) throw new Error('Invalid browser session');
@@ -13,14 +13,31 @@ export function browserCookieParams(cookies, now = Date.now()) {
       || typeof cookie.secure !== 'boolean' || typeof cookie.httpOnly !== 'boolean'
       || cookie.sameSite !== undefined && !['strict','lax','none'].includes(cookie.sameSite)
       || cookie.expires !== undefined && !Number.isFinite(cookie.expires)
+      || cookie.partitionKey !== undefined && (!cookie.partitionKey || cookie.partitionKey.topLevelSite !== OZON_COOKIE_PARTITION.topLevelSite
+        || cookie.partitionKey.hasCrossSiteAncestor !== false || !cookie.secure)
       || cookie.name.startsWith('__Secure-') && !cookie.secure
       || cookie.name.startsWith('__Host-') && (!cookie.secure || !cookie.hostOnly || cookie.path !== '/')) throw new Error('Invalid browser session');
     if (cookie.expires !== undefined && cookie.expires*1000 <= now) return [];
     return [{name:cookie.name,value:cookie.value,path:cookie.path,secure:cookie.secure,httpOnly:cookie.httpOnly,
       ...(cookie.hostOnly ? {url:'https://'+cookie.domain+'/'} : {domain:'.'+cookie.domain}),
       ...(cookie.sameSite ? {sameSite:cookie.sameSite[0].toUpperCase()+cookie.sameSite.slice(1)} : {}),
+      ...(cookie.partitionKey ? {partitionKey:{...OZON_COOKIE_PARTITION}} : {}),
       ...(cookie.expires !== undefined ? {expires:cookie.expires} : {})}];
   });
+}
+
+// The on-disk Chrome profile is authoritative when it already has a cookie.
+// An older HTTP snapshot may fill gaps, but must never roll back refreshed tokens.
+export function browserCookieSeed(cookies, existing, now = Date.now()) {
+  const identity = (domain,path,name,partitionKey) => [domain.replace(/^\./,''),path,name,partitionKey ? 'ozon-first-party' : 'unpartitioned'].join('|');
+  const present = new Set(existing.filter(cookie =>
+    ['ozon.ru','www.ozon.ru'].includes(cookie.domain?.replace(/^\./,''))
+    && !cookie.partitionKeyOpaque
+    && (!cookie.partitionKey || cookie.partitionKey.topLevelSite === 'https://ozon.ru' && cookie.partitionKey.hasCrossSiteAncestor === false)
+    && (cookie.session || cookie.expires*1000 > now))
+    .map(cookie => identity(cookie.domain,cookie.path,cookie.name,cookie.partitionKey)));
+  return browserCookieParams(cookies,now).filter(cookie =>
+    !present.has(identity(cookie.domain || new URL(cookie.url).hostname,cookie.path,cookie.name,cookie.partitionKey)));
 }
 
 // Navigate once, then use the same authenticated page for the rest of the queue.
@@ -47,10 +64,13 @@ export async function createBrowserReader(call, captured, {pause = ms => new Pro
   if (!ready) throw new Error('Browser not ready');
   let reads = 0, lastProduct = null;
   return {
+    reset() {reads = 0;lastProduct = null;},
     async read(captured) {
       const request = validateCapturedRequest(captured);
       if (++reads > 220 || !['product','favorites','cart','banks'].includes(request.operation)
         || request.operation === 'banks' && request.external_id !== lastProduct) throw new Error('Unsupported browser read');
+      const context = await call('Runtime.evaluate',{expression:'({origin:location.origin,ready:document.readyState})',returnByValue:true},sessionId);
+      if (context.result?.value?.origin !== 'https://www.ozon.ru' || context.result.value.ready !== 'complete') throw new Error('Browser page unavailable');
       // Fixed read-only script. No page scripts or account actions come from callers.
       const expression = `(async()=>{try{
         const r=await fetch(${JSON.stringify(request.url)},{credentials:"include",redirect:"error",headers:{accept:"application/json"},signal:AbortSignal.timeout(15000)});

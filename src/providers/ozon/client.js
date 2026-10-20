@@ -2,9 +2,8 @@ import {existsSync, readFileSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {ValidationError} from '../../errors.js';
-import {requestOzonJson} from './json-client.js';
-import {ozonFetch} from './proxy.js';
 import {OzonSession} from './session.js';
+import {importOzonConnection} from './connection.js';
 import {validateCapturedRequest} from './network-capture.js';
 import {accountMatches, bankConditionsRequest} from './account-context.js';
 import {latestFavorites, parseProductPage} from './parser.js';
@@ -28,8 +27,8 @@ const privateJson = path => {
   try {return JSON.parse(readFileSync(path,'utf8'));} catch {throw new ValidationError('Нужно обновить подключение Ozon.');}
 };
 export class OzonClient {
-  constructor(root, {fetchImpl = ozonFetch, browser = browserCollection} = {}) {
-    this.root = root; this.directory = join(root,'.secrets/ozon'); this.fetchImpl = fetchImpl; this.createBrowser = browser;
+  constructor(root, {browser = browserCollection} = {}) {
+    this.root = root; this.directory = join(root,'.secrets/ozon'); this.createBrowser = browser;
   }
   configured() {return existsSync(join(this.directory,'connection.json')) && existsSync(join(this.directory,'session.json'));}
   async open(signal) {
@@ -40,7 +39,12 @@ export class OzonClient {
       || !/^[1-9]\d{0,19}$/.test(config.reference?.account_id)) throw new ValidationError('Нужно обновить подключение Ozon.');
     this.session = await OzonSession.open(join(this.directory,'session.json'),'bootstrap=disabled');
     this.signal = signal;
-    this.source = 'http';
+    this.source = 'browser';
+    try {
+      if (!this.createBrowser || signal?.aborted) throw Error('Browser unavailable');
+      this.browser = await this.createBrowser({signal,cookies:await this.session.browserCookies()});
+      if (!this.browser) throw Error('Browser unavailable');
+    } catch {throw new OzonReadError(signal?.aborted ? 'interrupted' : 'access_limited');}
     // Allow the existing account+delivery binding to migrate without losing history.
     this.legacyContextDigest = createHash('sha256').update(JSON.stringify(config.reference)).digest('hex');
     return createHash('sha256').update(JSON.stringify({account_id:config.reference.account_id})).digest('hex');
@@ -50,27 +54,8 @@ export class OzonClient {
   }
   async read(request, {loginFlag = false, context = true} = {}) {
     if (this.signal?.aborted) throw new OzonReadError('interrupted');
-    if (this.browser) return this.readBrowser(request,{loginFlag,context});
-    if (!await this.session.header(request.url)) throw new OzonReadError('login_required');
-    const result = await requestOzonJson(request, {session:this.session,fetchImpl:this.fetchImpl,signal:this.signal});
-    // After 403, keep the remaining collection inside one saved browser session.
-    if (result.summary.http_status === 403 && !result.summary.retry_after_ms && this.createBrowser && !this.signal?.aborted) {
-      try {
-        this.browser = await this.createBrowser({signal:this.signal,cookies:await this.session.browserCookies()});
-        this.source = 'browser';
-        if (request.operation === 'banks') await this.readBrowser(this.request('/product/'+request.external_id+'/'));
-        return await this.readBrowser(request,{loginFlag,context});
-      } catch (error) {
-        if (error instanceof OzonReadError) throw error;
-        throw new OzonReadError(this.signal?.aborted ? 'interrupted' : 'access_limited');
-      }
-    }
-    if (!result.data || result.summary.outcome !== 'json_received') throw new OzonReadError(this.signal?.aborted ? 'interrupted' : result.summary.outcome,result.summary.retry_after_ms);
-    if (context) {
-      if (result.data.userInfo?.user?.isLoggedIn === false) throw new OzonReadError('login_required');
-      if (!accountMatches(result.data,this.connection.reference,{requireLoginFlag:loginFlag})) throw new OzonReadError('context_mismatch');
-    }
-    return result.data;
+    if (!this.browser) throw new OzonReadError('access_limited');
+    return this.readBrowser(request,{loginFlag,context});
   }
   async readBrowser(request, {loginFlag = false,context = true} = {}) {
     try {
@@ -81,6 +66,10 @@ export class OzonClient {
       if (context) {
         if (result.data.userInfo?.user?.isLoggedIn === false) throw new OzonReadError('login_required');
         if (!accountMatches(result.data,this.connection.reference,{requireLoginFlag:loginFlag})) throw new OzonReadError('context_mismatch');
+        if (result.exported) {
+          await importOzonConnection(this.root,{request:{...request,headers:this.connection.headers},reference:this.connection.reference},result.exported);
+          this.session = await OzonSession.open(join(this.directory,'session.json'),'bootstrap=disabled');
+        }
       }
       if (request.operation === 'product') parseProductPage(result.data,request.external_id);
       return result.data;

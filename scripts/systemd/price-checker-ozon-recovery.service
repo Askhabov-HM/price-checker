@@ -1,0 +1,31 @@
+[Unit]
+Description=Shared persistent Ozon browser
+Requires=price-checker-ozon-recovery.socket
+After=price-checker-ozon-recovery.socket
+
+[Service]
+User=ozonbrowser
+Group=ozonbrowser
+EnvironmentFile=/etc/price-checker-ozon-recovery.env
+EnvironmentFile=-/etc/price-checker-ozon-proxy.env
+WorkingDirectory=/opt/price-checker/current
+ExecStart=/usr/local/bin/node /opt/price-checker/current/scripts/ozon-recovery-server.js
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/price-checker-ozon-browser
+MemoryMax=1024M
+MemoryHigh=896M
+MemorySwapMax=128M
+CPUQuota=100%
+Nice=10
+TasksMax=256
+TimeoutStopSec=25
+KillMode=control-group
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
