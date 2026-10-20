@@ -1,14 +1,14 @@
 import {spawn} from 'node:child_process';
-import {mkdirSync} from 'node:fs';
+import {existsSync, mkdirSync} from 'node:fs';
 import {isAbsolute} from 'node:path';
 import {now} from './time.js';
 
 const sessionPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const instructions = 'Ты отвечаешь владельцу Price Checker в личном Telegram-чате. Отвечай по-русски, понятно и кратко, если пользователь не просит подробностей. Это текстовая переписка. Не используй инструменты, не читай файлы, не выполняй команды. У тебя нет доступа к актуальным ценам и состоянию приложения; для них предложи /status, /check_randewoo или /check_ozon в зависимости от магазина. Не утверждай, что выполнил действие на сервере.';
+const instructions = 'Ты работаешь для владельца Price Checker в его личном Telegram-чате. Отвечай по-русски, понятно и кратко. Тебе разрешён полный доступ к серверу, включая root, файлы, логи и службы, в рамках задачи владельца. Прочитай AGENTS.md в рабочем Git-каталоге и следуй ему. Исходники меняй в /opt/price-checker/repository; текущий релиз находится в /opt/price-checker/current. После своих изменений обязательно используй $safe-commit-auto из .agents/skills/safe-commit-auto/SKILL.md: проверь изменения, сделай коммит и push до завершения работы. Stop-хук проверяет фактическую отправку. Не обходи хук, не коммить секреты или чужие изменения. Если push заблокирован, сообщи причину и не объявляй задачу завершённой. E2E и браузерные тесты запускать запрещено; unit-тесты с имитацией ответов разрешены. Не выдавай предположения за выполненные действия и проверяй текущее состояние перед ответом о сервере.';
 const configuration = {
-  sandbox_mode: 'read-only', approval_policy: 'never', web_search: 'disabled',
-  'features.shell_tool': false, 'features.apps': false, 'features.plugins': false,
-  'features.hooks': false, 'features.multi_agent': false, 'features.browser_use': false,
+  sandbox_mode: 'danger-full-access', approval_policy: 'never', web_search: 'live',
+  'features.shell_tool': true, 'features.apps': false, 'features.plugins': false,
+  'features.hooks': true, 'features.multi_agent': false, 'features.browser_use': false,
   'features.computer_use': false, 'features.image_generation': false, 'features.view_image': false,
   developer_instructions: instructions
 };
@@ -19,15 +19,16 @@ export class CodexError extends Error {
 
 function failureReason(message) {
   const text = String(message || '').toLowerCase();
+  if (text.includes('git_delivery_not_verified')) return 'git_delivery';
   if (/usage limit|rate.?limit|quota|429|credits/.test(text)) return 'limit';
   if (/unauthori[sz]ed|401|sign.?in|log.?in|auth|token.*expired/.test(text)) return 'auth';
   return 'request';
 }
 
 export class CodexRunner {
-  constructor({executable, workspace, timeoutMs = 180000, spawnProcess = spawn}) {
+  constructor({executable, workspace, timeoutMs = 2700000, spawnProcess = spawn}) {
     if (!isAbsolute(executable || '') || !isAbsolute(workspace || '')) throw new CodexError('configuration');
-    mkdirSync(workspace, {recursive: true, mode: 0o700});
+    if (!existsSync(workspace)) mkdirSync(workspace, {recursive: true, mode: 0o700});
     this.executable = executable; this.workspace = workspace; this.timeoutMs = timeoutMs;
     this.spawnProcess = spawnProcess; this.stoppers = new Set(); this.closed = false;
   }
@@ -35,10 +36,10 @@ export class CodexRunner {
   async turn({sessionId = null, prompt, onSession = () => {}, signal}) {
     if (this.closed || signal?.aborted) throw new CodexError('stopped');
     if ((sessionId && !sessionPattern.test(sessionId)) || typeof prompt !== 'string' || !prompt.trim()) throw new CodexError('configuration');
-    const args = ['exec', '--cd', this.workspace, '--ignore-user-config', '--strict-config', '--skip-git-repo-check', '--json'];
+    const args = ['exec', '--cd', this.workspace, '--strict-config', '--dangerously-bypass-hook-trust', '--json'];
     for (const [key, value] of Object.entries(configuration)) args.push('-c', key + '=' + JSON.stringify(value));
     args.push(...(sessionId ? ['resume', sessionId, '-'] : ['-']));
-    // Chat text goes only to stdin. Do not pass collector credentials or its environment to Codex.
+    // The root launcher supplies its own credentials and reviewed hook configuration.
     const env = Object.fromEntries(['PATH', 'HOME', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP']
       .filter(key => process.env[key] != null).map(key => [key, process.env[key]]));
     return new Promise((resolve, reject) => {
@@ -116,9 +117,10 @@ export function splitTelegramText(text, limit = 4000) {
 }
 
 const failureText = reason => ({
+  git_delivery: 'Работа Codex не завершена: изменения не закоммичены или их отправка в Git не подтверждена. Подробности сохранены в серверном отчёте проверки Git.',
   auth: 'Codex требует повторного входа на сервере. Сообщение сохранено; после входа отправь его ещё раз.',
   limit: 'Достигнут лимит Codex. Сообщение сохранено; попробуй отправить его позже.',
-  timeout: 'Codex не успел ответить за 3 минуты. Сообщение сохранено; попробуй отправить его ещё раз.'
+  timeout: 'Codex не завершил работу за 45 минут. Сообщение сохранено; проверь состояние изменений перед продолжением.'
 }[reason] || 'Не удалось получить ответ Codex. Сообщение сохранено; попробуй отправить его ещё раз.');
 
 export class CodexChat {

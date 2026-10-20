@@ -188,7 +188,7 @@ function transport(t, {events, pending = false, timeoutMs = 10000} = {}) {
   return {runner, calls};
 }
 
-test('CLI uses stdin, explicit session resume, strict read-only settings and a minimal environment', async t => {
+test('CLI uses stdin, explicit session resume, full server access and mandatory completion hooks', async t => {
   const {runner, calls} = transport(t);
   const seen = [];
   const result = await runner.turn({prompt: 'private-prompt', onSession: id => seen.push(id)});
@@ -197,13 +197,23 @@ test('CLI uses stdin, explicit session resume, strict read-only settings and a m
   assert.deepEqual(calls[1].args.slice(-3), ['resume', sessionA, '-']);
   assert.equal(calls[0].input, 'private-prompt');
   assert.doesNotMatch(JSON.stringify(calls[0].args), /private-prompt/);
-  assert.ok(calls[0].args.includes('features.shell_tool=false'));
-  assert.ok(calls[0].args.includes('sandbox_mode="read-only"'));
-  assert.ok(calls[0].args.includes('--ignore-user-config'));
+  assert.ok(calls[0].args.includes('features.shell_tool=true'));
+  assert.ok(calls[0].args.includes('features.hooks=true'));
+  assert.ok(calls[0].args.includes('sandbox_mode="danger-full-access"'));
+  assert.ok(calls[0].args.includes('--dangerously-bypass-hook-trust'));
+  assert.ok(!calls[0].args.includes('--ignore-user-config'));
+  assert.ok(calls[0].args.some(arg => arg.includes('$safe-commit-auto')));
   assert.equal(calls[0].options.env.PRICE_CHECKER_TELEGRAM_TOKEN_FILE, undefined);
   assert.equal(calls[0].options.env.HTTP_PROXY, undefined);
   assert.equal(calls[0].options.windowsHide, true);
   await assert.rejects(runner.turn({sessionId: '--last', prompt: 'test'}), /configuration/);
+});
+
+test('unverified Git delivery is reported as incomplete even after an agent message', async t => {
+  const {runner} = transport(t, {events: [{type:'thread.started',thread_id:sessionA},
+    {type:'item.completed',item:{type:'agent_message',text:'Done'}},
+    {type:'turn.failed',error:{message:'git_delivery_not_verified'}}]});
+  await assert.rejects(runner.turn({prompt:'work'}), error => error.reason === 'git_delivery');
 });
 
 test('CLI errors retain only a safe reason, never a server response or authentication secret', async t => {

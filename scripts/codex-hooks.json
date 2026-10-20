@@ -1,0 +1,11 @@
+{
+  "description": "Verify committed changes reached the upstream before server Codex completes.",
+  "hooks": {
+    "Stop": [{"hooks": [{
+      "type": "command",
+      "command": "/usr/bin/python3 /usr/local/lib/price-checker/codex-git-guard.py",
+      "timeout": 180,
+      "statusMessage": "Проверяю коммит и отправку изменений в Git"
+    }]}]
+  }
+}
