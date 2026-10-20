@@ -1,0 +1,21 @@
+[Unit]
+Description=Verified encrypted Price Checker database backup to Google Drive
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/price-checker/google-drive-backup.py run
+TimeoutStartSec=25min
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/price-checker-backup /var/lib/price-checker/secrets/google-drive-backup
+MemoryMax=768M
+CPUQuota=50%
+TasksMax=64
