@@ -28,6 +28,11 @@ def git(root, *args):
 def snapshot(root):
     root = Path(git(root, 'rev-parse', '--show-toplevel')).resolve()
     branch = git(root, 'symbolic-ref', '--quiet', '--short', 'HEAD')
+    if branch != 'develop':
+        raise DeliveryError('Codex may work only on the develop branch.')
+    if (git(root, 'config', '--get', 'branch.develop.remote') != 'origin'
+            or git(root, 'config', '--get', 'branch.develop.merge') != 'refs/heads/develop'):
+        raise DeliveryError('Codex requires the origin/develop upstream.')
     if git(root, 'status', '--porcelain=v1', '--untracked-files=all'):
         raise DeliveryError('The repository contains uncommitted changes. Preserve them; do not stage unrelated work.')
     for name in ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']:
@@ -46,8 +51,8 @@ def verify(baseline):
     git(root, 'merge-base', '--is-ancestor', baseline['head'], current['head'])
     remote = git(root, 'config', '--get', 'branch.' + branch + '.remote')
     ref = git(root, 'config', '--get', 'branch.' + branch + '.merge')
-    if remote == '.' or remote.startswith('-') or not ref.startswith('refs/heads/'):
-        raise DeliveryError('A remote upstream branch is required.')
+    if remote != 'origin' or ref != 'refs/heads/develop':
+        raise DeliveryError('Codex requires the origin/develop upstream.')
     # Fetch the actual remote branch, rather than trusting a stale origin/* ref.
     git(root, 'fetch', '--no-tags', '--no-recurse-submodules', remote, ref)
     git(root, 'merge-base', '--is-ancestor', current['head'], 'FETCH_HEAD')

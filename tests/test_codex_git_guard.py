@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 
@@ -30,7 +31,7 @@ class GitGuardTests(unittest.TestCase):
         self.root = self.base / 'repo'
         self.remote = self.base / 'remote.git'
         self.run_git('init', '--bare', str(self.remote))
-        self.run_git('init', '-b', 'main', str(self.root))
+        self.run_git('init', '-b', 'develop', str(self.root))
         self.git('config', 'user.name', 'Synthetic Codex')
         self.git('config', 'user.email', 'synthetic@example.test')
         self.git('config', 'commit.gpgsign', 'false')
@@ -38,7 +39,7 @@ class GitGuardTests(unittest.TestCase):
         self.git('add', 'app.txt')
         self.git('commit', '-m', 'feat: initial fixture')
         self.git('remote', 'add', 'origin', str(self.remote))
-        self.git('push', '-u', 'origin', 'main')
+        self.git('push', '-u', 'origin', 'develop')
         self.baseline = guard.snapshot(self.root)
 
     def run_git(self, *args):
@@ -64,7 +65,7 @@ class GitGuardTests(unittest.TestCase):
 
     def test_a_commit_and_forged_tracking_ref_do_not_prove_push(self):
         self.change()
-        self.git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+        self.git('update-ref', 'refs/remotes/origin/develop', 'HEAD')
         with self.assertRaises(guard.DeliveryError):
             guard.verify(self.baseline)
 
@@ -80,7 +81,7 @@ class GitGuardTests(unittest.TestCase):
         self.change()
         self.git('push')
         other = self.base / 'other'
-        self.run_git('clone', '-b', 'main', str(self.remote), str(other))
+        self.run_git('clone', '-b', 'develop', str(self.remote), str(other))
         self.run_git('-C', str(other), 'config', 'user.name', 'Synthetic Other')
         self.run_git('-C', str(other), 'config', 'user.email', 'other@example.test')
         (other / 'other.txt').write_text('another change')
@@ -93,7 +94,7 @@ class GitGuardTests(unittest.TestCase):
         self.git('switch', '-c', 'other')
         with self.assertRaises(guard.DeliveryError):
             guard.verify(self.baseline)
-        self.git('switch', 'main')
+        self.git('switch', 'develop')
         self.change()
         self.git('branch', '--unset-upstream')
         with self.assertRaises(guard.DeliveryError):
@@ -116,6 +117,48 @@ class GitGuardTests(unittest.TestCase):
         report = json.loads(baseline.with_suffix('.result.json').read_text())
         self.assertFalse(report['verified'])
         self.assertFalse(guard.audit(baseline)['verified'])
+
+    def test_main_and_feature_branches_are_rejected_before_codex_starts(self):
+        for branch in ['main', 'feature/other']:
+            with self.subTest(branch=branch):
+                self.git('switch', '-c', branch)
+                with self.assertRaisesRegex(guard.DeliveryError, 'only on the develop'):
+                    guard.snapshot(self.root)
+                self.git('switch', 'develop')
+
+    def test_wrong_upstream_blocks_even_an_unchanged_turn(self):
+        for setting, value in [('branch.develop.merge', 'refs/heads/main'),
+                               ('branch.develop.remote', 'other')]:
+            with self.subTest(setting=setting):
+                previous = self.git('config', '--get', setting)
+                self.git('config', setting, value)
+                try:
+                    with self.assertRaisesRegex(guard.DeliveryError, 'origin/develop'):
+                        guard.verify(self.baseline)
+                finally:
+                    self.git('config', setting, previous)
+
+    def test_detached_head_is_rejected_before_codex_starts(self):
+        self.git('checkout', '--detach')
+        with self.assertRaises(guard.DeliveryError):
+            guard.snapshot(self.root)
+
+    @unittest.skipIf(os.name == 'nt', 'Linux server installer')
+    def test_installer_accepts_develop_and_rejects_main(self):
+        installer = load('codex_setup', 'setup-codex-server.py')
+        with patch.object(installer, 'REPO', self.root):
+            installer.require_develop_workspace()
+            self.git('switch', '-c', 'main')
+            with self.assertRaisesRegex(RuntimeError, 'develop'):
+                installer.require_develop_workspace()
+
+    @unittest.skipIf(os.name == 'nt', 'Linux server installer')
+    def test_installer_rejects_develop_tracking_main(self):
+        installer = load('codex_setup', 'setup-codex-server.py')
+        self.git('config', 'branch.develop.merge', 'refs/heads/main')
+        with patch.object(installer, 'REPO', self.root):
+            with self.assertRaisesRegex(RuntimeError, 'origin/develop'):
+                installer.require_develop_workspace()
 
     def test_existing_dirty_work_is_rejected_before_codex_starts(self):
         (self.root / 'app.txt').write_text('owner work')
