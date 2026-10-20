@@ -55,6 +55,29 @@ export async function captureBrowserSnapshot(call,sessionId,{current = () => new
   finally {clearTimeout(timer);}
 }
 
+// Warm Chrome already has a page, even before the collector creates its reader.
+// Attach only for observation; never create, activate, navigate or resize a target.
+export async function captureOpenBrowserSnapshot(call,{timeoutMs = 4000,...options} = {}) {
+  let timer,sessionId,finished=false;
+  const deadline=new Promise((_,reject) => {timer=setTimeout(() => reject(Error('Snapshot timed out')),timeoutMs);});
+  const read=(method,params,session) => Promise.race([call(method,params,session),deadline]);
+  const detach=id => {void call('Target.detachFromTarget',{sessionId:id}).catch(() => {});};
+  try {
+    const {targetInfos}=await read('Target.getTargets',{});
+    const pages=targetInfos.filter(target => target.type === 'page' && safePageUrl(target.url));
+    const target=pages.find(page => page.url !== 'about:blank') || pages[0];
+    if (!target) return null;
+    const attaching=call('Target.attachToTarget',{targetId:target.targetId,flatten:true}).then(result => {
+      // An attachment can arrive after the deadline; release it in that case too.
+      if (finished) detach(result.sessionId);else sessionId=result.sessionId;
+      return result;
+    });
+    await Promise.race([attaching,deadline]);
+    return await captureBrowserSnapshot(read,sessionId,{...options,timeoutMs});
+  } catch {return null;}
+  finally {finished=true;clearTimeout(timer);if (sessionId) detach(sessionId);}
+}
+
 export function browserFailureStore(profile) {
   const path = profile ? join(profile,'price-checker-browser-error.json') : null;
   return {

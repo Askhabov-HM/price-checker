@@ -14,7 +14,7 @@ interface BrowserState {
 const queryKey = ['ozon','browser'];
 const modes: Record<string,string> = {
   idle:'Браузер открыт',collecting:'Идёт сбор избранного',starting:'Браузер запускается',login:'Открыто окно входа',
-  stopped:'Браузер закрыт',blank:'Браузер открыт, страница ещё не загружена',unresponsive:'Страница не отвечает',unavailable:'Нет связи со службой браузера',
+  stopped:'Браузер закрыт',blank:'Браузер открыт · Пустая вкладка',unresponsive:'Страница не отвечает',unavailable:'Нет связи со службой браузера',
 };
 const outcomes: Record<string,string> = {
   access_limited:'Ozon ограничил доступ',login_required:'Нужен вход в Ozon',rate_limited:'Ozon ограничил частоту запросов',
@@ -68,15 +68,16 @@ export function OzonBrowserPage() {
       </div>}
       {!historical && state?.mode === 'collecting' && <p className="text-sm text-muted-foreground">Сбор выполняется. Если кадр уже получен, ниже показан последний снимок до сбора; новый появится после завершения.</p>}
       {!historical && state?.mode === 'login' && <p className="text-sm text-muted-foreground">Окно входа доступно на <Link to="/ozon/login" search={search} className="underline">странице входа</Link>. Его содержимое здесь не записывается.</p>}
+      {!historical && state?.mode === 'blank' && <p className="text-sm text-muted-foreground">Сейчас открыта пустая вкладка about:blank. Сборщик откроет избранное при следующем сборе.</p>}
       {snapshot && <div className="min-w-0 rounded-lg border bg-muted/30 px-4 py-3">
-        <p className="break-words text-sm font-medium">{snapshot.title || 'Страница без заголовка'}</p>
+        <p className="break-words text-sm font-medium">{snapshot.title || (snapshot.url === 'about:blank' ? 'Пустая вкладка' : 'Страница без заголовка')}</p>
         <p className="mt-1 break-all text-xs text-muted-foreground">{snapshot.url || 'Адрес страницы недоступен'}</p>
         <p className="mt-2 text-xs text-muted-foreground">Кадр сделан {time(snapshot.captured_at)}{snapshot.ready_state === 'complete' ? ' · Страница загружена' : snapshot.ready_state === 'loading' ? ' · Страница загружается' : ''}</p>
       </div>}
       {snapshot?.image ? <div className="overflow-auto rounded-lg border bg-neutral-950"><img className="mx-auto block h-auto max-w-full" src={`data:image/jpeg;base64,${snapshot.image}`} alt={historical ? 'Страница Ozon в момент последней ошибки сбора' : 'Последний снимок страницы в серверном браузере Ozon'}/></div>
         : <div className="flex min-h-64 flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center text-muted-foreground"><Monitor size={32}/>
           <p className="text-sm">{view.isPending && !historical ? 'Получаем снимок…' : 'Снимок страницы пока недоступен'}</p>
-          <p className="max-w-md text-xs">{historical ? 'При сбое браузер мог не успеть ответить.' : 'Просмотр показывает уже открытый браузер. Страница появится после запуска планового сбора.'}</p></div>}
+          <p className="max-w-md text-xs">{historical ? 'При сбое браузер мог не успеть ответить.' : 'Браузер мог быть закрыт или не ответить на запрос снимка. Попробуйте обновить состояние.'}</p></div>}
       <p className="text-xs text-muted-foreground">Просмотр не меняет страницу Ozon. В скрытой или закрытой вкладке новые кадры не запрашиваются.</p>
     </div>
   </section>;

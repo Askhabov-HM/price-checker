@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {pathMatch} from 'tough-cookie';
 import {ozonBrowserProxyArgs} from '../src/providers/ozon/proxy-config.js';
 import {ozonBrowserOptions} from '../src/providers/ozon/browser-options.js';
-import {browserFailureStore} from '../src/providers/ozon/browser-monitor.js';
+import {browserFailureStore,captureOpenBrowserSnapshot} from '../src/providers/ozon/browser-monitor.js';
 
 // Socket-activated by systemd as ozonbrowser, never run by the web process as root.
 let display, chrome, view, closing = false;
@@ -132,9 +132,9 @@ try {
     } else if (persistent && input.warmup === true && input.id === 1) {
       await call('Browser.getVersion');result = {version:2,ready:true};
     } else if (persistent && input.inspect === true) {
-      const snapshot = browser ? await browser.snapshot() : null;
+      const snapshot = browser ? await browser.snapshot() : await captureOpenBrowserSnapshot(call);
       result = {version:2,running:chrome.exitCode === null,started_at:startedAt,
-        mode:browser ? snapshot ? 'idle' : 'unresponsive' : 'blank',snapshot};
+        mode:snapshot ? snapshot.url === 'about:blank' ? 'blank' : 'idle' : 'unresponsive',snapshot};
     } else if (login) {
       if (input.login === 'start' && input.id === 1) result = {version:2,view:{port:view.port,password:view.password}};
       else if (input.login === 'state') {
