@@ -77,6 +77,48 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'missing'):
                 deploy.extract_release(empty, destination / 'empty')
 
+    @unittest.skipIf(os.name == 'nt', 'Linux deployment filesystem permissions')
+    def test_extraction_is_readable_under_a_restrictive_umask(self):
+        script = tarfile.TarInfo('scripts/task.sh')
+        script.mode = 0o700
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'release'
+            destination.mkdir(mode=0o755)
+            previous = os.umask(0o077)
+            try:
+                deploy.extract_release(archive([script]), destination)
+            finally:
+                os.umask(previous)
+            for path in destination.rglob('*'):
+                expected = 0o755 if path.is_dir() or path.name == 'task.sh' else 0o644
+                self.assertEqual(path.stat().st_mode & 0o777, expected, str(path))
+
+    @unittest.skipIf(os.name == 'nt', 'Linux deployment filesystem permissions')
+    def test_dependency_permissions_preserve_executables_and_private_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release, private = root / 'release', root / 'private'
+            dependency = release / 'node_modules/package'
+            dependency.mkdir(parents=True, mode=0o700)
+            module = dependency / 'index.js'
+            module.write_text('export default 1;')
+            module.chmod(0o600)
+            executable = dependency / 'cli'
+            executable.write_text('#!/bin/sh\n')
+            executable.chmod(0o700)
+            private.mkdir(mode=0o700)
+            secret = private / 'session.json'
+            secret.write_text('{}')
+            secret.chmod(0o600)
+            (release / '.secrets').symlink_to(private, target_is_directory=True)
+            (dependency / 'private-link').symlink_to(secret)
+            deploy.make_release_readable(release)
+            self.assertEqual(dependency.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(module.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(executable.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
+
     def test_archive_cannot_overwrite_state_or_escape_the_release(self):
         for name in ('../escape', '/absolute', '.secrets/session.json', './.data/prices.sqlite3',
                      '.git/config', 'node_modules/anything'):

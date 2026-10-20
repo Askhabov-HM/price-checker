@@ -31,6 +31,16 @@ def commit_from_command(command):
     return match[1]
 
 
+def make_release_readable(release):
+    """Keep root-owned code readable by the service, independent of SSH umask."""
+    for directory, folders, files in os.walk(release, followlinks=False):
+        Path(directory).chmod(0o755)
+        for name in files:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                path.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
+
+
 def extract_release(archive, destination):
     with tarfile.open(fileobj=archive, mode='r:gz') as bundle:
         members = bundle.getmembers()
@@ -43,6 +53,7 @@ def extract_release(archive, destination):
                     or path.parts[0] in reserved or not (member.isfile() or member.isdir())):
                 raise ValueError('Release contains a forbidden archive entry')
         bundle.extractall(destination, members=members, filter='data')
+    make_release_readable(destination)
     for required in ('run.js', 'package.json', 'package-lock.json', '.nvmrc', 'dist/index.html'):
         if not (destination / required).is_file():
             raise ValueError(f'Release is missing {required}')
@@ -181,6 +192,7 @@ def main():
             for name in folders + files:
                 os.chown(Path(directory) / name, 0, 0, follow_symlinks=False)
         shutil.chown(release, 0, 0)
+        make_release_readable(release)
         (release / '.data').symlink_to(DATA)
         (release / '.secrets').symlink_to(SECRETS)
 
