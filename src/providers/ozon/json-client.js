@@ -1,6 +1,7 @@
 import {validateCapturedRequest} from './network-capture.js';
 import {readBounded, retryAfterMs, inspectOzonHtml, redirectSignals} from './probe.js';
 import {OzonSession, OZON_JSON_PATH} from './session.js';
+import {ozonFetch} from './proxy.js';
 
 export const JSON_LIMIT_BYTES = 8 * 1024 * 1024;
 
@@ -21,7 +22,7 @@ export function ozonRedirect(original, previous, location) {
 }
 
 // One logical read; at most two verified redirects, no automatic retries.
-export async function requestOzonJson(captured, {fetchImpl = fetch, current = Date.now, timeoutMs = 20000,
+export async function requestOzonJson(captured, {fetchImpl = ozonFetch, current = Date.now, timeoutMs = 20000,
   session, maxRedirects = 2, signal: parentSignal} = {}) {
   const request = validateCapturedRequest(captured);
   if (!Number.isInteger(maxRedirects) || maxRedirects < 0 || maxRedirects > 2) throw new RangeError('Invalid redirect limit');

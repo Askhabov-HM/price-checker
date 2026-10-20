@@ -3,6 +3,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {ValidationError} from '../../errors.js';
 import {requestOzonJson} from './json-client.js';
+import {ozonFetch} from './proxy.js';
 import {OzonSession} from './session.js';
 import {validateCapturedRequest} from './network-capture.js';
 import {accountMatches, bankConditionsRequest} from './account-context.js';
@@ -27,7 +28,7 @@ const privateJson = path => {
   try {return JSON.parse(readFileSync(path,'utf8'));} catch {throw new ValidationError('Нужно обновить подключение Ozon.');}
 };
 export class OzonClient {
-  constructor(root, {fetchImpl = fetch, browser = browserCollection} = {}) {
+  constructor(root, {fetchImpl = ozonFetch, browser = browserCollection} = {}) {
     this.root = root; this.directory = join(root,'.secrets/ozon'); this.fetchImpl = fetchImpl; this.createBrowser = browser;
   }
   configured() {return existsSync(join(this.directory,'connection.json')) && existsSync(join(this.directory,'session.json'));}

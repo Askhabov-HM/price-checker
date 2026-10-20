@@ -7,6 +7,8 @@ import {validateCapturedRequest} from '../src/providers/ozon/network-capture.js'
 import {createBrowserView} from '../src/providers/ozon/browser-view.js';
 import {createHash} from 'node:crypto';
 import {pathMatch} from 'tough-cookie';
+import {ozonBrowserProxyArgs} from '../src/providers/ozon/proxy-config.js';
+import {ozonBrowserOptions} from '../src/providers/ozon/browser-options.js';
 
 // Socket-activated by systemd as ozonbrowser, never run by the web process as root.
 let display, chrome, view, closing = false;
@@ -53,16 +55,18 @@ try {
   const request = validateCapturedRequest(input.request);
   if (login && request.operation !== 'favorites') throw Error('Invalid login target');
   if (!['product','favorites','cart'].includes(request.operation)) throw Error('Invalid target');
-  display = spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0','1365x900x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
+  const options = ozonBrowserOptions();
+  display = spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0',options.screen,'-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
   const number = await new Promise((resolve,reject) => {
     let text = '';
     display.on('error',reject); display.once('exit',() => reject(Error('Display failed')));
     display.stdio[3].on('data',chunk => {text += chunk; if (/^\d+\n$/.test(text)) resolve(text.trim()); else if(text.length > 10) reject(Error('Display failed'));});
   });
   chrome = spawn('/opt/google/chrome/chrome',[
-    '--user-data-dir='+profile,'--remote-debugging-pipe','--lang=ru-RU','--use-gl=angle','--use-angle=swiftshader',
-    '--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-sync',
-    '--window-size=1365,900','--window-position=0,0','about:blank',
+    ...ozonBrowserProxyArgs(),
+    ...options.chromeArgs,
+    '--user-data-dir='+profile,'--remote-debugging-pipe',
+    '--no-first-run','--no-default-browser-check','about:blank',
   ],{env:{...process.env,DISPLAY:':'+number},stdio:['ignore','ignore','ignore','pipe','pipe']});
   let sequence = 0, buffer = Buffer.alloc(0); const pending = new Map();
   const fail = () => {for (const item of pending.values()) {clearTimeout(item.timer);item.reject(Error('Browser closed'));}pending.clear();};

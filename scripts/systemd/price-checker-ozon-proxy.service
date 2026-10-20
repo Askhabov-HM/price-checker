@@ -1,0 +1,31 @@
+[Unit]
+Description=Dedicated Ozon proxy with a fixed exit node (Mihomo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=priceproxy
+Group=priceproxy
+ExecStart=/usr/local/bin/mihomo -d /var/lib/price-checker-ozon-proxy -f /etc/price-checker-ozon-proxy/config.json
+Restart=on-failure
+RestartSec=3
+UMask=0077
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+StateDirectory=price-checker-ozon-proxy
+StateDirectoryMode=0750
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

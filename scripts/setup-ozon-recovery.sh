@@ -17,7 +17,8 @@ install -m 644 "$directory/systemd/price-checker-ozon-recovery.socket" /etc/syst
 install -m 644 "$directory/systemd/price-checker-ozon-recovery@.service" /etc/systemd/system/
 config=$(mktemp /etc/price-checker-ozon-recovery.env.XXXXXX)
 trap 'rm -f -- "$config"' EXIT
-printf 'OZON_BROWSER_PROFILE=%s\n' "$profile" > "$config"
+# Both the recovery worker and the standalone browser inherit this UI locale.
+printf 'OZON_BROWSER_PROFILE=%s\nLANG=ru_RU.UTF-8\nLC_ALL=ru_RU.UTF-8\nLANGUAGE=ru_RU:ru\nTZ=Europe/Moscow\nOZON_BROWSER_SCREEN=3840x2160\nOZON_BROWSER_WINDOW=1282x1344\nOZON_BROWSER_SCALE=1.5\nOZON_BROWSER_GRAPHICS=swiftshader\n' "$profile" > "$config"
 chmod 600 "$config"
 mv -- "$config" /etc/price-checker-ozon-recovery.env
 systemctl daemon-reload
