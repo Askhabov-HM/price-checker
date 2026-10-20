@@ -236,10 +236,10 @@ class Backup:
         self.restic('restore', snapshot, '--target', str(target))
         return validate_recovery(target)
 
-    def run(self, force=False):
+    def run(self, force=False, force_verify=False):
         with self.lock():
             try:
-                return self._run(force)
+                return self._run(force, force_verify)
             except (BackupError, OSError, sqlite3.Error, ValueError) as error:
                 # Only our own messages are safe to persist; sqlite/JSON errors can contain data.
                 message = str(error) if isinstance(error, BackupError) else type(error).__name__
@@ -247,10 +247,10 @@ class Backup:
                 atomic_json(self.state_file, self.state)
                 raise BackupError(message) from None
 
-    def _run(self, force):
+    def _run(self, force, force_verify):
         current = current_signatures(self.config['data_dir'])
         now = time.time()
-        if not force and current == self.state.get('signatures') and now - self.state.get('last_success_epoch', 0) < 3600:
+        if not force and not force_verify and current == self.state.get('signatures') and now - self.state.get('last_success_epoch', 0) < 3600:
             return {'status': 'unchanged', 'snapshot_id': self.state.get('snapshot_id')}
         manifest = create_snapshots(self.config['data_dir'], self.work / 'staging')
         output = self.restic('backup', '--json', '--host', 'price-checker', '--tag', TAG, 'staging')
@@ -259,7 +259,7 @@ class Backup:
         snapshot = summaries[-1].get('snapshot_id', '') if summaries else ''
         if not re.fullmatch('[0-9a-f]{8,64}', snapshot):
             raise BackupError('restic did not confirm a completed snapshot')
-        maintenance = now - self.state.get('last_verified_epoch', 0) >= 86400
+        maintenance = force_verify or now - self.state.get('last_verified_epoch', 0) >= 86400
         if maintenance:
             if self.verify(snapshot) != manifest:
                 raise BackupError('Downloaded snapshot manifest differs from the local snapshot')
@@ -283,6 +283,7 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     run = commands.add_parser('run')
     run.add_argument('--force', action='store_true')
+    run.add_argument('--verify', action='store_true', help='Require downloaded recovery verification even if checked today')
     commands.add_parser('status')
     commands.add_parser('init')
     verify = commands.add_parser('verify')
@@ -295,7 +296,7 @@ def main():
     try:
         backup = Backup(load_config(args.config))
         if args.command == 'run':
-            result = backup.run(args.force)
+            result = backup.run(args.force, args.verify)
         elif args.command == 'status':
             result = backup.state
         else:

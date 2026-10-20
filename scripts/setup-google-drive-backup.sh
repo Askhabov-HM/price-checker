@@ -41,7 +41,7 @@ install -m 644 "$directory/systemd/price-checker-backup.service" /etc/systemd/sy
 install -m 644 "$directory/systemd/price-checker-backup.timer" /etc/systemd/system/
 systemctl daemon-reload
 if [[ ${1:-} == '--enable' ]]; then
-  python3 /usr/local/lib/price-checker/google-drive-backup.py run --force
+  python3 /usr/local/lib/price-checker/google-drive-backup.py run --force --verify
   systemctl enable --now price-checker-backup.timer
   echo 'Encrypted Drive backups enabled; first upload and isolated recovery succeeded.'
 else

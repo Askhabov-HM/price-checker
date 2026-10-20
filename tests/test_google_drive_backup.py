@@ -165,6 +165,19 @@ class DriveBackupTests(unittest.TestCase):
                 runner.run()
             remote.assert_called_once()
 
+    def test_enabling_again_still_requires_downloaded_recovery_verification(self):
+        runner = backup.Backup(self.config)
+        runner.state = {'signatures': backup.current_signatures(self.data),
+                        'last_success_epoch': 10000, 'last_verified_epoch': 10000}
+        runner.restic = Mock(return_value=json.dumps({'message_type': 'summary', 'snapshot_id': 'e' * 64}))
+
+        def verify(_):
+            return json.loads((runner.work / 'staging/manifest.json').read_text())
+
+        with patch.object(runner, 'lock'), patch('time.time', return_value=10030), patch.object(runner, 'verify', side_effect=verify) as checked:
+            self.assertTrue(runner.run(force_verify=True)['recovery_verified'])
+            checked.assert_called_once_with('e' * 64)
+
     def test_restore_never_overwrites_live_data_or_existing_directories(self):
         runner = backup.Backup(self.config)
         for target in (self.data, self.data / 'restored', self.root, runner.work / 'restore'):
