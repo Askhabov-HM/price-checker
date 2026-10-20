@@ -6,6 +6,7 @@ import {OzonDatabase, itemSku} from './database.js';
 import {OzonClient, OzonReadError} from './client.js';
 import {OzonLogin} from './login.js';
 import {nextScheduledCheck, scheduleSettings} from '../../schedule.js';
+import {inspectBrowserCollection} from './recovery.js';
 
 const legacyRetryMessages = new Set([
   'Ozon ограничил доступ. Проверки приостановлены.',
@@ -19,9 +20,10 @@ const legacyRetryMessages = new Set([
 ]);
 
 export class OzonService {
-  constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify} = {}) {
+  constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify,monitor = inspectBrowserCollection} = {}) {
     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
     this.running = null; this.closing = false;
+    this.browserStatus=monitor;
     const state = this.db.state();
     if (!state.schedule_anchor) this.db.updateState({schedule_anchor:state.next_check || new Date(this.current()+state.interval_minutes*60000).toISOString()});
     this.login = new OzonLogin(root,{notify,onAuthorized:() => {

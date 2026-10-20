@@ -4,6 +4,7 @@ import {AuthGate} from '@/components/auth-gate';
 import {Dashboard} from '@/pages/dashboard';
 import {OzonDashboard} from '@/pages/ozon';
 import {OzonLoginPage} from '@/pages/ozon-login';
+import {OzonBrowserPage} from '@/pages/ozon-browser';
 import {listIds} from '@/lib/format';
 import type {ChangePeriod, Filter, Period, PriceContext, Sort} from '@/lib/types';
 
@@ -25,5 +26,6 @@ const ozon = createRoute({getParentRoute:() => root,path:'/ozon',component:OzonD
   price:(['regular','ozon_card'].includes(String(search.price)) ? search.price : 'listed') as 'listed' | 'regular' | 'ozon_card',
 })});
 const ozonLogin = createRoute({getParentRoute:() => root,path:'/ozon/login',component:OzonLoginPage});
-export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin])});
+const ozonBrowser = createRoute({getParentRoute:() => root,path:'/ozon/browser',component:OzonBrowserPage});
+export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin, ozonBrowser])});
 declare module '@tanstack/react-router' {interface Register {router: typeof router;}}

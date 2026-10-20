@@ -7,6 +7,7 @@ export function launchBrowserWorker({persistent}) {
   const child = spawn(process.execPath,[fileURLToPath(new URL('../../../scripts/ozon-recovery-worker.js',import.meta.url)),
     ...(persistent ? ['--persistent'] : [])],{stdio:['pipe','pipe','ignore']});
   let sequence = 0,pending,buffer = Buffer.alloc(0),stopping;
+  const expiredInspections = new Set();
   const fail = () => {
     if (pending) {clearTimeout(pending.timer);pending.reject(Error('Browser unavailable'));pending = null;}
   };
@@ -14,20 +15,28 @@ export function launchBrowserWorker({persistent}) {
   child.stdout.on('data',chunk => {
     buffer = Buffer.concat([buffer,chunk]);
     if (buffer.length > RECOVERY_LIMIT) {fail();child.kill('SIGTERM');return;}
-    const newline = buffer.indexOf(10);
-    if (newline < 0) return;
-    try {
-      const result = JSON.parse(buffer.subarray(0,newline).toString('utf8'));
-      if (!pending || newline !== buffer.length-1 || result.version !== 2 || result.id !== pending.id || result.error) throw Error();
-      buffer = Buffer.alloc(0);
-      const current = pending;pending = null;clearTimeout(current.timer);current.resolve(result);
-    } catch {fail();child.kill('SIGTERM');}
+    let newline;
+    while ((newline = buffer.indexOf(10)) >= 0) {
+      const line=buffer.subarray(0,newline);buffer=buffer.subarray(newline+1);
+      try {
+        const result = JSON.parse(line.toString('utf8'));
+        if (result.version !== 2) throw Error();
+        if (expiredInspections.delete(result.id)) continue;
+        if (!pending || result.id !== pending.id || result.error) throw Error();
+        const current = pending;pending = null;clearTimeout(current.timer);current.resolve(result);
+      } catch {fail();child.kill('SIGTERM');return;}
+    }
   });
   const send = (message,timeout = 60000) => new Promise((resolve,reject) => {
-    if (pending || child.exitCode !== null || child.signalCode !== null || !child.pid) return reject(Error('Browser unavailable'));
+    if (pending || child.exitCode !== null || child.signalCode !== null || !child.pid
+      || message.inspect === true && expiredInspections.size >= 8) return reject(Error('Browser unavailable'));
     const id = ++sequence,body = JSON.stringify({...message,version:2,id})+'\n';
     if (Buffer.byteLength(body) > 262144) return reject(Error('Browser request too large'));
-    const timer = setTimeout(() => {fail();child.kill('SIGTERM');},timeout);
+    const timer = setTimeout(() => {
+      // A failed viewer must never close Chrome. Ignore its bounded late response.
+      if (message.inspect === true) expiredInspections.add(id);
+      fail();if (message.inspect !== true) child.kill('SIGTERM');
+    },timeout);
     pending = {id,timer,resolve,reject};child.stdin.write(body);
   });
   return {

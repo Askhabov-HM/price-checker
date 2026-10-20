@@ -125,6 +125,10 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/providers/ozon/status') return send(response,200,{...(ozon ? ozon.status() : {available:false,configured:false,message:'Раздел Ozon временно недоступен.'}),csrf_token:token});
         if (url.pathname.startsWith('/api/providers/ozon/')) {
           if (!ozon) return send(response,503,{error:'Раздел Ozon временно недоступен.'});
+          if (url.pathname === '/api/providers/ozon/browser') {
+            if (!auth || !session) return send(response,403,{error:'Для просмотра браузера войдите в Price Checker.'});
+            return send(response,200,await ozon.browserStatus());
+          }
           if (url.pathname === '/api/providers/ozon/dashboard') return send(response,200,{...ozon.db.dashboard(url.searchParams.get('list') || 'favorites'),status:ozon.status()});
           const product = /^\/api\/providers\/ozon\/product\/(ozon:item:[1-9]\d{0,19})\/history$/.exec(decodeURIComponent(url.pathname));
           if (product) {
@@ -145,7 +149,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);

@@ -9,6 +9,7 @@ import {createHash} from 'node:crypto';
 import {pathMatch} from 'tough-cookie';
 import {ozonBrowserProxyArgs} from '../src/providers/ozon/proxy-config.js';
 import {ozonBrowserOptions} from '../src/providers/ozon/browser-options.js';
+import {browserFailureStore} from '../src/providers/ozon/browser-monitor.js';
 
 // Socket-activated by systemd as ozonbrowser, never run by the web process as root.
 let display, chrome, view, closing = false;
@@ -37,6 +38,7 @@ try {
   const profile = process.env.OZON_BROWSER_PROFILE;
   if (!profile || realpathSync(profile) !== profile || !profile.startsWith('/var/lib/price-checker-ozon-browser/')
     || !statSync(profile).isDirectory() || statSync(profile).uid !== process.getuid()) throw Error('Invalid profile');
+  const failureStore = browserFailureStore(profile),startedAt = new Date().toISOString();
   let inputBytes = 0;
   process.stdin.on('data',chunk => {
     inputBytes += chunk.length;
@@ -103,7 +105,8 @@ try {
     const saved = await call('Storage.getCookies');
     const cookies = browserCookieSeed(seed,saved.cookies);
     if (cookies.length) await call('Storage.setCookies',{cookies});
-    return browser = await createBrowserReader(call,captured,{interactiveLogin:login});
+    return browser = await createBrowserReader(call,captured,{interactiveLogin:login,
+      ...(persistent ? {onFailure:snapshot => failureStore.save({at:new Date().toISOString(),outcome:'browser_error',http_status:null,snapshot})} : {})});
   };
   if (!warmup) await initialize(request,input.cookies || []);
   if (login) view = await createBrowserView(number,(file,args,options = {}) => {
@@ -128,6 +131,10 @@ try {
       browser?.reset();result = {version:2,released:true};
     } else if (persistent && input.warmup === true && input.id === 1) {
       await call('Browser.getVersion');result = {version:2,ready:true};
+    } else if (persistent && input.inspect === true) {
+      const snapshot = browser ? await browser.snapshot() : null;
+      result = {version:2,running:chrome.exitCode === null,started_at:startedAt,
+        mode:browser ? snapshot ? 'idle' : 'unresponsive' : 'blank',snapshot};
     } else if (login) {
       if (input.login === 'start' && input.id === 1) result = {version:2,view:{port:view.port,password:view.password}};
       else if (input.login === 'state') {
@@ -163,7 +170,15 @@ try {
       } else throw Error('Invalid login action');
     } else {
       await initialize(input.request,input.cookies || []);
-      result = await browser.read(input.request);
+      try {result = await browser.read(input.request);}
+      catch (error) {
+        if (persistent) failureStore.save({at:new Date().toISOString(),outcome:'browser_error',http_status:null,snapshot:await browser.snapshot()});
+        throw error;
+      }
+      if (persistent && (result.http_status !== 200 || result.outcome !== 'json_received' || result.data?.userInfo?.user?.isLoggedIn === false)) {
+        failureStore.save({at:new Date().toISOString(),outcome:result.data?.userInfo?.user?.isLoggedIn === false ? 'login_required' : result.outcome,
+          http_status:result.http_status,snapshot:await browser.snapshot()});
+      }
       if (persistent && result.http_status === 200 && result.outcome === 'json_received') result.exported = {cookies:await exportCookies()};
     }
     const output = JSON.stringify({...result,id:input.id})+'\n';

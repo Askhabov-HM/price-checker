@@ -1,8 +1,10 @@
 import {connect} from 'node:net';
 import {existsSync} from 'node:fs';
 import {validateCapturedRequest} from './network-capture.js';
+import {monitorState} from './browser-monitor.js';
 
 export const RECOVERY_SOCKET = '/run/price-checker-ozon-recovery.sock';
+export const BROWSER_MONITOR_SOCKET = '/run/price-checker-ozon-monitor/view.sock';
 export const RECOVERY_LIMIT = 12 * 1024 * 1024;
 
 // A connection leases the browser for one collection. The service owns its lifetime.
@@ -38,6 +40,7 @@ export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_S
   });
   return {
     resume() {return send({resume:true});},
+    async inspect() {try {return await send({inspect:true},12000);} finally {fail();}},
     read(request) {const verified = validateCapturedRequest(request);return send({request:{...verified,headers:{}},...(sequence === 0 ? {cookies} : {})});},
     login(action, data = {}) {
       if (!['start','phone','finish'].includes(action)) throw new Error('Unsupported login action');
@@ -49,6 +52,15 @@ export function browserCollection({signal,cookies = []} = {}, {path = RECOVERY_S
       finally {fail();}
     },
   };
+}
+
+export async function inspectBrowserCollection(settings = {}) {
+  let channel;
+  try {
+    channel=browserCollection({},{...settings,path:settings.path || BROWSER_MONITOR_SOCKET});
+    return monitorState(await channel.inspect());
+  } catch {return monitorState();}
+  finally {await channel?.close();}
 }
 
 export async function resumeBrowserCollection(options = {},settings = {}) {

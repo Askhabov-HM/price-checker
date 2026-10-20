@@ -16,7 +16,7 @@ async function* messages(socket) {
   if (buffer.length) throw Error('Incomplete browser request');
 }
 
-export function createRecoveryServer(pool) {
+export function createRecoveryServer(pool,{readLastError = () => null,monitorOnly = false,closePool = true} = {}) {
   const sockets = new Set();
   const server = createServer(socket => {
     sockets.add(socket);
@@ -29,6 +29,15 @@ export function createRecoveryServer(pool) {
       try {
         for await (const input of messages(socket)) {
           if (input.version !== 2 || input.id !== ++sequence) throw Error('Invalid browser sequence');
+          const inspecting = input.inspect === true && input.id === 1 && Object.keys(input).every(key => ['version','id','inspect'].includes(key));
+          if (!inspecting && (monitorOnly || input.inspect !== undefined)) throw Error('Observation only');
+          if (inspecting) {
+            const result={...await pool.inspect(),available:true,last_error:readLastError(),version:2,id:input.id};
+            const output=JSON.stringify(result)+'\n';
+            if (Buffer.byteLength(output)>RECOVERY_LIMIT) throw Error('Browser response too large');
+            await new Promise((resolve,reject) => socket.write(output,error => error ? reject(error) : resolve()));
+            break;
+          }
           if (!lease) {
             if (input.close === true) {socket.end(JSON.stringify({version:2,id:input.id,released:true})+'\n');break;}
             if (input.resume === true && !pool.available) {
@@ -53,7 +62,7 @@ export function createRecoveryServer(pool) {
             result = {version:2,available:true};
           } else {
             // Release is reserved for the server; a caller cannot reset read limits.
-            if (input.release !== undefined || input.resume !== undefined || input.warmup !== undefined) throw Error('Invalid browser action');
+            if (input.release !== undefined || input.resume !== undefined || input.warmup !== undefined || input.inspect !== undefined) throw Error('Invalid browser action');
             const {version,id,...message} = input;
             result = await lease.send(message);
           }
@@ -71,7 +80,7 @@ export function createRecoveryServer(pool) {
     async close() {
       const stopped = server.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
       for (const socket of sockets) socket.destroy();
-      await pool.close();await stopped;
+      if (closePool) await pool.close();await stopped;
     },
   };
 }

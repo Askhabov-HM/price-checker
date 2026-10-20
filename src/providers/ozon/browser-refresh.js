@@ -2,6 +2,7 @@ import {validateCapturedRequest} from './network-capture.js';
 import {ozonProduct} from './url.js';
 import {pathMatch} from 'tough-cookie';
 import {OZON_JSON_PATH,OZON_COOKIE_PARTITION} from './session.js';
+import {captureBrowserSnapshot} from './browser-monitor.js';
 
 export function browserCookieParams(cookies, now = Date.now()) {
   if (!Array.isArray(cookies) || cookies.length > 200) throw new Error('Invalid browser session');
@@ -41,30 +42,36 @@ export function browserCookieSeed(cookies, existing, now = Date.now()) {
 }
 
 // Navigate once, then use the same authenticated page for the rest of the queue.
-export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms)),interactiveLogin = false} = {}) {
+export async function createBrowserReader(call, captured, {pause = ms => new Promise(resolve => setTimeout(resolve,ms)),interactiveLogin = false,onFailure} = {}) {
   const request = validateCapturedRequest(captured);
   if (!['product','favorites','cart'].includes(request.operation)) throw new Error('Unsupported recovery target');
   const page = new URL(request.url).searchParams.get('url');
   const version = await call('Browser.getVersion');
   const {targetId} = await call('Target.createTarget',{url:'about:blank'});
   const {sessionId} = await call('Target.attachToTarget',{targetId,flatten:true});
-  await call('Page.enable',{},sessionId);
-  await call('Page.navigate',{url:'https://www.ozon.ru'+page},sessionId);
-  let ready = false;
-  for (let i = 0; i < 40; i++) {
-    await pause(500);
-    const result = await call('Runtime.evaluate',{expression:'({origin:location.origin,path:location.pathname,ready:document.readyState})',returnByValue:true},sessionId);
-    const value = result.result?.value;
-    let samePage = value?.path?.replace(/\/$/,'') === page.split('?')[0].replace(/\/$/,'');
-    if (request.operation === 'product' && value?.origin === 'https://www.ozon.ru') {
-      try {samePage = ozonProduct(value.origin+value.path).external_id === request.external_id;} catch {samePage = false;}
+  try {
+    await call('Page.enable',{},sessionId);
+    await call('Page.navigate',{url:'https://www.ozon.ru'+page},sessionId);
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+      await pause(500);
+      const result = await call('Runtime.evaluate',{expression:'({origin:location.origin,path:location.pathname,ready:document.readyState})',returnByValue:true},sessionId);
+      const value = result.result?.value;
+      let samePage = value?.path?.replace(/\/$/,'') === page.split('?')[0].replace(/\/$/,'');
+      if (request.operation === 'product' && value?.origin === 'https://www.ozon.ru') {
+        try {samePage = ozonProduct(value.origin+value.path).external_id === request.external_id;} catch {samePage = false;}
+      }
+      if (value?.origin === 'https://www.ozon.ru' && (samePage || interactiveLogin && request.operation === 'favorites') && value.ready === 'complete') {ready = true;break;}
     }
-    if (value?.origin === 'https://www.ozon.ru' && (samePage || interactiveLogin && request.operation === 'favorites') && value.ready === 'complete') {ready = true;break;}
+    if (!ready) throw new Error('Browser not ready');
+  } catch (error) {
+    if (onFailure) try {await onFailure(await captureBrowserSnapshot(call,sessionId));} catch { /* Preserve the collection error. */ }
+    throw error;
   }
-  if (!ready) throw new Error('Browser not ready');
   let reads = 0, lastProduct = null;
   return {
     reset() {reads = 0;lastProduct = null;},
+    snapshot() {return captureBrowserSnapshot(call,sessionId);},
     async read(captured) {
       const request = validateCapturedRequest(captured);
       if (++reads > 220 || !['product','favorites','cart','banks'].includes(request.operation)

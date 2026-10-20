@@ -12,6 +12,28 @@ export class PersistentBrowserPool {
     this.queue = [];this.worker = null;this.active = null;this.retiring = Promise.resolve();
   }
   get available() {return !!this.worker && (this.worker.isAlive?.() ?? true);}
+  // Observation never acquires a profile lease, launches Chrome, or interrupts login/collection.
+  async inspect() {
+    if (this.active) return {running:this.active.worker ? (this.active.worker.isAlive?.() ?? true) : null,
+      mode:this.active.login ? 'login' : this.active.worker ? 'collecting' : 'starting',snapshot:this.active.login ? null : this.lastSnapshot || null};
+    if (!this.available || this.closed) return {running:false,mode:'stopped',snapshot:null};
+    if (this.inspection) return this.inspection;
+    if (this.lastInspection && Date.now()-this.lastInspection.at < 2000) return this.lastInspection.value;
+    const worker=this.worker;
+    this.inspection = Promise.resolve().then(async () => {
+      try {
+        const result=await worker.send({inspect:true},6000);
+        if (this.worker !== worker || this.closed) return {running:false,mode:'stopped',snapshot:null};
+        this.lastSnapshot=result.snapshot || null;this.lastInspection={at:Date.now(),value:result};
+        this.cancel(this.monitorTimer);
+        this.monitorTimer=this.schedule(() => {this.lastSnapshot=null;this.lastInspection=null;},15000);
+        this.monitorTimer?.unref?.();
+        return result;
+      } catch {return {running:this.available,mode:'unresponsive',snapshot:null};}
+    });
+    try {return await this.inspection;}
+    finally {this.inspection=null;void this.drain();}
+  }
   // Start Chrome on about:blank without navigating or reading Ozon while idle.
   async ensureWarm() {
     if (this.closed || this.idleMs !== 0 || this.active || this.queue.length || this.available) return;
@@ -36,12 +58,13 @@ export class PersistentBrowserPool {
   }
   retire(worker) {
     if (!worker) return this.retiring;
-    if (this.worker === worker) this.worker = null;
-    this.retiring = this.retiring.catch(() => {}).then(() => worker.close());
+    if (this.worker === worker) {this.worker = null;this.lastSnapshot=null;this.lastInspection=null;this.cancel(this.monitorTimer);}
+    const inspection=this.inspection;
+    this.retiring = this.retiring.catch(() => {}).then(async () => {await inspection?.catch(() => {});await worker.close();});
     return this.retiring;
   }
   async drain() {
-    if (this.closed || this.active || !this.queue.length) return;
+    if (this.closed || this.active || this.inspection || !this.queue.length) return;
     const job = this.queue.shift(), lease = {login:job.login,worker:null,pending:null,closed:false,failed:false};
     this.active = lease;this.cancel(this.timer);
     job.signal?.removeEventListener('abort',job.abort);
@@ -95,7 +118,7 @@ export class PersistentBrowserPool {
     })();
   }
   async close() {
-    this.closed = true;this.cancel(this.timer);
+    this.closed = true;this.cancel(this.timer);this.cancel(this.monitorTimer);
     for (const job of this.queue.splice(0)) {
       job.signal?.removeEventListener('abort',job.abort);job.reject(Error('Browser unavailable'));
     }
