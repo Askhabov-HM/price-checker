@@ -7,6 +7,8 @@ import {createServer,connect} from 'node:net';
 import {LamodaError,parseWishlistHtml,readAllFavorites} from './parser.js';
 
 const origin = 'https://www.lamoda.ru';
+const homepage = 'https://lamoda.ru/';
+const allowedOrigins = [origin,new URL(homepage).origin];
 export function lamodaBrowserProxyArgs(value = process.env.LAMODA_PROXY_URL) {
   if (value === undefined) return [];
   if (typeof value !== 'string' || value !== value.trim() || !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(value)
@@ -18,7 +20,7 @@ export function lamodaBrowserProxyArgs(value = process.env.LAMODA_PROXY_URL) {
 export function wishlistExpression(page) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 1000) throw new LamodaError('invalid_data');
   // Only this fixed, read-only same-origin GET can be requested over the socket.
-  return `(async()=>{if(location.origin!==${JSON.stringify(origin)})return {unverified:true};
+  return `(async()=>{if(!${JSON.stringify(allowedOrigins)}.includes(location.origin))return {unverified:true};
     const r=await fetch('/wishlist/?page=${page}',{credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(45000)});
     if(!r.ok)return {status:r.status,retry:r.headers.get('Retry-After')};
     if(!r.headers.get('content-type')?.includes('text/html'))return {unverified:true};
@@ -102,10 +104,21 @@ export class LamodaBrowser {
     // Restore only missing/expired cookies before the site's first navigation;
     // a guest page must not replace the saved authorization during bootstrap.
     await this.seedCookies();
-    await this.call('Page.navigate',{url:origin+'/wishlist/'},this.session);
+  }
+  async openHome() {
+    await this.ensure();
+    await this.call('Page.navigate',{url:homepage},this.session);
+  }
+  async preparePage() {
+    await this.ensure();
+    const expression = '({origin:location.origin,ready:document.readyState})';
+    const initial = (await this.call('Runtime.evaluate',{expression,returnByValue:true},this.session)).result?.value;
+    const ready = state => allowedOrigins.includes(state?.origin) && ['interactive','complete'].includes(state.ready);
+    if (ready(initial)) return;
+    if (!allowedOrigins.includes(initial?.origin)) await this.openHome();
     for (let attempt = 0; attempt < 80; attempt++) {
-      const result = await this.call('Runtime.evaluate',{expression:'({origin:location.origin,ready:document.readyState})',returnByValue:true},this.session);
-      if (result.result?.value?.origin === origin && result.result.value.ready !== 'loading') return;
+      const result = await this.call('Runtime.evaluate',{expression,returnByValue:true},this.session);
+      if (ready(result.result?.value)) return;
       await delay(250);
     }
     throw new LamodaError('browser_unavailable');
@@ -134,7 +147,7 @@ export class LamodaBrowser {
     writeFileSync(temporary,JSON.stringify(cookies),{mode:0o600});renameSync(temporary,path);
   }
   async readPage(page) {
-    await this.ensure();
+    await this.preparePage();
     const response = await this.call('Runtime.evaluate',{expression:wishlistExpression(page),awaitPromise:true,returnByValue:true},this.session);
     const result = response.result?.value;
     if (response.exceptionDetails || !result || result.unverified) throw new LamodaError('account_unverified');
@@ -150,7 +163,7 @@ export class LamodaBrowser {
   }
   async startLogin() {
     if (this.login) throw new LamodaError('browser_unavailable');
-    await this.ensure();
+    await this.openHome();
     const directory = join('/var/lib/price-checker-lamoda-browser','login-'+randomBytes(12).toString('hex'));mkdirSync(directory,{mode:0o700});
     const password = randomBytes(6).toString('base64url'),auth = join(directory,'vnc-auth'),firstChild = this.children.length;
     try {
