@@ -64,7 +64,7 @@ export class LamodaBrowser {
     if (process.platform !== 'linux' || process.getuid() === 0 || !this.profile
       || !this.profile.startsWith('/var/lib/price-checker-lamoda-browser/') || realpathSync(this.profile) !== this.profile
       || !statSync(this.profile).isDirectory() || statSync(this.profile).uid !== process.getuid()) throw new LamodaError('browser_unavailable');
-    this.display = this.launch('/usr/bin/Xvfb',['-displayfd','3','-screen','0','1600x1000x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
+    this.display = this.launch('/usr/bin/Xvfb',['-displayfd','3','-screen','0','3840x2160x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
     const display = await new Promise((resolve,reject) => {
       let value = '';const timer = setTimeout(() => reject(new LamodaError('browser_unavailable')),10000);
       this.display.once('error',reject);this.display.once('exit',() => reject(new LamodaError('browser_unavailable')));
@@ -72,7 +72,8 @@ export class LamodaBrowser {
     });
     this.displayNumber = display;
     this.chrome = this.launch(this.chromePath,['--user-data-dir='+this.profile,'--remote-debugging-pipe','--lang=ru',
-      '--window-size=1280,900','--no-first-run','--no-default-browser-check',...this.proxyArgs,'about:blank'],
+      '--window-size=1282,1344','--disable-blink-features=AutomationControlled','--use-gl=angle','--use-angle=swiftshader',
+      '--no-first-run','--no-default-browser-check',...this.proxyArgs,'about:blank'],
     {env:{...process.env,DISPLAY:':'+display},stdio:['ignore','ignore','ignore','pipe','pipe']});
     let buffer = Buffer.alloc(0);
     const fail = () => {for (const pending of this.pending.values()) {clearTimeout(pending.timer);pending.reject(new LamodaError('browser_unavailable'));}this.pending.clear();};
