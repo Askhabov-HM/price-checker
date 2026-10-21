@@ -7,6 +7,14 @@ import {createServer,connect} from 'node:net';
 import {LamodaError,parseWishlistHtml,readAllFavorites} from './parser.js';
 
 const origin = 'https://www.lamoda.ru';
+export function lamodaBrowserProxyArgs(value = process.env.LAMODA_PROXY_URL) {
+  if (value === undefined) return [];
+  if (typeof value !== 'string' || value !== value.trim() || !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(value)
+    || Number(value.slice(value.lastIndexOf(':')+1)) > 65535) {
+    throw new Error('Invalid LAMODA_PROXY_URL: expected a local HTTP proxy');
+  }
+  return ['--proxy-server='+value,'--disable-quic'];
+}
 export function wishlistExpression(page) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 1000) throw new LamodaError('invalid_data');
   // Only this fixed, read-only same-origin GET can be requested over the socket.
@@ -42,8 +50,9 @@ async function ready(port,child) {
   throw new LamodaError('browser_unavailable');
 }
 export class LamodaBrowser {
-  constructor({profile = process.env.LAMODA_BROWSER_PROFILE,chrome = '/opt/google/chrome/chrome',call} = {}) {
+  constructor({profile = process.env.LAMODA_BROWSER_PROFILE,chrome = '/opt/google/chrome/chrome',proxy = process.env.LAMODA_PROXY_URL,call} = {}) {
     this.profile = profile;this.chromePath = chrome;this.injectedCall = call;this.children = [];this.pending = new Map();this.sequence = 0;
+    this.proxyArgs = lamodaBrowserProxyArgs(proxy);
   }
   launch(command,args,options = {}) {
     const child = spawn(command,args,{stdio:['ignore','ignore','ignore'],...options});this.children.push(child);return child;
@@ -63,7 +72,7 @@ export class LamodaBrowser {
     });
     this.displayNumber = display;
     this.chrome = this.launch(this.chromePath,['--user-data-dir='+this.profile,'--remote-debugging-pipe','--lang=ru',
-      '--window-size=1280,900','--no-first-run','--no-default-browser-check','about:blank'],
+      '--window-size=1280,900','--no-first-run','--no-default-browser-check',...this.proxyArgs,'about:blank'],
     {env:{...process.env,DISPLAY:':'+display},stdio:['ignore','ignore','ignore','pipe','pipe']});
     let buffer = Buffer.alloc(0);
     const fail = () => {for (const pending of this.pending.values()) {clearTimeout(pending.timer);pending.reject(new LamodaError('browser_unavailable'));}this.pending.clear();};
