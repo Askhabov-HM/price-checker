@@ -15,6 +15,7 @@ const reportDate = value => value ? new Intl.DateTimeFormat('ru-RU', {timeZone: 
 const stores = {
   randewoo: {name: 'Randewoo', emoji: '🌸', id: '5382276449241703317', path: '/cart'},
   ozon: {name: 'Ozon', emoji: '😎', id: '5463148170869482726', path: '/ozon'},
+  lamoda: {name: 'Lamoda',emoji:'🛍️',path:'/lamoda'},
 };
 const reportFormat = 'price-checker-telegram-v1';
 const delayedAfterMs = 5 * 60 * 1000;
@@ -163,10 +164,10 @@ function publicSite(value) {
 }
 
 export class TelegramBot {
-  constructor(tracker, {api, ownerId, codexRunner, ozon, publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN,
+  constructor(tracker, {api, ownerId, codexRunner, ozon, lamoda,publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN,
     logger = entry => console.info(JSON.stringify(entry)), sleep = delay} = {}) {
     if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new TelegramError('configuration');
-    this.tracker = tracker; this.ozon = ozon; this.db = tracker.db; this.api = api; this.ownerId = ownerId;
+    this.tracker = tracker; this.ozon = ozon;this.lamoda = lamoda; this.db = tracker.db; this.api = api; this.ownerId = ownerId;
     this.logger = logger; this.sleep = sleep; this.abort = new AbortController();
     this.publicOrigin = publicSite(publicOrigin);
     this.cursorKey = `telegram_check_cursor:${ownerId}`;
@@ -292,7 +293,7 @@ export class TelegramBot {
       text += '\n\n🕒 Отчёт доставлен с задержкой.';
     }
     if (payload) {
-      const provider = payload.store === 'ozon' ? this.ozon : this.tracker;
+      const provider = payload.store === 'lamoda' ? this.lamoda : payload.store === 'ozon' ? this.ozon : this.tracker;
       const status = provider?.status?.();
       const next = status?.next_check;
       const time = status?.action_required ? 'требуется вход' : next
@@ -305,15 +306,16 @@ export class TelegramBot {
     if (service) {
       const login = payload?.kind === 'login';
       const ozonLogin = login && payload.store === 'ozon';
-      const path = ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
+      const lamodaLogin = login && payload.store === 'lamoda';
+      const path = lamodaLogin ? '/lamoda/login' : ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
       const url = this.publicOrigin + path;
-      data.reply_markup = {inline_keyboard: [[{text: ozonLogin ? '🔐 Войти в Ozon'
+      data.reply_markup = {inline_keyboard: [[{text: lamodaLogin ? '🔐 Войти в Lamoda' : ozonLogin ? '🔐 Войти в Ozon'
         : login ? '🔐 Подключить Randewoo' : '🌐 Открыть сайт', url}]]};
       const entities = [];
       for (const logo of Object.values(stores)) {
         const offset = text.indexOf(`${logo.emoji} ${logo.name}`);
         if (offset < 0) continue;
-        entities.push({type: 'custom_emoji', offset, length: logo.emoji.length, custom_emoji_id: logo.id});
+        if (logo.id) entities.push({type: 'custom_emoji', offset, length: logo.emoji.length, custom_emoji_id: logo.id});
         const start = offset + logo.emoji.length + 1, end = text.indexOf('\n', start);
         entities.push({type: 'bold', offset: start, length: (end < 0 ? text.length : end) - start});
       }
@@ -332,6 +334,29 @@ export class TelegramBot {
     const payload = report('ozon', {status: 'error', message: 'Нужно обновить вход в Ozon.', finished_at: now()}, []);
     await this.send(payload);
     this.db.setSetting(key, {kind: 'login', reason: payload.reason, announced: true});
+  }
+
+  async deliverLamoda() {
+    if (!this.lamoda || this.lamodaDelivery) return this.lamodaDelivery;
+    this.lamodaDelivery = (async () => {
+      for (const row of this.lamoda.db.pending()) {
+        if (this.abort.signal.aborted) break;
+        try {
+          const payload = JSON.parse(row.payload);
+          const lines = [`${payload.kind === 'success' ? '✅' : payload.kind === 'login' ? '🔐' : '🔴'} 🛍️ Lamoda · ${reportDate(payload.finishedAt)}`, ''];
+          if (payload.kind === 'success') {
+            if (payload.recovered) lines.push('Проверка снова работает.','');
+            if (payload.down || payload.up) lines.push(`📉 Снижений: ${payload.down}`,`📈 Повышений: ${payload.up}`);
+            else lines.push('Изменений цен нет.');
+          } else lines.push(payload.kind === 'login' ? 'Требуется повторный вход в аккаунт.' : 'Не удалось выполнить проверку.');
+          const result = await this.send({...payload,format:reportFormat,text:lines.join('\n')});
+          this.lamoda.db.delivered(row.event_id,result?.message_id,now());
+        } catch(error) {
+          this.lamoda.db.retry(row.event_id,Date.now()+retryDelay(error,row.attempts));this.log('telegram_lamoda_delivery_failed',error);break;
+        }
+      }
+    })().finally(() => {this.lamodaDelivery = null;});
+    return this.lamodaDelivery;
   }
 
   async handleUpdate(update) {
@@ -372,8 +397,14 @@ export class TelegramBot {
         await this.send('▶️ Проверка Ozon запущена. Результат придёт после завершения.');
         return;
       }
+      case 'check_lamoda': {
+        if (!this.lamoda) {await this.send('Раздел Lamoda временно недоступен.');return;}
+        try {await this.lamoda.start({trigger:'telegram'});await this.send('▶️ Проверка Lamoda запущена. Результат придёт после завершения.');}
+        catch(error) {await this.send(error instanceof ValidationError ? `Lamoda: ${error.message}` : 'Не удалось запустить проверку Lamoda.');}
+        return;
+      }
       case 'check': {
-        await this.send('Выбери магазин:\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon');
+        await this.send('Выбери магазин:\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon\n/check_lamoda — проверить избранное Lamoda');
         return;
       }
       case 'status': {
@@ -389,6 +420,13 @@ export class TelegramBot {
           if (latest) lines.push(`Последняя проверка: №${latest.id}, ${labels[latest.status] || 'Выполняется'}, ${latest.completed}/${latest.total}`);
           if (ozon.action_required) lines.push('Подключение Ozon требует внимания.');
         } else lines.push('', 'Ozon: недоступен в приложении.');
+        if (this.lamoda) {
+          const lamoda = this.lamoda.status(),last = lamoda.checks[0];
+          lines.push('','🛍️ Lamoda',lamoda.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
+            `Следующая проверка: ${date(lamoda.next_check)}`,`Расписание: ${lamoda.schedule_enabled ? 'включено' : 'выключено'}`);
+          if (last) lines.push(`Последняя проверка: №${last.id}, ${labels[last.status] || last.status}, ${last.completed}/${last.total}`);
+          if (lamoda.action_required || !lamoda.configured) lines.push('Нужно подтвердить вход в Lamoda.');
+        }
         if (this.chat) lines.push(`Codex: сообщений в работе или ожидают доставки — ${this.chat.pending()}.`);
         await this.send(lines.join('\n')); return;
       }
@@ -398,7 +436,7 @@ export class TelegramBot {
           : 'Дождись ответов на сообщения в очереди, затем отправь /new.');
         return;
       default:
-        await this.send('Price Checker подключён.\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon\n/check — выбрать магазин\n/status — состояние магазинов и расписаний\n/help — команды'
+        await this.send('Price Checker подключён.\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon\n/check_lamoda — проверить избранное Lamoda\n/check — выбрать магазин\n/status — состояние магазинов и расписаний\n/help — команды'
           + (this.chat ? '\n/new — новый диалог с Codex\n\nОбычные текстовые сообщения передаю Codex. Контекст диалога сохраняется.' : ''));
     }
   }
@@ -410,7 +448,7 @@ export class TelegramBot {
     const webhook = await this.api.call('getWebhookInfo');
     if (webhook?.url) throw new TelegramError('webhook_configured');
     await this.api.call('setMyCommands', {commands: [{command: 'check_randewoo', description: 'Проверить цены Randewoo'},
-      {command: 'check_ozon', description: 'Проверить избранное Ozon'}, {command: 'check', description: 'Выбрать магазин для проверки'},
+      {command: 'check_ozon', description: 'Проверить избранное Ozon'}, {command:'check_lamoda',description:'Проверить избранное Lamoda'}, {command: 'check', description: 'Выбрать магазин для проверки'},
       {command: 'status', description: 'Состояние магазинов и расписаний'}, {command: 'help', description: 'Показать команды'},
       ...(this.chat ? [{command: 'new', description: 'Новый диалог с Codex'}] : [])]});
     this.log('telegram_ready');
@@ -454,15 +492,15 @@ export class TelegramBot {
     if (this.tasks) return;
     this.tasks = [this.notificationLoop(), ...(polling ? [this.pollLoop(), ...(this.chat ? [this.conversationLoop()] : [])] : [])].map(task => task.catch(() => {}));
   }
-  async flush() {this.discoverChecks(); await this.deliverPending(); await this.chat?.deliverPending();}
+  async flush() {try {this.discoverChecks(); await this.deliverPending(); await this.chat?.deliverPending();} finally {await this.deliverLamoda();}}
   async close() {
     this.abort.abort(); this.api.close();
     await this.chat?.close();
-    await Promise.allSettled([...(this.tasks || []), ...(this.deliveryPromise ? [this.deliveryPromise] : [])]);
+    await Promise.allSettled([...(this.tasks || []), ...(this.deliveryPromise ? [this.deliveryPromise] : []),...(this.lamodaDelivery ? [this.lamodaDelivery] : [])]);
   }
 }
 
-export function createTelegramBot(tracker, env = process.env, logger = entry => console.info(JSON.stringify(entry)), {ozon} = {}) {
+export function createTelegramBot(tracker, env = process.env, logger = entry => console.info(JSON.stringify(entry)), {ozon,lamoda} = {}) {
   const file = env.PRICE_CHECKER_TELEGRAM_TOKEN_FILE, owner = env.PRICE_CHECKER_TELEGRAM_OWNER_ID;
   if (!file && !owner) return null;
   try {
@@ -472,7 +510,7 @@ export function createTelegramBot(tracker, env = process.env, logger = entry => 
       try {codexRunner = new CodexRunner({executable: env.PRICE_CHECKER_CODEX_EXECUTABLE, workspace: env.PRICE_CHECKER_CODEX_WORKSPACE});}
       catch {logger({time: now(), event: 'telegram_ai_disabled', reason: 'configuration'});}
     }
-    return new TelegramBot(tracker, {ownerId: Number(owner), logger, codexRunner, ozon, publicOrigin: env.PRICE_CHECKER_PUBLIC_ORIGIN,
+    return new TelegramBot(tracker, {ownerId: Number(owner), logger, codexRunner, ozon,lamoda, publicOrigin: env.PRICE_CHECKER_PUBLIC_ORIGIN,
       api: new TelegramApi({token: readFileSync(file, 'utf8').trim(), proxy: env.PRICE_CHECKER_TELEGRAM_PROXY})});
   } catch {
     logger({time: now(), event: 'telegram_disabled', reason: 'configuration'});

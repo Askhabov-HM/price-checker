@@ -13,6 +13,7 @@ export function OzonShell() {
   const status = useQuery(ozonStatusOptions), [settings,setSettings] = useState(false);
   return <><aside className="sidebar"><Link className="brand" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}><span className="brand-icon">p<span>·</span></span><span>pricechecker<small>ИСТОРИЯ ВАШИХ ЦЕН</small></span></Link>
     <div className="sidebar-label">МАГАЗИНЫ</div><nav aria-label="Магазины"><Link className="nav-link" to="/$listId" params={{listId:'cart'}} search={search}><ArrowLeft size={19}/><span>Randewoo</span></Link><Link className="nav-link active" aria-current="page" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}><ShoppingBag size={19}/><span>Ozon</span></Link></nav>
+    <Link className="ozon-provider-link" to="/lamoda" search={search}>Lamoda ↗</Link>
     <div className="sidebar-note"><strong>Ваше избранное</strong><p>Сохраняем цены из списка и историю их изменений.</p></div>
     <div className="sidebar-bottom"><Link className="nav-link" aria-label="Браузер Ozon" to="/ozon/browser" search={search}><Monitor size={19}/><span>Браузер Ozon</span></Link>
       <Button id="ozon-settings-button" variant="ghost" className="settings-button max-[850px]:size-10 max-[850px]:p-0" aria-label="Настройки Ozon" disabled={!status.data} onClick={() => setSettings(true)}><Settings size={16}/><span className="sidebar-action-label">Настройки Ozon</span></Button></div></aside>

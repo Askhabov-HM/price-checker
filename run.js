@@ -45,12 +45,13 @@ async function main() {
     else console.error('Не удалось получить блокировку приложения.');
     return 1;
   }
-  let tracker, ozon, telegram, server, shutdownPromise, resolveStopped;
+  let tracker, ozon, lamoda, telegram, server, shutdownPromise, resolveStopped;
   const pidFile = join(root, '.data/server.pid'), metaFile = join(root, '.data/server.json');
   const shutdown = () => {
     if (!shutdownPromise) shutdownPromise = (async () => {
       const closed = server?.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
       await telegram?.close();
+      await lamoda?.close();
       await ozon?.close();
       await tracker?.close();
       server?.closeAllConnections();
@@ -66,12 +67,14 @@ async function main() {
     const {makeServer, listen} = await import('./src/web.js');
     const {createTelegramBot} = await import('./src/telegram.js');
     const {createOzonService} = await import('./src/providers/ozon/service.js');
+    const {createLamodaService} = await import('./src/providers/lamoda/service.js');
     tracker = new Tracker(root);
     if (!args.once) ozon = createOzonService(root,{notify:() => {
       if (!telegram) throw new Error('Telegram unavailable');
       return telegram.notifyOzonLogin();
     }});
-    telegram = createTelegramBot(tracker,process.env,undefined,{ozon});
+    if (!args.once) lamoda = createLamodaService(root);
+    telegram = createTelegramBot(tracker,process.env,undefined,{ozon,lamoda});
     if (args.once) {
       telegram?.start({polling: false});
       const result = await tracker.refreshNow('cli');
@@ -82,7 +85,7 @@ async function main() {
     const {ensureFrontend} = await import('./scripts/build-frontend.js');
     await ensureFrontend();
     const controlToken = randomBytes(32).toString('base64url');
-    server = makeServer(tracker, {onShutdown: signal, controlToken, ozon});
+    server = makeServer(tracker, {onShutdown: signal, controlToken, ozon,lamoda});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');
     writeFileSync(metaFile, JSON.stringify({pid: process.pid, port, runtime: 'node.js', control_token: controlToken}), {encoding: 'utf8', mode: 0o600});
@@ -91,6 +94,7 @@ async function main() {
     telegram?.start();
     tracker.startScheduler();
     await ozon?.startScheduler();
+    await lamoda?.startScheduler();
     if (!args.noBrowser) openBrowser(url);
     await new Promise(resolve => {resolveStopped = resolve;});
     return 0;

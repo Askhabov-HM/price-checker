@@ -10,7 +10,7 @@ import {LoginError} from './randewoo-login.js';
 
 const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
 // Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
-const policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://captcha.randewoo.ru/assets/widget.js https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru https://ir.ozone.ru; connect-src 'self' https://captcha.randewoo.ru https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
+const policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://captcha.randewoo.ru/assets/widget.js https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.randewoo.ru https://ir.ozone.ru https://a.lmcdn.ru; connect-src 'self' https://captcha.randewoo.ru https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.6/browser/; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
 function send(response, status, body, contentType = 'application/json; charset=utf-8', headers = {}) {
   if (!Buffer.isBuffer(body)) body = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
@@ -54,7 +54,7 @@ export function exportCsv(rows, context) {
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }
 
-export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAuthentication(tracker.root), controlToken, ozon = null,
+export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAuthentication(tracker.root), controlToken, ozon = null,lamoda = null,
   publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN} = {}) {
   const csrf = randomBytes(32).toString('base64url');
   let externalOrigin;
@@ -79,9 +79,11 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       const origins = [`http://127.0.0.1:${port}`,`http://localhost:${port}`,...(externalOrigin ? [externalOrigin] : [])];
       const hosts = origins.map(value => new URL(value).host);
       const session = auth?.session(request);
+      const path = new URL(request.url,origins[0]).pathname;
+      const login = path === '/api/providers/lamoda/login/view' ? lamoda?.login : path === '/api/providers/ozon/login/view' ? ozon?.login : null;
       if (!session || !hosts.includes(request.headers.host) || !origins.includes(request.headers.origin)
-        || new URL(request.url,origins[0]).pathname !== '/api/providers/ozon/login/view' || !ozon?.login) throw Error('Forbidden');
-      ozon.login.upgrade(request,socket,head,session.csrf);
+        || !login) throw Error('Forbidden');
+      login.upgrade(request,socket,head,session.csrf);
     } catch {socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');}
   });
 
@@ -113,6 +115,28 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         return send(response, 401, {error: 'Войдите в Price Checker'});
       }
       if (request.method === 'GET') {
+        if (url.pathname.startsWith('/api/providers/lamoda/')) {
+          if (url.pathname === '/api/providers/lamoda/status') return send(response,200,{...(lamoda ? lamoda.status() : {available:false,configured:false,message:'Раздел Lamoda временно недоступен.'}),csrf_token:token});
+          if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
+          if (url.pathname === '/api/providers/lamoda/login/status') return send(response,200,lamoda.login.status());
+          if (url.pathname.startsWith('/api/providers/lamoda/login/assets/')) {
+            if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker'});
+            const relative = url.pathname.slice('/api/providers/lamoda/login/assets/'.length);
+            if (!/^[A-Za-z0-9_./-]+\.js$/.test(relative) || relative.split('/').includes('..')) return send(response,404,{error:'Файл не найден'});
+            const directory = realpathSync(process.env.PRICE_CHECKER_NOVNC_PATH || '/opt/price-checker-ozon-remote/extracted/usr/share/novnc');
+            const path = realpathSync(resolve(directory,relative));
+            if (!path.startsWith(directory+sep)) return send(response,404,{error:'Файл не найден'});
+            return send(response,200,readFileSync(path),'text/javascript; charset=utf-8');
+          }
+          if (url.pathname === '/api/providers/lamoda/dashboard') return send(response,200,{...lamoda.db.dashboard(),status:lamoda.status()});
+          const product = /^\/api\/providers\/lamoda\/product\/(lamoda:item:[A-Z0-9]{6,32})\/history$/.exec(decodeURIComponent(url.pathname));
+          if (product) {
+            const days = url.searchParams.get('days') ?? '30';
+            if (!['0','7','30','90','365'].includes(days)) throw new ValidationError('Некорректный период Lamoda.');
+            return send(response,200,lamoda.db.detail(product[1],Number(days)));
+          }
+          return send(response,404,{error:'Страница Lamoda не найдена'});
+        }
         if (url.pathname === '/api/providers/ozon/login/status') return send(response,200,ozon?.login?.status() || {available:false,active:false,required:false});
         if (url.pathname.startsWith('/api/providers/ozon/login/assets/')) {
           const relative = url.pathname.slice('/api/providers/ozon/login/assets/'.length);
@@ -149,7 +173,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser','/lamoda','/lamoda/login'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);
@@ -176,6 +200,21 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       }
       if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume(); return send(response, 415, {error: 'Ожидается JSON'});}
       const data = await readJson(request);
+      if (url.pathname.startsWith('/api/providers/lamoda/')) {
+        if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
+        if (url.pathname.startsWith('/api/providers/lamoda/login/')) {
+          if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker'});
+          if (url.pathname === '/api/providers/lamoda/login/start') return send(response,200,await lamoda.login.start(token));
+          if (url.pathname === '/api/providers/lamoda/login/finish') return send(response,200,await lamoda.login.finish(token));
+          if (url.pathname === '/api/providers/lamoda/login/cancel') {await lamoda.login.cancel(token);return send(response,200,{ok:true});}
+        }
+        if (url.pathname === '/api/providers/lamoda/refresh') {
+          if (data.id != null) throw new ValidationError('Lamoda обновляется целиком из избранного.');
+          return send(response,202,await lamoda.start());
+        }
+        if (url.pathname === '/api/providers/lamoda/settings') {lamoda.settings(data);return send(response,200,{ok:true});}
+        return send(response,404,{error:'Действие Lamoda не найдено'});
+      }
       if (url.pathname.startsWith('/api/providers/ozon/')) {
         if (!ozon) return send(response,503,{error:'Раздел Ozon временно недоступен.'});
         if (url.pathname.startsWith('/api/providers/ozon/login/')) {
@@ -205,6 +244,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       if (url.pathname === '/api/logout' && auth) {
         tracker.randewooLogin.cancel(token);
         if (ozon?.login?.session?.owner === token || ozon?.login?.opening?.owner === token) await ozon.login.cancel(token);
+        if (lamoda?.login?.session?.owner === token) await lamoda.login.cancel(token);
         auth.logout(request);
         return send(response, 200, {required: true, authenticated: false, login: null, csrf_token: csrf}, undefined,
           {'Set-Cookie': auth.cookie('', secureCookie)});
