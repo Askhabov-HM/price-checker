@@ -85,12 +85,25 @@ test('Lamoda errors retain prices and retry on schedule while respecting Retry-A
   assert.equal(events.filter(event => event.event === 'collection_error').length,3);
 });
 test('Lamoda browser transport uses CDP only and saves nothing for a different account',async () => {
-  const calls = [],browser = new LamodaBrowser({call:async (method,args) => {calls.push({method,args});return {result:{value:{status:200,html:html(state())}}};}});
+  let pageOrigin = 'null';
+  const calls = [],browser = new LamodaBrowser({call:async (method,args) => {
+    calls.push({method,args});
+    if (method === 'Page.navigate') {pageOrigin = 'https://www.lamoda.ru';return {};}
+    return {result:{value:args.expression.includes('fetch(') ? {status:200,html:html(state())} : {origin:pageOrigin,ready:'complete'}}};
+  }});
   const digest = createHash('sha256').update('lamoda:42').digest('hex');
   assert.equal((await browser.collect(undefined,digest)).items.length,1);
-  assert.deepEqual(calls.map(call => call.method),['Runtime.evaluate']);assert.match(calls[0].args.expression,/fetch\('\/wishlist\/\?page=1'/);
+  assert.deepEqual(calls.filter(call => call.method === 'Page.navigate').map(call => call.args.url),['https://lamoda.ru/']);
+  const reads = calls.filter(call => call.args.expression?.includes('fetch('));
+  assert.equal(reads.length,1);assert.match(reads[0].args.expression,/fetch\('\/wishlist\/\?page=1'/);
   await assert.rejects(browser.collect(undefined,'0'.repeat(64)),error => error.code === 'account_mismatch');
   assert.throws(() => wishlistExpression('1;alert(1)'));assert.throws(() => wishlistExpression(0));
+});
+
+test('Lamoda opens only its homepage for interactive login without reading favorites',async () => {
+  const calls = [],browser = new LamodaBrowser({call:async (method,args) => {calls.push({method,args});return {};}});
+  await browser.openHome();
+  assert.deepEqual(calls,[{method:'Page.navigate',args:{url:'https://lamoda.ru/'}}]);
 });
 test('Lamoda login is bound to its owner and cannot replace a previously connected account',async t => {
   const {root,db} = store(t);db.bindAccount('42');let account = '99';const actions = [];

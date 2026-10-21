@@ -32,7 +32,7 @@ jobs:
           for script in scripts/setup-lamoda.sh scripts/setup-lamoda-backup.sh scripts/setup-lamoda-proxy.sh; do
             bash -n "$script"
           done
-      - run: python3 -m py_compile scripts/lamoda-backup.py scripts/lamoda-resource-report.py
+      - run: python3 -m py_compile scripts/lamoda-backup.py scripts/lamoda-resource-report.py scripts/lamoda-proxy-config.py
       - run: npm test
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Package the tested version
