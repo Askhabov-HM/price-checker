@@ -70,6 +70,21 @@ Ozon и разделение существующего общего бэкап�
 Штатный CI/CD развёртывает main.
 До слияния runtime Lamoda на рабочий сервер не устанавливается.
 
+Перед первым входом подключить отдельный WebSocket-маршрут Lamoda в Nginx:
+
+```sh
+install -m 644 /opt/price-checker/current/scripts/nginx/lamoda-login.conf /etc/nginx/snippets/price-checker-lamoda-login.conf
+```
+
+В HTTPS-блок `server` сайта Price Checker добавить одну директиву
+`include /etc/nginx/snippets/price-checker-lamoda-login.conf;`, затем выполнить
+`nginx -t` и `systemctl reload nginx`. Шаблон Ozon подключается отдельно.
+Обычный маршрут приложения с `Connection ""` не передаёт WebSocket: без этого
+правила окно Lamoda закрывается при подключении. Маршрут требует авторизацию
+приложения и проверяет Origin; `access_log off` исключает токен окна из access log.
+Тайм-аут Nginx — 25 минут, срок окна приложения остаётся 20 минут.
+Последующие обновления приложения не заменяют системную конфигурацию Nginx.
+
 После развёртывания сохранённой версии:
 
 ```sh
