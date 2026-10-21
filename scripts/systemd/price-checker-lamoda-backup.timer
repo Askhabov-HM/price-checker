@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch Lamoda database for independent backups
+
+[Timer]
+OnCalendar=*-*-* *:*:30
+Persistent=true
+AccuracySec=1s
+Unit=price-checker-lamoda-backup.service
+
+[Install]
+WantedBy=timers.target

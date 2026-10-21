@@ -95,7 +95,7 @@ def backup_databases(data, commit, account=None):
     """Back up each existing store independently; never restore one as another."""
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     copies = []
-    for provider, relative in [('randewoo', 'prices.sqlite3'), ('ozon', 'ozon/prices.sqlite3')]:
+    for provider, relative in [('randewoo', 'prices.sqlite3'), ('ozon', 'ozon/prices.sqlite3'), ('lamoda', 'lamoda/prices.sqlite3')]:
         source = data / relative
         if not source.exists():
             continue
@@ -113,6 +113,8 @@ def backup_databases(data, commit, account=None):
         with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as database:
             if provider == 'ozon' and database.execute('SELECT provider,version FROM ozon_meta WHERE id=1').fetchone() != ('ozon-prices', 1):
                 raise ValueError('Unsupported Ozon database')
+            if provider == 'lamoda' and database.execute('SELECT provider,version FROM lamoda_meta WHERE id=1').fetchone() != ('lamoda-prices', 1):
+                raise ValueError('Unsupported Lamoda database')
             with closing(sqlite3.connect(target)) as copy:
                 database.backup(copy)
                 if copy.execute('PRAGMA quick_check').fetchone() != ('ok',):

@@ -8,10 +8,11 @@ import {labels, listIds} from '@/lib/format';
 import type {ListId} from '@/lib/types';
 import {AddDialog, SettingsDialog} from './forms';
 import {OzonShell} from './ozon-shell';
+import {LamodaShell} from './lamoda-shell';
 
 export function AppShell() {
-  const ozon = useRouterState({select:state => /^\/ozon(?:\/|$)/.test(state.location.pathname)});
-  return ozon ? <OzonShell/> : <RandewooShell/>;
+  const section = useRouterState({select:state => state.location.pathname.split('/')[1]});
+  return section === 'lamoda' ? <LamodaShell/> : section === 'ozon' ? <OzonShell/> : <RandewooShell/>;
 }
 function RandewooShell() {
   const params = useParams({strict: false}), search = useSearch({from: '__root__'});
@@ -34,6 +35,7 @@ function RandewooShell() {
       <Plus size={14} /><span className="sidebar-action-label">Добавить товар</span>
     </Button>
     <Link className="ozon-provider-link" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}>Ozon ↗</Link>
+    <Link className="ozon-provider-link" to="/lamoda" search={search}>Lamoda ↗</Link>
     <div className="sidebar-note"><strong>Только пробники 1,5 мл</strong><p>Сохраняем реальные проверки и показываем, как меняется цена.</p></div>
     <div className="sidebar-bottom">
       <Button id="settings-button" variant="ghost" className="settings-button max-[850px]:size-10 max-[850px]:p-0" aria-label="Настройки" disabled={!status} onClick={() => setSettings(true)}>

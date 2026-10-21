@@ -5,6 +5,8 @@ import {Dashboard} from '@/pages/dashboard';
 import {OzonDashboard} from '@/pages/ozon';
 import {OzonLoginPage} from '@/pages/ozon-login';
 import {OzonBrowserPage} from '@/pages/ozon-browser';
+import {LamodaDashboard} from '@/pages/lamoda';
+import {LamodaLoginPage} from '@/pages/lamoda-login';
 import {listIds} from '@/lib/format';
 import type {ChangePeriod, Filter, Period, PriceContext, Sort} from '@/lib/types';
 
@@ -27,5 +29,7 @@ const ozon = createRoute({getParentRoute:() => root,path:'/ozon',component:OzonD
 })});
 const ozonLogin = createRoute({getParentRoute:() => root,path:'/ozon/login',component:OzonLoginPage});
 const ozonBrowser = createRoute({getParentRoute:() => root,path:'/ozon/browser',component:OzonBrowserPage});
-export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin, ozonBrowser])});
+const lamoda = createRoute({getParentRoute:() => root,path:'/lamoda',component:LamodaDashboard});
+const lamodaLogin = createRoute({getParentRoute:() => root,path:'/lamoda/login',component:LamodaLoginPage});
+export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin, ozonBrowser,lamoda,lamodaLogin])});
 declare module '@tanstack/react-router' {interface Register {router: typeof router;}}

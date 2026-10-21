@@ -1,0 +1,37 @@
+[Unit]
+Description=Persistent private Lamoda browser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lamodabrowser
+Group=pricechecker
+UMask=0077
+Environment=LANG=ru_RU.UTF-8
+Environment=TZ=Europe/Moscow
+Environment=LAMODA_BROWSER_PROFILE=/var/lib/price-checker-lamoda-browser/profile
+RuntimeDirectory=price-checker-lamoda
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/bin/node /opt/price-checker/current/scripts/lamoda-browser.js
+Restart=on-failure
+RestartSec=15
+MemoryHigh=640M
+MemoryMax=768M
+MemorySwapMax=128M
+CPUQuota=100%
+CPUAccounting=true
+MemoryAccounting=true
+IOAccounting=true
+TasksMax=256
+KillMode=control-group
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/price-checker-lamoda-browser
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

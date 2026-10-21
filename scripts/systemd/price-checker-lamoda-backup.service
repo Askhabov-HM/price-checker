@@ -1,0 +1,22 @@
+[Unit]
+Description=Independent encrypted Lamoda database backup
+After=network-online.target price-checker-backup.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/price-checker/data/lamoda/prices.sqlite3
+ConditionPathExists=/etc/price-checker-backup.json
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/price-checker/lamoda-backup.py run
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=256M
+CPUQuota=50%
+TimeoutStartSec=30min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/price-checker-lamoda-backup
+ReadOnlyPaths=/var/lib/price-checker/data /var/lib/price-checker/secrets
