@@ -307,9 +307,10 @@ export class TelegramBot {
       const login = payload?.kind === 'login';
       const ozonLogin = login && payload.store === 'ozon';
       const lamodaLogin = login && payload.store === 'lamoda';
-      const path = lamodaLogin ? '/lamoda/login' : ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
+      const mobile = payload?.store === 'lamoda' && (payload.kind === 'android' || lamodaLogin && this.lamoda?.mobile?.enabled());
+      const path = mobile ? '/lamoda/android/open' : lamodaLogin ? '/lamoda/login' : ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
       const url = this.publicOrigin + path;
-      data.reply_markup = {inline_keyboard: [[{text: lamodaLogin ? '🔐 Войти в Lamoda' : ozonLogin ? '🔐 Войти в Ozon'
+      data.reply_markup = {inline_keyboard: [[{text: mobile ? '📱 Открыть на Android' : lamodaLogin ? '🔐 Войти в Lamoda' : ozonLogin ? '🔐 Войти в Ozon'
         : login ? '🔐 Подключить Randewoo' : '🌐 Открыть сайт', url}]]};
       const entities = [];
       for (const logo of Object.values(stores)) {
@@ -343,12 +344,13 @@ export class TelegramBot {
         if (this.abort.signal.aborted) break;
         try {
           const payload = JSON.parse(row.payload);
-          const lines = [`${payload.kind === 'success' ? '✅' : payload.kind === 'login' ? '🔐' : '🔴'} 🛍️ Lamoda · ${reportDate(payload.finishedAt)}`, ''];
+          const lines = [`${payload.kind === 'android' ? '📱' : payload.kind === 'success' ? '✅' : payload.kind === 'login' ? '🔐' : '🔴'} 🛍️ Lamoda · ${reportDate(payload.finishedAt)}`, ''];
           if (payload.kind === 'success') {
             if (payload.recovered) lines.push('Проверка снова работает.','');
             if (payload.down || payload.up) lines.push(`📉 Снижений: ${payload.down}`,`📈 Повышений: ${payload.up}`);
             else lines.push('Изменений цен нет.');
-          } else lines.push(payload.kind === 'login' ? 'Требуется повторный вход в аккаунт.' : 'Не удалось выполнить проверку.');
+          } else if (payload.kind === 'android') lines.push('Откройте приложение на телефоне для обновления избранного.','Держите его открытым до завершения сбора. Задание действует 45 минут.');
+          else lines.push(payload.kind === 'login' ? 'Требуется повторный вход в аккаунт.' : 'Не удалось выполнить проверку.');
           const result = await this.send({...payload,format:reportFormat,text:lines.join('\n')});
           this.lamoda.db.delivered(row.event_id,result?.message_id,now());
         } catch(error) {

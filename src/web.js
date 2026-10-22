@@ -7,6 +7,7 @@ import {CONTEXTS} from './database.js';
 import {FetchError, ValidationError} from './errors.js';
 import {loadAuthentication} from './auth.js';
 import {LoginError} from './randewoo-login.js';
+import {LamodaError} from './providers/lamoda/parser.js';
 
 const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
 // Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
@@ -19,14 +20,14 @@ function send(response, status, body, contentType = 'application/json; charset=u
   response.end(body);
 }
 
-async function readJson(request) {
+async function readJson(request,limit = 100000) {
   const length = request.headers['content-length'];
-  if (length != null && (!/^\d+$/.test(length) || Number(length) <= 0 || Number(length) > 100000)) throw new ValidationError('Некорректный размер запроса');
+  if (length != null && (!/^\d+$/.test(length) || Number(length) <= 0 || Number(length) > limit)) throw new ValidationError('Некорректный размер запроса');
   let size = 0;
   const chunks = [];
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 100000) throw new ValidationError('Некорректный размер запроса');
+    if (size > limit) throw new ValidationError('Некорректный размер запроса');
     chunks.push(chunk);
   }
   let data;
@@ -103,6 +104,36 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         return send(response, 200, {ok: true, runtime: 'node.js', timezone: 'Europe/Moscow'});
       }
       if (request.method === 'GET' && url.pathname === '/api/auth') return send(response, 200, authState());
+      if (request.method === 'GET' && url.pathname === '/lamoda/android/open') {
+        return send(response,200,'<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lamoda · Android</title><body><h1>Открыть Lamoda на Android</h1><p><a href="intent://collect#Intent;scheme=pricechecker-lamoda;package=ru.pricechecker.lamoda;end">Открыть приложение Lamoda Collector</a></p><p>Если Telegram не открывает приложение, выберите в меню «Открыть в браузере» или запустите Lamoda Collector с экрана телефона. Задание будет получено после открытия.</p></body></html>','text/html; charset=utf-8');
+      }
+      if (url.pathname.startsWith('/api/lamoda-mobile/')) {
+        if (!lamoda?.mobile) return send(response,503,{error:'Сбор через Android недоступен.'});
+        // Native clients use a scoped device token, never browser cookies or CSRF exemptions for other APIs.
+        if (request.headers.origin) {request.resume();return send(response,403,{error:'Используйте Android-приложение.'});}
+        const action = url.pathname.slice('/api/lamoda-mobile/'.length);
+        if (!(action === 'pair' && request.method === 'POST') && !lamoda.mobile.authenticate(request.headers.authorization)) {
+          request.resume();return send(response,401,{error:'Подключите Android заново.'});
+        }
+        if (request.method === 'GET' && action === 'next') return send(response,200,{job:lamoda.mobile.next()});
+        if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
+        if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume();return send(response,415,{error:'Ожидается JSON.'});}
+        const input = await readJson(request,action === 'page' ? 2*1024*1024 : 4096);
+        if (action === 'pair') return send(response,200,lamoda.mobile.pair(input.code,input.name));
+        if (action === 'start') {
+          if (!lamoda.running) await lamoda.start({trigger:'android'});
+          return send(response,200,{job:lamoda.mobile.next()});
+        }
+        if (action === 'page') {
+          try {return send(response,200,await lamoda.mobile.accept(input.job_id,input.page,input.user,input.payload));}
+          catch (error) {
+            if (error instanceof LamodaError) {try {lamoda.mobile.fail(input.job_id,error.code);} catch { /* Invalid or expired job. */ }}
+            throw error;
+          }
+        }
+        if (action === 'fail') {lamoda.mobile.fail(input.job_id,input.code,input.retry_after_ms,input.http_status);return send(response,200,{ok:true});}
+        return send(response,404,{error:'Действие не найдено.'});
+      }
       // Windows stop.cmd uses a local control token, independently of browser login.
       if (request.method === 'POST' && url.pathname === '/api/shutdown' && controlToken
         && request.headers.authorization === 'Bearer ' + controlToken && onShutdown) {
@@ -173,7 +204,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser','/lamoda','/lamoda/login'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser','/lamoda','/lamoda/login','/lamoda/android'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);
@@ -202,6 +233,11 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       const data = await readJson(request);
       if (url.pathname.startsWith('/api/providers/lamoda/')) {
         if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
+        if (url.pathname === '/api/providers/lamoda/mobile/pairing' || url.pathname === '/api/providers/lamoda/mobile/revoke') {
+          if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});
+          if (url.pathname.endsWith('/pairing')) return send(response,200,lamoda.mobile.pairing());
+          lamoda.mobile.revoke();return send(response,200,{ok:true});
+        }
         if (url.pathname.startsWith('/api/providers/lamoda/login/')) {
           if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker'});
           if (url.pathname === '/api/providers/lamoda/login/start') return send(response,200,await lamoda.login.start(token));
@@ -284,6 +320,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       if (error.code === 'ENOENT') return send(response, 404, {error: 'Страница не найдена'});
       if (error instanceof LoginError) return send(response, error.status, {error: error.message});
       if (error instanceof ValidationError) return send(response, 400, {error: error.message});
+      if (error instanceof LamodaError) return send(response,400,{error:error.message,code:error.code});
       if (error instanceof FetchError) return send(response, 502, {error: error.message});
       return send(response, 500, {error: 'Не удалось выполнить действие'});
     }

@@ -67,7 +67,7 @@ export class LamodaDatabase {
     }
     this.db.prepare('UPDATE notification_state SET kind=?,reason=? WHERE id=1').run(kind,message);
   }
-  record(check,items,now) {
+  record(check,items,now,source = 'browser') {
     return this.transaction(() => {
       this.db.prepare('UPDATE products SET active=0').run(); let down = 0,up = 0;
       for (const [position,item] of items.entries()) {
@@ -78,8 +78,8 @@ export class LamodaDatabase {
         if (!unavailable && price !== null && previous?.price != null) {if (price < previous.price) down++;if (price > previous.price) up++;}
         this.db.prepare(`INSERT INTO products VALUES(?,?,?,?,?,?,1) ON CONFLICT(sku) DO UPDATE SET title=excluded.title,color=excluded.color,url=excluded.url,
           image_url=excluded.image_url,position=excluded.position,active=1`).run(item.sku,item.title,item.color,item.url,item.image_url,position);
-        this.db.prepare("INSERT INTO observations(check_id,sku,checked_at,price_at,price,original_price,availability,status) VALUES(?,?,?,?,?,?,?,'ok')")
-          .run(check,item.sku,now,priceAt,price,original,item.availability);
+        this.db.prepare("INSERT INTO observations(check_id,sku,checked_at,price_at,price,original_price,availability,status,source) VALUES(?,?,?,?,?,?,?,'ok',?)")
+          .run(check,item.sku,now,priceAt,price,original,item.availability,source);
       }
       this.db.prepare('UPDATE checks SET total=?,completed=? WHERE id=?').run(items.length,items.length,check);
       this.finish(check,'success',`Избранное обновлено. Товаров: ${items.length}.`,now,{down,up});
