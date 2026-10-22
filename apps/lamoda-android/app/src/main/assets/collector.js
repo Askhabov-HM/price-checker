@@ -31,10 +31,10 @@ globalThis.__priceCheckerReadPage = async function(page) {
     const payload=read('payload');
     // Transmit only fields needed by the server parser; exclude profile, addresses, cookies and unrelated state.
     const products=Array.isArray(payload?.products) ? payload.products.map(product=>Object.fromEntries(
-      ['sku','name','price_iso_code','seo_tail','prices','price_amount','old_price_amount','is_available','is_sellable','thumbnail','color_family']
+      ['sku','name','price_iso_code','seo_tail','prices','price_amount','old_price_amount','is_available','is_sellable','thumbnail','color_family','is_hybrid','hybrid_products']
         .filter(key=>Object.hasOwn(product,key)).map(key=>[key,product[key]]).concat([['brand',{name:product.brand?.name}]]))) : null;
     const result={user:{customer:user?.customer ? {id:user.customer.id,is_active:user.customer.is_active} : null,
-      wishlist:user?.wishlist?.map(item=>({product_sku:item.product_sku}))},payload:{pagination:payload?.pagination,products}};
+      wishlist:user?.wishlist?.map(item=>({product_sku:item.product_sku,...(item.adjacent_skus == null ? {} : {adjacent_skus:item.adjacent_skus})}))},payload:{pagination:payload?.pagination,products}};
     if (new TextEncoder().encode(JSON.stringify(result)).length>1900000) return {error:'invalid_data'};
     return result;
   } catch {return {error:'account_unverified'};}

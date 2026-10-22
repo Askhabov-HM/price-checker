@@ -40,12 +40,16 @@ test('Android pairing expires, is single-use, rotates the scoped token, and stor
 test('Android stages every page before changing history, accepts identical retries and records the source',async t => {
   const {lamoda,mobile} = service(t);pair(mobile);await lamoda.start({trigger:'android'});
   const job = mobile.next(),first = state(),second = state(2);
+  second.user.wishlist[1].adjacent_skus = ['SYNTHETIC002','SYNTHETIC009'];
+  second.payload.products[0] = {...product('SYNTHETIC009'),is_hybrid:true,hybrid_products:['SYNTHETIC002','SYNTHETIC009']};
   const a = await mobile.accept(job.id,1,first.user,first.payload);
   assert.equal(a.complete,false);assert.equal(lamoda.db.dashboard().items.length,0);
   assert.deepEqual(await mobile.accept(job.id,1,first.user,first.payload),a);
   assert.equal((await mobile.accept(job.id,2,second.user,second.payload)).complete,true);
   await lamoda.running;
   assert.equal(lamoda.db.dashboard().items.length,2);assert.equal(lamoda.db.matches('42'),true);
+  const sellerItem = lamoda.db.dashboard().items.find(item => item.sku === 'SYNTHETIC002');
+  assert.equal(sellerItem.price,10000);assert.match(sellerItem.url,/\/synthetic009\//);
   assert.equal(lamoda.db.db.prepare('SELECT source FROM observations LIMIT 1').get().source,'android');
   assert.equal((await mobile.accept(job.id,2,second.user,second.payload)).complete,true);
   assert.equal(lamoda.db.checks()[0].status,'success');
@@ -108,6 +112,8 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
 test('Android collector uses only fixed same-origin wishlist GETs and strips profile information',async () => {
   const source = readFileSync(new URL('../apps/lamoda-android/app/src/main/assets/collector.js',import.meta.url),'utf8');
   const input = state();input.user.customer.email='synthetic-private@example.invalid';input.user.delivery_address='synthetic-private';
+  input.user.wishlist[0].adjacent_skus = ['SYNTHETIC001','SYNTHETIC009'];
+  input.payload.products[0] = {...product('SYNTHETIC009'),is_hybrid:true,hybrid_products:['SYNTHETIC001','SYNTHETIC009']};
   const script = 'var __NUXT__ = {\n        user: '+JSON.stringify(input.user)+',\n        payload: '+JSON.stringify(input.payload)+',\n};';
   const calls=[],context = {location:{origin:'https://www.lamoda.ru'},AbortSignal,TextDecoder,TextEncoder,
     DOMParser:class {parseFromString(){return {scripts:[{textContent:script}]};}},
@@ -116,6 +122,8 @@ test('Android collector uses only fixed same-origin wishlist GETs and strips pro
   const result = JSON.parse(JSON.stringify(await context.__priceCheckerReadPage(1)));
   assert.equal(calls[0].url,'/wishlist/?page=1');assert.equal(calls[0].options.credentials,'same-origin');
   assert.equal(calls.length,1);assert.equal(result.user.customer.id,42);assert.doesNotMatch(JSON.stringify(result),/synthetic-private/);
+  assert.deepEqual(result.user.wishlist[0].adjacent_skus,['SYNTHETIC001','SYNTHETIC009']);
+  assert.equal(parseWishlistState(result.user,result.payload).items[0].sku,'SYNTHETIC001');
   context.location.origin='https://other.example';assert.equal((await context.__priceCheckerReadPage(2)).error,'invalid_data');assert.equal(calls.length,1);
   context.location.origin='https://www.lamoda.ru';context.fetch=async () => new Response('',{status:429,headers:{'Retry-After':'120'}});
   const limited=await context.__priceCheckerReadPage(1);assert.equal(limited.retry_after_ms,120000);assert.equal(limited.error,'rate_limited');
