@@ -6,10 +6,12 @@ import {LamodaDatabase} from './database.js';
 import {LamodaChannel} from './channel.js';
 import {LamodaLogin} from './login.js';
 import {LamodaError} from './parser.js';
+import {LamodaMobile} from './mobile.js';
 
 export class LamodaService {
   constructor(root,{channel = options => new LamodaChannel(options),current = Date.now,logger = event => console.info(JSON.stringify(event))} = {}) {
     this.root = root;this.db = new LamodaDatabase(root);this.channel = channel;this.current = current;this.logger = logger;
+    this.mobile = new LamodaMobile(this.db,{current});
     this.login = new LamodaLogin(root,{db:this.db,channel:() => channel({timeout:60000}),onAuthorized:() => {
       this.db.updateState({action_required:0,message:'',next_check:this.nextAttempt()});
     }});
@@ -21,7 +23,7 @@ export class LamodaService {
     return nextScheduledCheck(state,new Date(Math.max(this.current(),(Date.parse(notBefore)||0)-1)));
   }
   status() {const state = this.config();return {...state,available:true,configured:this.db.configured(),running:!!this.running,
-    next_check:state.schedule_enabled ? state.next_check : null,action_required:!!state.action_required,checks:this.db.checks(),login:this.login.status()};}
+    next_check:state.schedule_enabled ? state.next_check : null,action_required:!!state.action_required,checks:this.db.checks(),login:this.login.status(),mobile:this.mobile.status()};}
   settings(data) {
     const old = this.config(),config = scheduleSettings(data,old);
     if (config.schedule_enabled && (!this.db.configured() || old.action_required)) throw new ValidationError('Сначала подключите аккаунт Lamoda.');
@@ -33,7 +35,7 @@ export class LamodaService {
   async start({trigger = 'manual'} = {}) {
     if (this.closing || this.running) throw new ValidationError('Проверка Lamoda уже выполняется.');
     const state = this.db.state();
-    if (!this.db.configured() || state.action_required) throw new ValidationError('Нужно подтвердить вход в Lamoda.');
+    if ((!this.db.configured() || state.action_required) && !this.mobile.enabled()) throw new ValidationError('Нужно подтвердить вход в Lamoda.');
     if (Date.parse(state.not_before) > this.current()) throw new ValidationError('Сохраняется пауза источника Lamoda.');
     let release;
     try {release = await acquireInstance(join(this.root,'.data/lamoda/collector.lock'));} catch {throw new ValidationError('Lamoda занята сбором или входом.');}
@@ -45,10 +47,12 @@ export class LamodaService {
   async execute(trigger,signal) {
     const check = this.db.begin(trigger,this.stamp());
     try {
-      const result = await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
+      const mobile = this.mobile.enabled();
+      const result = mobile ? await this.mobile.collect(check,signal) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
       if (signal.aborted) throw new LamodaError('interrupted');
+      if (mobile && !this.db.configured()) this.db.bindAccount(result.account_id);
       if (!this.db.matches(result.account_id)) throw new LamodaError('account_mismatch');
-      this.db.record(check,result.items,this.stamp());
+      this.db.record(check,result.items,this.stamp(),mobile ? 'android' : 'browser');
       this.db.updateState({action_required:0,message:'',not_before:null,next_check:this.nextAttempt()});
       this.logger({time:this.stamp(),store:'lamoda',event:'collection_success',check_id:check,count:result.items.length});
     } catch (error) {
@@ -65,7 +69,7 @@ export class LamodaService {
   }
   async startScheduler() {
     let release;
-    try {release = await acquireInstance(join(this.root,'.data/lamoda/collector.lock'));this.db.recover(this.stamp());}
+    try {release = await acquireInstance(join(this.root,'.data/lamoda/collector.lock'));this.mobile.cancel();this.db.recover(this.stamp());}
     catch { /* Another process owns the collector. */ } finally {await release?.();}
     const state = this.db.state();
     if (state.schedule_enabled && !state.action_required && !state.next_check) this.db.updateState({next_check:this.nextAttempt(state.not_before)});

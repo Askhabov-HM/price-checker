@@ -1,0 +1,18 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'ru.pricechecker.lamoda'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'ru.pricechecker.lamoda'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        buildConfigField 'String', 'DEFAULT_SERVER', '"https://153.76.171.172"'
+        // Public certificate fingerprint, not a credential. Normal CA validation is used for other servers.
+        buildConfigField 'String', 'SERVER_CERT_SHA256', '"f85d05a12cc431f20a1c5d6f3c4300bf48b965953e6351c875bf09e98917d00f"'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies { testImplementation 'junit:junit:4.13.2' }
