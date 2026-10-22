@@ -68,7 +68,9 @@ export function parseWishlistState(user, payload) {
     if (!validSku(product?.sku)) throw invalid();
     if (favorites.includes(product.sku)) return product.sku;
     const group = product.hybrid_products;
-    if (product.is_hybrid !== true || !Array.isArray(group) || group.length > 100
+    // Some seller cards omit is_hybrid while still supplying reciprocal SKU groups.
+    // A missing marker is allowed; an explicit conflicting marker is not.
+    if ((Object.hasOwn(product,'is_hybrid') && product.is_hybrid !== true) || !Array.isArray(group) || group.length > 100
       || group.some(sku => !validSku(sku)) || !group.includes(product.sku)) throw invalid();
     const matches = [...(adjacent.get(product.sku) || [])].filter(sku => group.includes(sku));
     if (matches.length !== 1) throw invalid();

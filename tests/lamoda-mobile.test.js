@@ -75,7 +75,7 @@ test('Android stages every page before changing history, accepts identical retri
   const {lamoda,mobile} = service(t);pair(mobile);await lamoda.start({trigger:'android'});
   const job = mobile.next(),first = state(),second = state(2);
   second.user.wishlist[1].adjacent_skus = ['SYNTHETIC002','SYNTHETIC009'];
-  second.payload.products[0] = {...product('SYNTHETIC009'),is_hybrid:true,hybrid_products:['SYNTHETIC002','SYNTHETIC009']};
+  second.payload.products[0] = {...product('SYNTHETIC009'),hybrid_products:['SYNTHETIC002','SYNTHETIC009']};
   const a = await mobile.accept(job.id,1,first.user,first.payload);
   assert.equal(a.complete,false);assert.equal(lamoda.db.dashboard().items.length,0);
   assert.deepEqual(await mobile.accept(job.id,1,first.user,first.payload),a);

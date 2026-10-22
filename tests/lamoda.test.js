@@ -70,6 +70,27 @@ test('Lamoda resolves a seller SKU only through reciprocal hybrid grouping and k
   ambiguous.payload.pagination = {page:1,pages:2,limit:1,offset:0,found:2};
   assert.throws(() => parsed(ambiguous),error => error.code === 'invalid_data');
 });
+test('Lamoda accepts an omitted hybrid marker only with an unambiguous reciprocal SKU group',() => {
+  const favorite = 'SYNTHETIC001',displayed = 'SYNTHETIC009';
+  const input = state([product({sku:displayed,hybrid_products:['SYNTHETIC008',favorite,displayed]})],{favorites:[favorite]});
+  input.user.wishlist[0].adjacent_skus = ['SYNTHETIC008',favorite,displayed];
+  const result = parsed(input);
+  assert.equal(result.items[0].sku,favorite);assert.equal(result.items[0].price,140000);
+  assert.match(result.items[0].url,/\/synthetic009\//);
+  const missing = structuredClone(input);delete missing.payload.products[0].hybrid_products;
+  assert.throws(() => parsed(missing),error => error.code === 'invalid_data');
+  const oneWay = structuredClone(input);oneWay.user.wishlist[0].adjacent_skus = [favorite];
+  assert.throws(() => parsed(oneWay),error => error.code === 'invalid_data');
+  const ambiguous = structuredClone(input);
+  ambiguous.user.wishlist.push({product_sku:'SYNTHETIC008',adjacent_skus:[favorite,displayed,'SYNTHETIC008']});
+  ambiguous.payload.pagination = {page:1,pages:2,limit:1,offset:0,found:2};
+  assert.throws(() => parsed(ambiguous),error => error.code === 'invalid_data');
+  for (const marker of [false,null,'true']) {
+    const conflicting = structuredClone(input);conflicting.payload.products[0].is_hybrid = marker;
+    assert.throws(() => parsed(conflicting),error => error.code === 'invalid_data');
+  }
+});
+
 test('Lamoda preserves price date through absence, compares returns and keeps the last change on equal prices',t => {
   const {db} = store(t);db.bindAccount('42');
   const record = (p,time) => {const check = db.begin('manual',time);db.record(check,[parsed(state([p])).items[0]],time);};
