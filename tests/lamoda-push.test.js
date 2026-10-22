@@ -28,7 +28,11 @@ test('FCM uses a signed scoped OAuth assertion, caches access tokens and sends o
   const sent = JSON.parse(calls[1].options.body);
   assert.equal(sent.message.android.ttl,'2700s');assert.equal(sent.message.android.restricted_package_name,'ru.pricechecker.lamoda');
   assert.deepEqual(sent.message.data,{lamoda_job:job.id,lamoda_expires:String(job.expires)});
-  assert.equal(sent.message.android.notification.channel_id,'lamoda_reminders');assert.equal(JSON.parse(calls[2].options.body).validate_only,true);
+  // A system-rendered notification would bypass the app's background callback
+  // and leave collection waiting for a tap instead of starting WorkManager.
+  assert.equal(sent.message.notification,undefined);assert.equal(sent.message.android.notification,undefined);
+  assert.equal(sent.message.android.priority,'HIGH');assert.equal(sent.message.android.collapse_key,'lamoda-reminder');
+  assert.equal(JSON.parse(calls[2].options.body).validate_only,true);
   assert.doesNotMatch(JSON.stringify(sent),/customer|wishlist|Bearer|synthetic-access/);
 });
 

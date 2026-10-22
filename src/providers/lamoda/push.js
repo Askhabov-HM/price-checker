@@ -47,10 +47,10 @@ export class FirebaseSender {
     const ttl = Math.floor((job.expires-this.current())/1000);if (ttl<=0) return;
     const {response,data} = await this.request('https://fcm.googleapis.com/v1/projects/'+this.project+'/messages:send',{
       method:'POST',headers:{Authorization:'Bearer '+access,'Content-Type':'application/json'},body:JSON.stringify({validate_only:validateOnly,message:{token,
-        notification:{title:'Пора обновить Lamoda',body:'Нажмите, чтобы открыть избранное и начать сбор.'},
+        // Notification+data messages skip onMessageReceived while Android is in
+        // the background. The app must receive data and enqueue WorkManager itself.
         data:{lamoda_job:job.id,lamoda_expires:String(job.expires)},
-        android:{priority:'HIGH',ttl:ttl+'s',collapse_key:'lamoda-reminder',restricted_package_name:'ru.pricechecker.lamoda',
-          notification:{channel_id:'lamoda_reminders',icon:'ic_notification',tag:'lamoda-reminder',color:'#16745C',default_sound:true,proxy:'DENY'}}}})});
+        android:{priority:'HIGH',ttl:ttl+'s',collapse_key:'lamoda-reminder',restricted_package_name:'ru.pricechecker.lamoda'}}})});
     if (response.ok && typeof data.name === 'string') return;
     if (response.status === 401) this.access = null;
     const fcmCode = data.error?.details?.find(item => item['@type'] === 'type.googleapis.com/google.firebase.fcm.v1.FcmError')?.errorCode;
