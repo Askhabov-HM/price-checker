@@ -50,6 +50,26 @@ test('Lamoda traverses every page and refuses missing, repeated, or changed favo
     const result = await read(page);if (page === 2) result.favorites[0] = 'SYNTHETIC999';return result;
   }),error => error.code === 'incomplete_data');
 });
+
+test('Lamoda resolves a seller SKU only through reciprocal hybrid grouping and keeps wishlist identity',() => {
+  const favorite = 'SYNTHETIC001',displayed = 'SYNTHETIC009';
+  const input = state([product({sku:displayed,is_hybrid:true,hybrid_products:[displayed,favorite]})],{favorites:[favorite]});
+  input.user.wishlist[0].adjacent_skus = [favorite,displayed];
+  const result = parsed(input);assert.equal(result.items[0].sku,favorite);
+  assert.equal(result.items[0].price,140000);assert.match(result.items[0].url,/\/synthetic009\//);
+  assert.deepEqual(result.favorites,[favorite]);
+  const copy = () => structuredClone(input);
+  const missing = copy();delete missing.user.wishlist[0].adjacent_skus;
+  assert.throws(() => parsed(missing),error => error.code === 'invalid_data');
+  const oneWay = copy();oneWay.payload.products[0].hybrid_products = [displayed,'SYNTHETIC008'];
+  assert.throws(() => parsed(oneWay),error => error.code === 'invalid_data');
+  const unrelated = copy();unrelated.payload.products[0].is_hybrid = false;
+  assert.throws(() => parsed(unrelated),error => error.code === 'invalid_data');
+  const ambiguous = copy();ambiguous.user.wishlist.push({product_sku:'SYNTHETIC002',adjacent_skus:[displayed,'SYNTHETIC002']});
+  ambiguous.payload.products[0].hybrid_products.push('SYNTHETIC002');
+  ambiguous.payload.pagination = {page:1,pages:2,limit:1,offset:0,found:2};
+  assert.throws(() => parsed(ambiguous),error => error.code === 'invalid_data');
+});
 test('Lamoda preserves price date through absence, compares returns and keeps the last change on equal prices',t => {
   const {db} = store(t);db.bindAccount('42');
   const record = (p,time) => {const check = db.begin('manual',time);db.record(check,[parsed(state([p])).items[0]],time);};

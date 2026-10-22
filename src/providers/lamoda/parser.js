@@ -51,6 +51,29 @@ export function parseWishlistState(user, payload) {
   if (!Array.isArray(user.wishlist) || user.wishlist.length > 100000) throw invalid();
   const favorites = user.wishlist.map(item => item?.product_sku);
   if (favorites.some(sku => !validSku(sku)) || new Set(favorites).size !== favorites.length) throw invalid();
+  // A wishlist entry can use a seller SKU while the displayed hybrid card uses
+  // another SKU. Accept only explicit, reciprocal grouping supplied by Lamoda.
+  const adjacent = new Map();
+  for (const entry of user.wishlist) {
+    if (entry.adjacent_skus == null) continue;
+    const aliases = entry.adjacent_skus;
+    if (!Array.isArray(aliases) || aliases.length > 100 || aliases.some(sku => !validSku(sku))
+      || new Set(aliases).size !== aliases.length) throw invalid();
+    for (const alias of aliases) {
+      if (!adjacent.has(alias)) adjacent.set(alias,new Set());
+      adjacent.get(alias).add(entry.product_sku);
+    }
+  }
+  const identity = product => {
+    if (!validSku(product?.sku)) throw invalid();
+    if (favorites.includes(product.sku)) return product.sku;
+    const group = product.hybrid_products;
+    if (product.is_hybrid !== true || !Array.isArray(group) || group.length > 100
+      || group.some(sku => !validSku(sku)) || !group.includes(product.sku)) throw invalid();
+    const matches = [...(adjacent.get(product.sku) || [])].filter(sku => group.includes(sku));
+    if (matches.length !== 1) throw invalid();
+    return matches[0];
+  };
   const p = payload?.pagination;
   if (!p || ['found','limit','offset','page','pages'].some(key => !Number.isSafeInteger(p[key]))
     || p.found < 0 || p.found > 100000 || p.limit < 1 || p.limit > 1000 || p.page < 1 || p.pages < 0
@@ -59,7 +82,8 @@ export function parseWishlistState(user, payload) {
   const expected = Math.min(p.limit,Math.max(0,p.found-p.offset));
   if (payload.products.length !== expected) throw new LamodaError('incomplete_data');
   const items = payload.products.map(product => {
-    if (!validSku(product?.sku) || !favorites.includes(product.sku) || typeof product.name !== 'string'
+    const sku = identity(product);
+    if (typeof product.name !== 'string'
       || !product.name.trim() || product.name.length > 1000 || product.price_iso_code !== 'RUB'
       || typeof product.brand?.name !== 'string' || product.brand.name.length > 500
       || typeof product.seo_tail !== 'string' || !/^[a-zA-Z0-9_-]{1,500}$/.test(product.seo_tail)) throw invalid();
@@ -74,7 +98,7 @@ export function parseWishlistState(user, payload) {
     const unavailable = product.is_available === false || product.is_sellable === false;
     const availability = unavailable ? 'unavailable' : product.is_available === true && product.is_sellable === true ? 'available' : 'unknown';
     const thumbnail = typeof product.thumbnail === 'string' && /^\/[A-Z0-9/_\.a-z-]+$/.test(product.thumbnail) ? product.thumbnail : null;
-    return {sku:product.sku,title:(product.brand.name+' '+product.name).trim(),color:typeof product.color_family === 'string' ? product.color_family.slice(0,100) : '',
+    return {sku,title:(product.brand.name+' '+product.name).trim(),color:typeof product.color_family === 'string' ? product.color_family.slice(0,100) : '',
       url:'https://www.lamoda.ru/p/'+product.sku.toLowerCase()+'/'+product.seo_tail+'/',
       image_url:thumbnail ? 'https://a.lmcdn.ru/img236x341'+thumbnail : null,price,original_price:original,availability};
   });
