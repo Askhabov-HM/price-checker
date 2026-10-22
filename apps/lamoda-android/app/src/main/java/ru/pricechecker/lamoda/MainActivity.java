@@ -209,7 +209,7 @@ public class MainActivity extends Activity {
         api(client -> client.call("page",body),result -> {
             pendingUpload = null; setBusy(false);
             if (result.optBoolean("complete")) { job = null; screenAwake(false); message("Всё избранное передано серверу. Результат обработки придёт в Telegram."); }
-            else { job.put("next_page",result.getInt("next_page")); handler.postDelayed(this::continueCollect,1000); }
+            else { job.put("next_page",result.getInt("next_page")); handler.postDelayed(this::continueCollect,3000); }
         });
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); open(intent); }
