@@ -60,7 +60,8 @@ function setup(t,{send = async () => {},current = () => clock} = {}) {
 test('Push retry is independent of collection, durable, deduplicated and honors the source delay',async t => {
   let now = clock,attempts = 0;
   const {lamoda,register} = setup(t,{current:() => now,send:async () => {if (++attempts === 1) throw new PushError('rate_limited',{retry:180000});}});
-  register();await lamoda.start({trigger:'schedule'});const job = lamoda.mobile.next();
+  register();lamoda.db.bindAccount('42');lamoda.settings({schedule_enabled:true});
+  await lamoda.start({trigger:'schedule'});const job = lamoda.mobile.next();
   await lamoda.push.flush();assert.equal(lamoda.status().running,true);assert.equal(attempts,1);
   assert.equal(lamoda.push.status().error,'rate_limited');
   assert.equal(lamoda.db.db.prepare('SELECT attempts FROM mobile_push_outbox WHERE job_id=?').get(job.id).attempts,1);

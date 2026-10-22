@@ -1,11 +1,11 @@
 import {queryOptions} from '@tanstack/react-query';
 import {authOptions, queryClient, request} from './api';
-import type {ChangePeriod, Check, Filter, PriceChangeEvent, PricePoint, ScheduleSettings, Sort} from './types';
+import type {ChangePeriod, Check, Filter, PriceChangeEvent, PricePoint, ScheduleSettings, Sort, CollectionStatus} from './types';
 import {hasRecentChange} from './price-changes';
 
 export type OzonList = 'watching' | 'favorites' | 'cart';
 export type OzonPrice = 'listed' | 'ozon_card' | 'regular';
-export interface OzonStatus {
+export interface OzonStatus extends CollectionStatus {
   available: boolean; configured: boolean; running: boolean; schedule_enabled: boolean;
   interval_minutes: ScheduleSettings['interval_minutes']; next_check: string | null; not_before: string | null;
   schedule_mode?: ScheduleSettings['schedule_mode']; schedule?: string[];

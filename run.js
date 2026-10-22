@@ -50,10 +50,12 @@ async function main() {
   const shutdown = () => {
     if (!shutdownPromise) shutdownPromise = (async () => {
       const closed = server?.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
+      // Stop admission immediately, before waiting for Telegram or active work.
+      for (const service of [lamoda,ozon,tracker]) if (service) {service.closing = true;service.controller?.abort();}
       await telegram?.close();
-      await lamoda?.close();
-      await ozon?.close();
-      await tracker?.close();
+      // Mark every service closing before awaiting the active collector, so a
+      // queued store cannot start while shutdown waits for another store.
+      await Promise.all([lamoda?.close(),ozon?.close(),tracker?.close()]);
       server?.closeAllConnections();
       await closed;
       resolveStopped?.();

@@ -7,6 +7,7 @@ import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@
 import {PriceChart} from '@/components/price-chart';
 import {PriceChange,ProductFilters} from '@/components/product-table';
 import {ScheduleFields} from '@/components/schedule-fields';
+import {CollectionNotice} from '@/components/collection-notice';
 import {date,rub} from '@/lib/format';
 import {useNow} from '@/hooks/use-now';
 import {invalidateLamoda,lamodaDashboardOptions,lamodaDetailOptions,lamodaMutate,lamodaStatusOptions,selectLamoda} from '@/lib/lamoda';
@@ -33,9 +34,9 @@ export function LamodaDashboard() {
   const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || !status?.available || status.running || waiting || refresh.isPending;
   const error = statusQuery.error || dashboard.error || refresh.error;
   const items = dashboard.data?.items || [],visible = selectLamoda(items,search.q,search.filter,search.sort,search.changeDays,now);
-  return <div><section className="page-heading"><div><div className="eyebrow">LAMODA · ИЗБРАННОЕ</div><h1>Lamoda<span className="title-dot">.</span></h1><p>История цен ваших товаров</p></div>
+  return <div><CollectionNotice status={status}/><section className="page-heading"><div><div className="eyebrow">LAMODA · ИЗБРАННОЕ</div><h1>Lamoda<span className="title-dot">.</span></h1><p>История цен ваших товаров</p></div>
     <div className="heading-actions"><div className="next-check"><span>Следующая проверка</span><strong>{status?.schedule_enabled ? date(status.next_check) : 'Не запланирована'}</strong></div>
-      <Button disabled={blocked} onClick={() => refresh.mutate()}><RefreshCw size={15} className={status?.running ? 'rotating' : ''}/>{status?.running ? 'Проверяем…' : 'Обновить избранное и цены'}</Button></div></section>
+      <Button disabled={blocked} onClick={() => refresh.mutate()}><RefreshCw size={15} className={status?.running && !status.queued ? 'rotating' : ''}/>{status?.queued ? 'В очереди…' : status?.running ? 'Проверяем…' : 'Обновить избранное и цены'}</Button></div></section>
     {error && <p role="alert" className="notice">{error.message}</p>}{status?.message && <p role="status" className="notice">{status.message}</p>}
     <p className="small-muted"><Link to="/lamoda/android" search={search}>{status?.mobile?.enabled ? '📱 Сбор через Android · управление телефоном' : 'Подключить Android для сбора избранного'}</Link></p>
     {(!status?.configured || status.action_required) && !status?.mobile?.enabled && <p className="notice">Подключите нужный аккаунт для получения избранного. <Link to="/lamoda/login" search={search}>Войти в Lamoda</Link></p>}

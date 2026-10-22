@@ -386,7 +386,10 @@ export class TelegramBot {
     switch (command?.[1].toLowerCase()) {
       case 'check_randewoo': {
         const started = this.tracker.startRefresh('telegram');
-        await this.send(started ? '▶️ Проверка Randewoo запущена. Результат придёт после завершения.' : '⏳ Проверка Randewoo уже выполняется или приложение останавливается.');
+        if (started) await this.tracker.refreshReady;
+        await this.send(started ? this.tracker.status().queued
+          ? '⏳ Проверка Randewoo поставлена в общую очередь. Результат придёт после завершения.'
+          : '▶️ Проверка Randewoo запущена. Результат придёт после завершения.' : '⏳ Проверка Randewoo уже выполняется или приложение останавливается.');
         return;
       }
       case 'check_ozon': {
@@ -397,7 +400,8 @@ export class TelegramBot {
           await this.send(error instanceof ValidationError ? `Ozon: ${error.message}` : 'Не удалось запустить проверку Ozon.');
           return;
         }
-        await this.send('▶️ Проверка Ozon запущена. Результат придёт после завершения.');
+        await this.send(this.ozon.status().queued ? '⏳ Проверка Ozon поставлена в общую очередь. Результат придёт после завершения.'
+          : '▶️ Проверка Ozon запущена. Результат придёт после завершения.');
         return;
       }
       case 'lamoda_android': {
@@ -409,7 +413,9 @@ export class TelegramBot {
       }
       case 'check_lamoda': {
         if (!this.lamoda) {await this.send('Раздел Lamoda временно недоступен.');return;}
-        try {await this.lamoda.start({trigger:'telegram'});await this.send('▶️ Проверка Lamoda запущена. Результат придёт после завершения.');}
+        try {await this.lamoda.start({trigger:'telegram'});await this.send(this.lamoda.status().queued
+          ? '⏳ Проверка Lamoda поставлена в общую очередь. Результат придёт после завершения.'
+          : '▶️ Проверка Lamoda запущена. Результат придёт после завершения.');}
         catch(error) {await this.send(error instanceof ValidationError ? `Lamoda: ${error.message}` : 'Не удалось запустить проверку Lamoda.');}
         return;
       }
@@ -419,20 +425,20 @@ export class TelegramBot {
       }
       case 'status': {
         const status = this.tracker.status(), latest = status.checks[0];
-        const lines = ['ℹ️ Price Checker', '', '🌸 Randewoo', status.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
+        const lines = ['ℹ️ Price Checker', '', '🌸 Randewoo', status.queued ? 'Проверка ожидает в общей очереди.' : status.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
           `Следующая проверка: ${date(status.next_check)}`, `Расписание: ${status.schedule_enabled ? 'включено' : 'выключено'}`];
         if (latest) lines.push(`Последняя проверка: №${latest.id}, ${labels[latest.status] || 'Выполняется'}, ${latest.completed}/${latest.total}`);
         if (['expired', 'error'].includes(status.auth_status)) lines.push('Подключение Randewoo требует внимания. Открой приложение для проверки сессии.');
         if (this.ozon) {
           const ozon = this.ozon.status(), latest = ozon.checks[0];
-          lines.push('', '😎 Ozon', ozon.running ? 'Проверка выполняется.' : 'Проверка не выполняется.',
+          lines.push('', '😎 Ozon', ozon.queued ? 'Проверка ожидает в общей очереди.' : ozon.running ? 'Проверка выполняется.' : 'Проверка не выполняется.',
             `Следующая проверка: ${date(ozon.next_check)}`, `Расписание: ${ozon.schedule_enabled ? 'включено' : 'выключено'}`);
           if (latest) lines.push(`Последняя проверка: №${latest.id}, ${labels[latest.status] || 'Выполняется'}, ${latest.completed}/${latest.total}`);
           if (ozon.action_required) lines.push('Подключение Ozon требует внимания.');
         } else lines.push('', 'Ozon: недоступен в приложении.');
         if (this.lamoda) {
           const lamoda = this.lamoda.status(),last = lamoda.checks[0];
-          lines.push('','🛍️ Lamoda',lamoda.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
+          lines.push('','🛍️ Lamoda',lamoda.queued ? 'Проверка ожидает в общей очереди.' : lamoda.running ? 'Проверка выполняется.' : 'Ожидаю следующую проверку.',
             `Следующая проверка: ${date(lamoda.next_check)}`,`Расписание: ${lamoda.schedule_enabled ? 'включено' : 'выключено'}`);
           if (last) lines.push(`Последняя проверка: №${last.id}, ${labels[last.status] || last.status}, ${last.completed}/${last.total}`);
           if (lamoda.action_required || !lamoda.configured) lines.push('Нужно подтвердить вход в Lamoda.');

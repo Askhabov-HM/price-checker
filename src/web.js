@@ -119,7 +119,12 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (!(action === 'pair' && request.method === 'POST') && !lamoda.mobile.authenticate(request.headers.authorization)) {
           request.resume();return send(response,401,{error:'Подключите Android заново.'});
         }
-        if (request.method === 'GET' && action === 'next') return send(response,200,{job:lamoda.mobile.next()});
+        // Existing Android clients retry 5xx responses, but treat job:null as
+        // successful completion. Keep a queued request retryable until admitted.
+        const mobileJob = () => lamoda.collectionQueue.status('lamoda').queued
+          ? send(response,503,{error:'Проверка Lamoda ожидает в общей очереди.'},'application/json; charset=utf-8',{'Retry-After':'5'})
+          : send(response,200,{job:lamoda.mobile.next()});
+        if (request.method === 'GET' && action === 'next') return mobileJob();
         if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
         if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume();return send(response,415,{error:'Ожидается JSON.'});}
         const input = await readJson(request,action === 'page' ? 2*1024*1024 : action === 'push' ? 8192 : 4096);
@@ -128,7 +133,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (action === 'stop') return send(response,200,await lamoda.stopMobile(input.job_id));
         if (action === 'start') {
           if (!lamoda.running) await lamoda.start({trigger:'android'});
-          return send(response,200,{job:lamoda.mobile.next()});
+          return mobileJob();
         }
         if (action === 'page') {
           try {return send(response,200,await lamoda.mobile.accept(input.job_id,input.page,input.user,input.payload));}
