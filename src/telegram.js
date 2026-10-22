@@ -307,10 +307,11 @@ export class TelegramBot {
       const login = payload?.kind === 'login';
       const ozonLogin = login && payload.store === 'ozon';
       const lamodaLogin = login && payload.store === 'lamoda';
-      const mobile = payload?.store === 'lamoda' && (payload.kind === 'android' || lamodaLogin && this.lamoda?.mobile?.enabled());
+      const connect = payload?.store === 'lamoda' && payload.kind === 'android_connect' && /^[a-f0-9]{32}$/.test(payload.invitation);
+      const mobile = payload?.store === 'lamoda' && (connect || payload.kind === 'android' || lamodaLogin && this.lamoda?.mobile?.enabled());
       const path = mobile ? '/lamoda/android/open' : lamodaLogin ? '/lamoda/login' : ozonLogin ? '/ozon/login' : stores[payload?.store]?.path || '';
-      const url = this.publicOrigin + path;
-      data.reply_markup = {inline_keyboard: [[{text: mobile ? '📱 Открыть на Android' : lamodaLogin ? '🔐 Войти в Lamoda' : ozonLogin ? '🔐 Войти в Ozon'
+      const url = this.publicOrigin + path + (connect ? '#connect='+payload.invitation : '');
+      data.reply_markup = {inline_keyboard: [[{text: connect ? '📱 Подключить телефон' : mobile ? '📱 Открыть на Android' : lamodaLogin ? '🔐 Войти в Lamoda' : ozonLogin ? '🔐 Войти в Ozon'
         : login ? '🔐 Подключить Randewoo' : '🌐 Открыть сайт', url}]]};
       const entities = [];
       for (const logo of Object.values(stores)) {
@@ -349,7 +350,7 @@ export class TelegramBot {
             if (payload.recovered) lines.push('Проверка снова работает.','');
             if (payload.down || payload.up) lines.push(`📉 Снижений: ${payload.down}`,`📈 Повышений: ${payload.up}`);
             else lines.push('Изменений цен нет.');
-          } else if (payload.kind === 'android') lines.push('Откройте приложение на телефоне для обновления избранного.','Держите его открытым до завершения сбора. Задание действует 45 минут.');
+          } else if (payload.kind === 'android') lines.push('Откройте приложение на телефоне: избранное откроется и сбор начнётся автоматически.','Держите приложение открытым до завершения. Начать проверку можно в течение 45 минут.');
           else lines.push(payload.kind === 'login' ? 'Требуется повторный вход в аккаунт.' : 'Не удалось выполнить проверку.');
           const result = await this.send({...payload,format:reportFormat,text:lines.join('\n')});
           this.lamoda.db.delivered(row.event_id,result?.message_id,now());
@@ -399,6 +400,13 @@ export class TelegramBot {
         await this.send('▶️ Проверка Ozon запущена. Результат придёт после завершения.');
         return;
       }
+      case 'lamoda_android': {
+        if (!this.lamoda?.mobile) {await this.send('Раздел Lamoda временно недоступен.');return;}
+        const invite = this.lamoda.mobile.pairing();
+        await this.send({format:reportFormat,store:'lamoda',kind:'android_connect',invitation:invite.code,
+          text:'📱 🛍️ Lamoda\n\nНажмите «Подключить телефон» на Android с установленным Lamoda Collector. Ничего вводить не нужно.\nСсылка одноразовая и действует 10 минут. Она заменит прежнее подключение телефона. Не пересылайте её.'});
+        return;
+      }
       case 'check_lamoda': {
         if (!this.lamoda) {await this.send('Раздел Lamoda временно недоступен.');return;}
         try {await this.lamoda.start({trigger:'telegram'});await this.send('▶️ Проверка Lamoda запущена. Результат придёт после завершения.');}
@@ -438,7 +446,7 @@ export class TelegramBot {
           : 'Дождись ответов на сообщения в очереди, затем отправь /new.');
         return;
       default:
-        await this.send('Price Checker подключён.\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon\n/check_lamoda — проверить избранное Lamoda\n/check — выбрать магазин\n/status — состояние магазинов и расписаний\n/help — команды'
+        await this.send('Price Checker подключён.\n/check_randewoo — проверить Randewoo\n/check_ozon — проверить избранное Ozon\n/check_lamoda — проверить избранное Lamoda\n/lamoda_android — подключить телефон без ввода кода\n/check — выбрать магазин\n/status — состояние магазинов и расписаний\n/help — команды'
           + (this.chat ? '\n/new — новый диалог с Codex\n\nОбычные текстовые сообщения передаю Codex. Контекст диалога сохраняется.' : ''));
     }
   }
@@ -451,6 +459,7 @@ export class TelegramBot {
     if (webhook?.url) throw new TelegramError('webhook_configured');
     await this.api.call('setMyCommands', {commands: [{command: 'check_randewoo', description: 'Проверить цены Randewoo'},
       {command: 'check_ozon', description: 'Проверить избранное Ozon'}, {command:'check_lamoda',description:'Проверить избранное Lamoda'}, {command: 'check', description: 'Выбрать магазин для проверки'},
+      {command: 'lamoda_android', description: 'Подключить телефон для Lamoda'},
       {command: 'status', description: 'Состояние магазинов и расписаний'}, {command: 'help', description: 'Показать команды'},
       ...(this.chat ? [{command: 'new', description: 'Новый диалог с Codex'}] : [])]});
     this.log('telegram_ready');

@@ -8,6 +8,7 @@ import {FetchError, ValidationError} from './errors.js';
 import {loadAuthentication} from './auth.js';
 import {LoginError} from './randewoo-login.js';
 import {LamodaError} from './providers/lamoda/parser.js';
+import {androidLaunchPage,androidLaunchScript} from './providers/lamoda/mobile-launch.js';
 
 const publicDirectory = fileURLToPath(new URL('../dist/', import.meta.url));
 // Radix and Recharts apply measured styles at runtime; scripts remain restricted to local assets.
@@ -105,7 +106,10 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       }
       if (request.method === 'GET' && url.pathname === '/api/auth') return send(response, 200, authState());
       if (request.method === 'GET' && url.pathname === '/lamoda/android/open') {
-        return send(response,200,'<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lamoda · Android</title><body><h1>Открыть Lamoda на Android</h1><p><a href="intent://collect#Intent;scheme=pricechecker-lamoda;package=ru.pricechecker.lamoda;end">Открыть приложение Lamoda Collector</a></p><p>Если Telegram не открывает приложение, выберите в меню «Открыть в браузере» или запустите Lamoda Collector с экрана телефона. Задание будет получено после открытия.</p></body></html>','text/html; charset=utf-8');
+        return send(response,200,androidLaunchPage,'text/html; charset=utf-8');
+      }
+      if (request.method === 'GET' && url.pathname === '/lamoda/android/launch.js') {
+        return send(response,200,androidLaunchScript,'text/javascript; charset=utf-8');
       }
       if (url.pathname.startsWith('/api/lamoda-mobile/')) {
         if (!lamoda?.mobile) return send(response,503,{error:'Сбор через Android недоступен.'});
@@ -233,8 +237,12 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       const data = await readJson(request);
       if (url.pathname.startsWith('/api/providers/lamoda/')) {
         if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
-        if (url.pathname === '/api/providers/lamoda/mobile/pairing' || url.pathname === '/api/providers/lamoda/mobile/revoke') {
+        if (['/api/providers/lamoda/mobile/pairing','/api/providers/lamoda/mobile/connect','/api/providers/lamoda/mobile/revoke'].includes(url.pathname)) {
           if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});
+          if (url.pathname.endsWith('/connect')) {
+            const invite = lamoda.mobile.pairing();
+            return send(response,200,{url:'/lamoda/android/open#connect='+invite.code,expires_at:invite.expires_at});
+          }
           if (url.pathname.endsWith('/pairing')) return send(response,200,lamoda.mobile.pairing());
           lamoda.mobile.revoke();return send(response,200,{ok:true});
         }
