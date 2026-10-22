@@ -8,6 +8,7 @@ import {Tracker} from '../src/service.js';
 import {makeServer,listen} from '../src/web.js';
 import {Authentication,createCredentials} from '../src/auth.js';
 import {TelegramBot} from '../src/telegram.js';
+import {androidLaunchPage,androidLaunchScript} from '../src/providers/lamoda/mobile-launch.js';
 import {temporary,cleanup} from './helpers.js';
 
 const product = sku => ({sku,name:'Пример',brand:{name:'Бренд'},seo_tail:'example',price_iso_code:'RUB',price_amount:'100',old_price_amount:'120',is_available:true,is_sellable:true});
@@ -35,6 +36,39 @@ test('Android pairing expires, is single-use, rotates the scoped token, and stor
   const replacement = pair(mobile);assert.equal(mobile.authenticate('Bearer '+token),false);
   assert.equal(mobile.authenticate('Bearer '+replacement),true);
   mobile.revoke();assert.equal(mobile.authenticate('Bearer '+replacement),false);
+});
+
+test('Only the owner in a private Telegram chat can create a one-use Android connection button',async t => {
+  const {root,lamoda,mobile} = service(t),tracker = new Tracker(root),sent = [];
+  const bot = new TelegramBot(tracker,{lamoda,ownerId:123,publicOrigin:'https://prices.example',logger:() => {},api:{async call(method,data){sent.push(data);return {message_id:1};},close(){}}});
+  cleanup(t,async () => {await bot.close();await tracker.close();});
+  const command = (id,from = 123,type = 'private') => ({update_id:id,message:{from:{id:from},chat:{id:123,type},text:'/lamoda_android'}});
+  await bot.handleUpdate(command(1,456));await bot.handleUpdate(command(2,123,'group'));
+  assert.equal(sent.length,0);assert.equal(lamoda.db.db.prepare('SELECT COUNT(*) AS n FROM mobile_pairing').get().n,0);
+  await bot.handleUpdate(command(3));
+  assert.equal(sent.length,1);assert.equal(sent[0].chat_id,123);
+  const link = new URL(sent[0].reply_markup.inline_keyboard[0][0].url);
+  assert.equal(link.origin,'https://prices.example');assert.equal(link.pathname,'/lamoda/android/open');assert.equal(link.search,'');
+  assert.match(link.hash,/^#connect=[a-f0-9]{32}$/);
+  const invitation = link.hash.slice('#connect='.length);
+  assert.equal(sent[0].text.includes(invitation),false);
+  assert.ok(mobile.pair(invitation,'phone').token);
+  assert.throws(() => mobile.pair(invitation,'phone'));
+});
+
+test('Android launcher forwards only a valid fragment to the fixed app and never auto-navigates',() => {
+  const invitation = '0123456789abcdef0123456789abcdef';
+  const render = hash => {
+    const elements = {open:{href:'original',removeAttribute(name){delete this[name];}},help:{}};
+    runInNewContext(androidLaunchScript,{location:{hash},document:{getElementById:id => elements[id]}});
+    return elements;
+  };
+  assert.match(androidLaunchPage,/src="\/lamoda\/android\/launch.js"/);
+  assert.equal(render('').open.href,'original');
+  assert.equal(render('#connect='+invitation).open.href,'intent://collect?connect='+invitation+'#Intent;scheme=pricechecker-lamoda;package=ru.pricechecker.lamoda;end');
+  for (const fragment of ['#connect=invalid','#connect='+invitation+'&server=https://other.example','#connect='+invitation+'#Intent;package=evil;end']) {
+    assert.equal(render(fragment).open.href,undefined);
+  }
 });
 
 test('Android stages every page before changing history, accepts identical retries and records the source',async t => {
@@ -87,10 +121,14 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
   cleanup(t,async () => {await bot.close();server.closeAllConnections();await new Promise(resolve => server.close(resolve));await tracker.close();});
   const post = (path,body = {},headers = {}) => fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)});
   assert.equal((await post('/api/providers/lamoda/mobile/pairing')).status,401);
+  assert.equal((await post('/api/providers/lamoda/mobile/connect')).status,401);
   const anon = await (await fetch(base+'/api/auth')).json();
   const login = await post('/api/login',{login:'owner',password:'synthetic-test-password'},{'X-CSRF-Token':anon.csrf_token});
   const session = await login.json(),cookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await post('/api/providers/lamoda/mobile/pairing',{}, {Cookie:cookie})).status,403);
+  assert.equal((await post('/api/providers/lamoda/mobile/connect',{}, {Cookie:cookie})).status,403);
+  const connection = await (await post('/api/providers/lamoda/mobile/connect',{}, {Cookie:cookie,'X-CSRF-Token':session.csrf_token})).json();
+  assert.match(connection.url,/^\/lamoda\/android\/open#connect=[a-f0-9]{32}$/);assert.equal(connection.code,undefined);
   const pairing = await (await post('/api/providers/lamoda/mobile/pairing',{}, {Cookie:cookie,'X-CSRF-Token':session.csrf_token})).json();
   const paired = await (await post('/api/lamoda-mobile/pair',{code:pairing.code,name:'Test Android'})).json();
   const device = {Authorization:'Bearer '+paired.token};
@@ -107,6 +145,8 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
   await lamoda.running;assert.equal(lamoda.db.dashboard().items.length,2);
   assert.equal(tracker.db.get("SELECT COUNT(*) AS n FROM sqlite_master WHERE name LIKE 'mobile_%'").n,0);
   assert.equal((await fetch(base+'/lamoda/android/open')).status,200);
+  const script = await fetch(base+'/lamoda/android/launch.js');
+  assert.equal(script.status,200);assert.match(script.headers.get('content-type'),/javascript/);assert.equal(await script.text(),androidLaunchScript);
 });
 
 test('Android collector uses only fixed same-origin wishlist GETs and strips profile information',async () => {

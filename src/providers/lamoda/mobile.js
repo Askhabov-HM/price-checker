@@ -4,8 +4,8 @@ import {ValidationError} from '../../errors.js';
 import {LamodaError,parseWishlistState,readAllFavorites} from './parser.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
-const unavailable = () => new ValidationError('Подключение Android недействительно. Создайте новый код на сайте.');
-const jobError = () => new ValidationError('Задание истекло или отменено. Получите новое задание.');
+const unavailable = () => new ValidationError('Ссылка подключения недействительна. Получите новую в личном боте: /lamoda_android.');
+const jobError = () => new ValidationError('Проверка истекла или отменена. Нажмите «Собрать сейчас».');
 export class LamodaMobile {
   constructor(db,{current = Date.now} = {}) {
     this.db = db;this.sql = db.db;this.current = current;
