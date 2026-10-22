@@ -1,5 +1,6 @@
 import {useMutation,useQuery} from '@tanstack/react-query';
 import {Button} from '@/components/ui/button';
+import {CollectionNotice} from '@/components/collection-notice';
 import {invalidateLamoda,lamodaMutate,lamodaStatusOptions} from '@/lib/lamoda';
 
 export function LamodaAndroidPage() {
@@ -8,7 +9,7 @@ export function LamodaAndroidPage() {
   const revoke = useMutation({mutationFn:() => lamodaMutate('mobile/revoke'),onSuccess:invalidateLamoda});
   const refresh = useMutation({mutationFn:() => lamodaMutate('refresh'),onSuccess:invalidateLamoda});
   const error = status.error || pairing.error || revoke.error || refresh.error;
-  return <div><section className="page-heading"><div><div className="eyebrow">LAMODA · ANDROID</div><h1>Сбор с телефона</h1><p>Вход в Lamoda остаётся на вашем Android.</p></div></section>
+  return <div><CollectionNotice status={status.data}/><section className="page-heading"><div><div className="eyebrow">LAMODA · ANDROID</div><h1>Сбор с телефона</h1><p>Вход в Lamoda остаётся на вашем Android.</p></div></section>
     <section className="overview-card"><h2>Подключить телефон</h2><p>Установите Lamoda Collector. В личном Telegram-боте выберите /lamoda_android и нажмите «Подключить телефон». Вводить код и адрес сервера не нужно.</p>
       <p>Если вы открыли эту страницу на телефоне, подключиться можно здесь:</p>
       <Button onClick={() => pairing.mutate()} disabled={pairing.isPending}>Подготовить подключение</Button>

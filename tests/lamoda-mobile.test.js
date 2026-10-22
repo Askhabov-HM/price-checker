@@ -104,12 +104,17 @@ test('Android refuses other accounts and changed membership, and a failed partia
   assert.equal(lamoda.db.dashboard().items[0].price_at,stamp);assert.equal(lamoda.db.checks()[0].status,'error');
 });
 
-test('Android obeys source Retry-After and expired jobs leave the schedule enabled',async t => {
+test('Android obeys Retry-After and its ten-minute expiry releases the queue without disabling the schedule',async t => {
   let clock = Date.now();const {lamoda,mobile} = service(t,{current:() => clock});pair(mobile);lamoda.db.bindAccount('42');lamoda.settings({schedule_enabled:true});
   await lamoda.start();mobile.fail(mobile.next().id,'rate_limited',3600000,429);await lamoda.running;
   assert.equal(Date.parse(lamoda.status().not_before),clock+3600000);assert.equal(lamoda.status().schedule_enabled,true);
-  clock+=3600001;await lamoda.start();const job = mobile.next();clock+=46*60000;
+  clock+=3600001;await lamoda.start();const job = mobile.next();
+  assert.equal(job.expires,clock+10*60000);
+  const next = lamoda.collectionQueue.enqueue('ozon',() => 'next store');
+  clock+=10*60000-1;assert.equal(mobile.next().id,job.id);assert.equal(lamoda.collectionQueue.status('ozon').queued,true);
+  clock++;assert.equal(mobile.next(),null);
   await assert.rejects(mobile.accept(job.id,1,state().user,state().payload));await lamoda.running;
+  assert.equal(await next.done,'next store');
   assert.equal(lamoda.db.checks()[0].status,'interrupted');assert.equal(lamoda.status().schedule_enabled,true);
 });
 

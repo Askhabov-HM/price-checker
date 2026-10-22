@@ -10,7 +10,7 @@ export function scheduleSettings(data, previous) {
   if (!Array.isArray(times) || times.length > 25 || times.some(value => typeof value !== 'string' || !/^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/.test(value))) {
     throw new ValidationError('Укажите часы проверок по Москве в формате ЧЧ:ММ.');
   }
-  if (![30,60,120].includes(minutes)) throw new ValidationError('Выберите интервал: 30 минут, 1 час или 2 часа.');
+  if (![2,30,60,120].includes(minutes)) throw new ValidationError('Выберите интервал: 2 минуты, 30 минут, 1 час или 2 часа.');
   if (typeof data.schedule_enabled !== 'boolean') throw new ValidationError('Укажите состояние автоматических проверок.');
   const schedule = [...new Set(times.map(value => value === '24:00' ? '00:00' : value))].sort();
   if (mode === 'hours' && data.schedule_enabled && !schedule.length) throw new ValidationError('Отметьте хотя бы один час для автоматических проверок.');

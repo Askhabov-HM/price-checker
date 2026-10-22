@@ -16,7 +16,7 @@ test('FCM uses a signed scoped OAuth assertion, caches access tokens and sends o
     calls.push({url,options});return url.includes('oauth2.') ? response({access_token:'synthetic-access',expires_in:3600}) : response({name:'synthetic-message'});
   }});
   assert.equal(sender.configured(),true);
-  const job = {id:'0123456789abcdef0123456789abcdef',expires:clock+45*60000};
+  const job = {id:'0123456789abcdef0123456789abcdef',expires:clock+10*60000};
   await sender.send('synthetic-registration-token',job);await sender.send('synthetic-registration-token',job,{validateOnly:true});
   assert.equal(calls.length,3);
   const jwt = calls[0].options.body.get('assertion'),[header,payload,signature] = jwt.split('.');
@@ -26,7 +26,7 @@ test('FCM uses a signed scoped OAuth assertion, caches access tokens and sends o
   assert.equal(calls[0].options.redirect,'error');
   assert.equal(calls[1].url,'https://fcm.googleapis.com/v1/projects/synthetic-project/messages:send');
   const sent = JSON.parse(calls[1].options.body);
-  assert.equal(sent.message.android.ttl,'2700s');assert.equal(sent.message.android.restricted_package_name,'ru.pricechecker.lamoda');
+  assert.equal(sent.message.android.ttl,'600s');assert.equal(sent.message.android.restricted_package_name,'ru.pricechecker.lamoda');
   assert.deepEqual(sent.message.data,{lamoda_job:job.id,lamoda_expires:String(job.expires)});
   // A system-rendered notification would bypass the app's background callback
   // and leave collection waiting for a tap instead of starting WorkManager.
@@ -60,7 +60,8 @@ function setup(t,{send = async () => {},current = () => clock} = {}) {
 test('Push retry is independent of collection, durable, deduplicated and honors the source delay',async t => {
   let now = clock,attempts = 0;
   const {lamoda,register} = setup(t,{current:() => now,send:async () => {if (++attempts === 1) throw new PushError('rate_limited',{retry:180000});}});
-  register();await lamoda.start({trigger:'schedule'});const job = lamoda.mobile.next();
+  register();lamoda.db.bindAccount('42');lamoda.settings({schedule_enabled:true});
+  await lamoda.start({trigger:'schedule'});const job = lamoda.mobile.next();
   await lamoda.push.flush();assert.equal(lamoda.status().running,true);assert.equal(attempts,1);
   assert.equal(lamoda.push.status().error,'rate_limited');
   assert.equal(lamoda.db.db.prepare('SELECT attempts FROM mobile_push_outbox WHERE job_id=?').get(job.id).attempts,1);
@@ -77,7 +78,7 @@ test('No push for collection started in the app, disabled permissions, completed
   lamoda.mobile.fail(lamoda.mobile.next().id,'interrupted');await lamoda.running;
   await lamoda.start();register('synthetic-registration-token',false);await lamoda.push.flush();assert.equal(calls,0);
   register();lamoda.mobile.fail(lamoda.mobile.next().id,'interrupted');await lamoda.push.flush();assert.equal(calls,0);await lamoda.running;
-  await lamoda.start();now+=46*60000;await lamoda.push.flush();assert.equal(calls,0);
+  await lamoda.start();now+=10*60000;await lamoda.push.flush();assert.equal(calls,0);
   lamoda.mobile.revoke();assert.equal(lamoda.push.status().enabled,false);
 });
 

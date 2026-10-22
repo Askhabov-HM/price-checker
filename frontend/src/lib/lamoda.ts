@@ -1,9 +1,9 @@
 import {queryOptions} from '@tanstack/react-query';
 import {authOptions,queryClient,request} from './api';
-import type {Check,Filter,Sort,ChangePeriod,ScheduleSettings,PriceChangeEvent,PricePoint} from './types';
+import type {Check,Filter,Sort,ChangePeriod,ScheduleSettings,PriceChangeEvent,PricePoint,CollectionStatus} from './types';
 import {hasRecentChange} from './price-changes';
 
-export interface LamodaStatus extends ScheduleSettings {
+export interface LamodaStatus extends ScheduleSettings, CollectionStatus {
   available:boolean; configured:boolean; running:boolean; next_check:string|null; not_before:string|null;
   action_required:boolean; message:string; checks:Check[];
   login:{available:boolean;active:boolean;required:boolean;expires_at:string|null};

@@ -7,6 +7,7 @@ import {OzonClient, OzonReadError} from './client.js';
 import {OzonLogin} from './login.js';
 import {nextScheduledCheck, scheduleSettings} from '../../schedule.js';
 import {inspectBrowserCollection} from './recovery.js';
+import {collectionQueue} from '../../collection-queue.js';
 
 const legacyRetryMessages = new Set([
   'Ozon ограничил доступ. Проверки приостановлены.',
@@ -22,6 +23,7 @@ const legacyRetryMessages = new Set([
 export class OzonService {
   constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify,monitor = inspectBrowserCollection} = {}) {
     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
+    this.collectionQueue = collectionQueue(root);
     this.running = null; this.closing = false;
     this.browserStatus=monitor;
     const state = this.db.state();
@@ -52,6 +54,7 @@ export class OzonService {
   status() {
     const state = this.db.state(), checks = this.db.checks();
     return {available:true,configured:this.client.configured(),running:!!this.running || checks[0]?.status === 'running',
+      ...this.collectionQueue.status('ozon'),
       ...this.scheduleConfig(),next_check:state.schedule_enabled ? state.next_check : null,
       not_before:state.not_before,action_required:!!state.action_required,message:state.message,login:this.login.status(),checks};
   }
@@ -67,8 +70,8 @@ export class OzonService {
   }
   watch(url) {if (this.closing) throw new ValidationError('Приложение останавливается.'); return this.db.watch(url,true,this.stamp());}
   unwatch(id) {const product = this.db.product(itemSku(id)); if (!product) throw new ValidationError('Товар Ozon не найден.'); this.db.watch(product.url,false,this.stamp());}
-  allowed() {
-    if (this.closing || this.running) throw new ValidationError('Проверка Ozon уже выполняется или приложение останавливается.');
+  allowed(checkRunning = true) {
+    if (this.closing || checkRunning && this.running) throw new ValidationError('Проверка Ozon уже выполняется или приложение останавливается.');
     if (!this.client.configured()) throw new ValidationError('Подключение Ozon ещё не настроено.');
     const state = this.db.state();
     if (state.action_required) throw new ValidationError(state.message || 'Нужно восстановить подключение Ozon.');
@@ -82,13 +85,20 @@ export class OzonService {
     catch (error) {throw new ValidationError(error instanceof AlreadyRunning ? 'Проверка Ozon уже выполняется.' : 'Не удалось начать проверку Ozon.');}
     try {this.allowed();} catch (error) {await release(); throw error;}
     this.controller = new AbortController();
-    this.running = this.execute({id,trigger,signal:this.controller.signal}).finally(async () => {
+    const signal = this.controller.signal;
+    const ticket = this.collectionQueue.enqueue('ozon',() => {
+      if (trigger === 'schedule' && !this.db.state().schedule_enabled) return;
+      this.allowed(false);
+      return this.execute({id,trigger,signal});
+    },{signal});
+    this.running = ticket.done.finally(async () => {
       await release();this.running = null;
       if (this.loginNeeded && !this.closing) {this.loginNeeded = false;await this.login.require();}
     });
     this.running.catch(() => {});
+    await ticket.ready;
     // The HTTP response returns before collection; errors are represented by persisted checks.
-    return {started:true};
+    return {started:true,queued:this.collectionQueue.status('ozon').queued};
   }
   async execute({id,trigger,signal}) {
     this.db.recover(this.stamp());
@@ -162,7 +172,7 @@ export class OzonService {
     if (this.closing || !state.schedule_enabled || this.running || state.action_required || !state.next_check || Date.parse(state.next_check) > this.current()) return;
     await this.start({trigger:'schedule'});
   }
-  async close() {this.closing = true; clearInterval(this.timer); this.controller?.abort(); await this.running; await this.login.close();this.db.close();}
+  async close() {this.closing = true; clearInterval(this.timer); this.controller?.abort(); await this.running?.catch(() => {}); await this.login.close();this.db.close();}
 }
 export function createOzonService(root, options) {
   try {return new OzonService(root,options);} catch {return null;}

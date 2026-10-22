@@ -105,7 +105,7 @@ export class LamodaMobile {
   async collect(check,signal,{remind = true} = {}) {
     this.cancel();
     this.sql.prepare("DELETE FROM mobile_jobs WHERE status!='pending'").run();
-    const id = randomBytes(16).toString('hex'),expires = this.current()+45*60000;
+    const id = randomBytes(16).toString('hex'),expires = this.current()+10*60000;
     this.sql.prepare("INSERT INTO mobile_jobs(id,check_id,status,expires) VALUES(?,?,'pending',?)").run(id,check,expires);
     this.sql.prepare('INSERT INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)')
       .run('android:'+id,check,JSON.stringify({store:'lamoda',kind:'android',finishedAt:new Date(this.current()).toISOString()}));

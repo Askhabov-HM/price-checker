@@ -8,10 +8,12 @@ import {LamodaLogin} from './login.js';
 import {LamodaError} from './parser.js';
 import {LamodaMobile} from './mobile.js';
 import {FirebaseSender,LamodaPush} from './push.js';
+import {collectionQueue} from '../../collection-queue.js';
 
 export class LamodaService {
   constructor(root,{channel = options => new LamodaChannel(options),current = Date.now,logger = event => console.info(JSON.stringify(event)),pushSender = new FirebaseSender(root,{current})} = {}) {
     this.root = root;this.db = new LamodaDatabase(root);this.channel = channel;this.current = current;this.logger = logger;
+    this.collectionQueue = collectionQueue(root);
     this.mobile = new LamodaMobile(this.db,{current});
     this.push = new LamodaPush(this.mobile,pushSender,{current});this.mobile.push = this.push;
     this.login = new LamodaLogin(root,{db:this.db,channel:() => channel({timeout:60000}),onAuthorized:() => {
@@ -25,6 +27,7 @@ export class LamodaService {
     return nextScheduledCheck(state,new Date(Math.max(this.current(),(Date.parse(notBefore)||0)-1)));
   }
   status() {const state = this.config();return {...state,available:true,configured:this.db.configured(),running:!!this.running,
+    ...this.collectionQueue.status('lamoda'),
     next_check:state.schedule_enabled ? state.next_check : null,action_required:!!state.action_required,checks:this.db.checks(),login:this.login.status(),mobile:this.mobile.status()};}
   settings(data) {
     const old = this.config(),config = scheduleSettings(data,old);
@@ -34,24 +37,36 @@ export class LamodaService {
     const next = config.schedule_enabled ? nextScheduledCheck({...config,schedule_anchor:anchor},new Date(Math.max(this.current(),Date.parse(old.not_before)||0))) : null;
     this.db.transaction(() => this.db.updateState({...config,schedule:JSON.stringify(config.schedule),schedule_enabled:Number(config.schedule_enabled),schedule_anchor:anchor,next_check:next}));
   }
-  async start({trigger = 'manual'} = {}) {
-    if (this.closing || this.running) throw new ValidationError('Проверка Lamoda уже выполняется.');
+  allowed(checkRunning = true) {
+    if (this.closing || checkRunning && this.running) throw new ValidationError('Проверка Lamoda уже выполняется.');
     const state = this.db.state();
     if ((!this.db.configured() || state.action_required) && !this.mobile.enabled()) throw new ValidationError('Нужно подтвердить вход в Lamoda.');
     if (Date.parse(state.not_before) > this.current()) throw new ValidationError('Сохраняется пауза источника Lamoda.');
+  }
+  async start({trigger = 'manual'} = {}) {
+    this.allowed();
     let release;
     try {release = await acquireInstance(join(this.root,'.data/lamoda/collector.lock'));} catch {throw new ValidationError('Lamoda занята сбором или входом.');}
     if (this.closing || this.running) {await release();throw new ValidationError('Приложение останавливается или проверка уже выполняется.');}
     this.controller = new AbortController();
-    this.running = this.execute(trigger,this.controller.signal).finally(async () => {await release();this.running = null;this.activeCheck = null;});
-    this.running.catch(() => {});return {started:true};
+    const signal = this.controller.signal;
+    let queued = false;
+    const ticket = this.collectionQueue.enqueue('lamoda',() => {
+      if (trigger === 'schedule' && !this.db.state().schedule_enabled) return;
+      this.allowed(false);
+      return this.execute(trigger,signal,{remind:trigger !== 'android' || queued});
+    },{signal});
+    this.running = ticket.done.finally(async () => {await release();this.running = null;this.activeCheck = null;});
+    this.running.catch(() => {});await ticket.ready;
+    queued = this.collectionQueue.status('lamoda').queued;
+    return {started:true,queued};
   }
-  async execute(trigger,signal) {
+  async execute(trigger,signal,{remind = trigger !== 'android'} = {}) {
     const check = this.db.begin(trigger,this.stamp());
     this.activeCheck = check;
     try {
       const mobile = this.mobile.enabled();
-      const result = mobile ? await this.mobile.collect(check,signal,{remind:trigger !== 'android'}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
+      const result = mobile ? await this.mobile.collect(check,signal,{remind}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
       if (signal.aborted) throw new LamodaError('interrupted');
       if (mobile && !this.db.configured()) this.db.bindAccount(result.account_id);
       if (!this.db.matches(result.account_id)) throw new LamodaError('account_mismatch');
@@ -91,7 +106,7 @@ export class LamodaService {
     const state = this.db.state();
     if (!this.closing && !this.running && state.schedule_enabled && !state.action_required && state.next_check && Date.parse(state.next_check) <= this.current()) await this.start({trigger:'schedule'});
   }
-  async close() {this.closing = true;clearInterval(this.timer);clearInterval(this.pushTimer);this.controller?.abort();await this.running;await this.push.running;await this.login.close();this.db.close();}
+  async close() {this.closing = true;clearInterval(this.timer);clearInterval(this.pushTimer);this.controller?.abort();await this.running?.catch(() => {});await this.push.running;await this.login.close();this.db.close();}
 }
 export function createLamodaService(root,options) {
   try {return new LamodaService(root,options);} catch {console.error(JSON.stringify({store:'lamoda',event:'storage_unavailable'}));return null;}

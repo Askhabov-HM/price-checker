@@ -5,17 +5,19 @@ import {browserCollection} from '../src/providers/ozon/recovery.js';
 import {OzonDatabase} from '../src/providers/ozon/database.js';
 import {writePrivateJson} from '../src/providers/ozon/session.js';
 import {acquireInstance} from '../src/instance.js';
+import {acquireCollection} from '../src/collection-queue.js';
 
 const root='/opt/price-checker/current',baselinePath=process.argv[2];
 const controller=new AbortController();
 process.once('SIGTERM',()=>controller.abort());process.once('SIGINT',()=>controller.abort());
-let db,client,release,check,committed=false;
+let db,client,release,releaseCollection,check,committed=false;
 const startedAt=new Date().toISOString(),requests=[],failures=[];
 const output=join(root,'.secrets/ozon/once-check-last.json');
 try {
   if(!/^\/var\/lib\/price-checker\/secrets\/ozon\/once-baseline-[0-9TZ]+\.json$/.test(baselinePath||''))throw Error('Invalid baseline path');
   const baseline=JSON.parse(readFileSync(baselinePath,'utf8'));
   release=await acquireInstance(join(root,'.data/ozon/collector.lock'));
+  releaseCollection=await acquireCollection(root,controller.signal);
   db=new OzonDatabase(root);
   const state=db.state();
   if(state.not_before && Date.parse(state.not_before)>Date.now())throw Error('Ozon requested a later retry');
@@ -63,4 +65,4 @@ try {
   if(db&&error.retry_after_ms>0)db.updateState({not_before:new Date(Date.now()+error.retry_after_ms).toISOString()});
   if(db&&check)db.finish(check,report.status,committed?'Цены сохранены, но итоговый отчёт не завершён.':'Разовая проверка не завершена; прежние цены сохранены.',report.finished_at);
   writePrivateJson(output,report);console.log(JSON.stringify(report));process.exitCode=1;
-}finally{await client?.close();db?.close();await release?.();}
+}finally{try{await client?.close();db?.close();}finally{try{await releaseCollection?.();}finally{await release?.();}}}

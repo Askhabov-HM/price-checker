@@ -6,7 +6,9 @@ export class AlreadyRunning extends Error {}
 
 export async function acquireInstance(path) {
   mkdirSync(dirname(path), {recursive: true});
-  writeFileSync(path, '', {flag: 'a'});
+  // Lock heartbeats update the lock directory, not the target. Opening an
+  // existing root-created target for writing would block the service user.
+  try {writeFileSync(path, '', {flag: 'wx'});} catch (error) {if (error.code !== 'EEXIST') throw error;}
   try {
     return await lockfile.lock(path, {stale: 10000, update: 2000, retries: 0});
   } catch (error) {

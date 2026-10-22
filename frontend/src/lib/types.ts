@@ -71,10 +71,15 @@ export interface Check {
 export interface ScheduleSettings {
   schedule_mode: 'hours' | 'interval';
   schedule: string[];
-  interval_minutes: 30 | 60 | 120;
+  interval_minutes: 2 | 30 | 60 | 120;
   schedule_enabled: boolean;
 }
-export interface Status {
+export interface CollectionStatus {
+  queued?: boolean;
+  queue_position?: number | null;
+  active_store?: 'randewoo' | 'ozon' | 'lamoda' | null;
+}
+export interface Status extends CollectionStatus {
   running: boolean;
   checks: Check[];
   schedule: string[];

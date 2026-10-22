@@ -25,9 +25,9 @@ export function ScheduleFields({value,onChange,prefix,disabled = false}: {
     <fieldset className="schedule-option" disabled={value.schedule_mode !== 'interval'}>
       <legend>Интервал между запусками</legend>
       <select id={`${prefix}-schedule-interval`} aria-label="Интервал проверок" value={value.interval_minutes} onChange={event => update({interval_minutes:Number(event.target.value) as ScheduleSettings['interval_minutes']})}>
-        <option value={30}>Каждые 30 минут</option><option value={60}>Каждый час</option><option value={120}>Каждые 2 часа</option>
+        <option value={2}>Каждые 2 минуты</option><option value={30}>Каждые 30 минут</option><option value={60}>Каждый час</option><option value={120}>Каждые 2 часа</option>
       </select>
     </fieldset>
-    <p className="small-muted">Работает только выбранный режим. После перерыва выполняется одна проверка вместо всех пропущенных.</p>
+    <p className="small-muted">Работает только выбранный режим. Магазины проверяются по очереди: если другой сбор занят, запуск подождёт. После перерыва выполняется одна проверка вместо всех пропущенных.</p>
   </fieldset>;
 }

@@ -7,10 +7,12 @@ import {AuthError, FetchError, ValidationError} from './errors.js';
 import {now} from './time.js';
 import {nextScheduledCheck, scheduledSlot, scheduleSettings} from './schedule.js';
 import {RandewooLogin} from './randewoo-login.js';
+import {collectionQueue} from './collection-queue.js';
 
 export class Tracker {
   constructor(root, {databasePath, client} = {}) {
     this.root = root;
+    this.collectionQueue = collectionQueue(root);
     this.db = new Database(databasePath || join(root, '.data/prices.sqlite3'));
     if (!this.db.setting('schedule_anchor')) this.db.setSetting('schedule_anchor',new Date(Date.now()+30*60000).toISOString());
     this.db.setSetting('last_started_slot', null);
@@ -76,7 +78,7 @@ export class Tracker {
   }
   status() {
     const config = this.scheduleConfig();
-    return {running: this.running, checks: this.db.checks(), ...config, timezone: 'Europe/Moscow',
+    return {running: this.running, ...this.collectionQueue.status('randewoo'), checks: this.db.checks(), ...config, timezone: 'Europe/Moscow',
       next_check: config.schedule_enabled ? nextScheduledCheck(config) : null, session_present: existsSync(this.client.sessionPath || join(this.root, '.secrets/randewoo-session.json')),
       auth_status: this.db.setting('auth_status', 'unknown'), auth_message: this.db.setting('auth_message', ''), csrf_token: null,
       runtime: 'node.js', version: '1.0.0'};
@@ -91,7 +93,13 @@ export class Tracker {
   refreshNow(trigger = 'manual') {
     if (this.running || this.closing) throw new ValidationError('Проверка уже выполняется');
     this.running = true;
-    this.refreshPromise = this.refresh(trigger).finally(() => {this.running = false;});
+    this.controller = new AbortController();
+    const ticket = this.collectionQueue.enqueue('randewoo',() => {
+      if (trigger === 'schedule' && !this.db.setting('schedule_enabled',true)) return;
+      return this.refresh(trigger);
+    },{signal:this.controller.signal});
+    this.refreshReady = ticket.ready;
+    this.refreshPromise = ticket.done.finally(() => {this.running = false;});
     return this.refreshPromise;
   }
 
@@ -247,9 +255,10 @@ export class Tracker {
     if (!this.closePromise) this.closePromise = (async () => {
       clearInterval(this.timer);
       this.closing = true;
+      this.controller?.abort();
       this.randewooLogin.clear();
       this.client.close?.();
-      await this.refreshPromise;
+      await this.refreshPromise?.catch(() => {});
       this.db.close();
     })();
     return this.closePromise;
