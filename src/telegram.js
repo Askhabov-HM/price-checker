@@ -350,7 +350,7 @@ export class TelegramBot {
             if (payload.recovered) lines.push('Проверка снова работает.','');
             if (payload.down || payload.up) lines.push(`📉 Снижений: ${payload.down}`,`📈 Повышений: ${payload.up}`);
             else lines.push('Изменений цен нет.');
-          } else if (payload.kind === 'android') lines.push('Откройте приложение на телефоне: избранное откроется и сбор начнётся автоматически.','Держите приложение открытым до завершения. Начать проверку можно в течение 45 минут.');
+          } else if (payload.kind === 'android') lines.push('Откройте приложение на телефоне: избранное откроется и сбор начнётся автоматически.','Держите приложение открытым до завершения. На получение всех страниц отводится 10 минут с момента запуска задания.');
           else lines.push(payload.kind === 'login' ? 'Требуется повторный вход в аккаунт.' : 'Не удалось выполнить проверку.');
           const result = await this.send({...payload,format:reportFormat,text:lines.join('\n')});
           this.lamoda.db.delivered(row.event_id,result?.message_id,now());
