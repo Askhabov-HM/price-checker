@@ -3,6 +3,9 @@ package ru.pricechecker.lamoda;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.provider.Settings;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Bitmap;
 import android.os.Bundle;
@@ -24,6 +27,7 @@ import org.json.JSONTokener;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import com.google.firebase.messaging.FirebaseMessaging;
 
 public class MainActivity extends Activity {
     private static final String WISHLIST = "https://www.lamoda.ru/wishlist/";
@@ -37,7 +41,9 @@ public class MainActivity extends Activity {
     private long readStarted;
     private int generation;
     private String collector;
-    private Button collect;
+    private Button collect, notifications;
+    private boolean reminderOnly;
+    private String requestedReminder;
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved); vault = new TokenVault(this);
@@ -48,9 +54,10 @@ public class MainActivity extends Activity {
         root.addView(title);
         LinearLayout actions = new LinearLayout(this);
         actions.addView(button("Подключение", this::connection), new LinearLayout.LayoutParams(0, dp(48), 1));
-        collect = button("Собрать сейчас", this::requestJob);
+        collect = button("Собрать сейчас", () -> { reminderOnly = false; requestedReminder = null; requestJob(); });
         actions.addView(collect, new LinearLayout.LayoutParams(0, dp(48), 1));
         root.addView(actions);
+        notifications = button("Уведомления",this::notificationSettings); root.addView(notifications);
         status = new TextView(this); status.setTextSize(14); status.setPadding(dp(4), dp(8), dp(4), dp(8));
         root.addView(status);
         web = new WebView(this); WebSettings settings = web.getSettings();
@@ -123,9 +130,38 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Подключение к VPS")
                 .setMessage("В личном Telegram-боте выберите /lamoda_android и нажмите «Подключить телефон». Вводить код и адрес не нужно.\n\nЕсли телефон уже подключён, просто откройте приложение — сбор начнётся автоматически. Вход Lamoda остаётся на телефоне.")
                 .setPositiveButton("Понятно",null)
-                .setNeutralButton("Забыть подключение",(unused,which) -> { generation++; vault.clear(); job = null; pendingUpload = null; autoReadOnLoad = false; screenAwake(false); message("Подключение удалено с телефона. Для отзыва доступа используйте сайт."); }).show();
+                .setNeutralButton("Забыть подключение",(unused,which) -> { generation++; vault.clear(); getSystemService(android.app.job.JobScheduler.class).cancel(1001); job = null; pendingUpload = null; autoReadOnLoad = false; screenAwake(false); message("Подключение удалено с телефона. Для отзыва доступа используйте сайт."); }).show();
+    }
+    private void notificationSettings() {
+        if (!BuildConfig.FIREBASE_CONFIGURED) { message("Эта сборка без Firebase. Установите APK с настроенными уведомлениями."); return; }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                && !getSharedPreferences("push",0).getBoolean("asked",false)) {
+            getSharedPreferences("push",0).edit().putBoolean("asked",true).apply();
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},33); return;
+        }
+        startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,getPackageName()));
+    }
+    private void refreshPush() {
+        boolean allowed = ReminderService.allowed(this);
+        notifications.setText(!BuildConfig.FIREBASE_CONFIGURED ? "Уведомления: сборка без Firebase" : allowed ? "Уведомления разрешены" : "Разрешить уведомления");
+        if (!BuildConfig.FIREBASE_CONFIGURED) return;
+        try {
+            FirebaseMessaging messaging = FirebaseMessaging.getInstance(); messaging.setAutoInitEnabled(true);
+            messaging.setDeliveryMetricsExportToBigQuery(false);
+            messaging.getToken().addOnCompleteListener(task -> {
+                if (!task.isSuccessful()) {
+                    if (!isDestroyed()) notifications.setText("Уведомления: нет связи с Google"); return;
+                }
+                getSharedPreferences("push",0).edit().putString("token",task.getResult()).apply(); PushRegistration.schedule(this);
+            });
+        } catch (IllegalStateException ignored) { notifications.setText("Уведомления: проверьте Firebase"); }
+        if (Build.VERSION.SDK_INT >= 33 && !allowed && !getSharedPreferences("push",0).getBoolean("asked",false)) notificationSettings();
+    }
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request,permissions,results); if (request == 33) refreshPush();
     }
     private void open(Intent intent) {
+        ReminderService.dismiss(this);
         if (busy) {
             if (intent != null && intent.getData() != null) {
                 intent.setData(null);
@@ -134,18 +170,25 @@ public class MainActivity extends Activity {
             return;
         }
         try {
+            reminderOnly = intent != null && intent.hasExtra("lamoda_job"); requestedReminder = null;
+            if (reminderOnly) {
+                String id = intent.getStringExtra("lamoda_job"), expiry = intent.getStringExtra("lamoda_expires");
+                intent.removeExtra("lamoda_job"); intent.removeExtra("lamoda_expires");
+                if (!ReminderPolicy.valid(id,expiry,System.currentTimeMillis())) { message("Напоминание устарело. Для нового сбора нажмите «Собрать сейчас»."); return; }
+                requestedReminder = id;
+            }
             String pairing = intent != null && intent.getData() != null ? AddressPolicy.invitation(intent.getData().toString()) : "";
             // Consume the invitation once, including across activity recreation. Never accept a server override from a link.
             if (intent != null) intent.setData(null);
             generation++;
-            pageReady = false; web.loadUrl(WISHLIST);
+            pageReady = false; if (!reminderOnly) web.loadUrl(WISHLIST);
             if (pairing.isEmpty()) { requestJob(); return; }
             job = null; pendingUpload = null; setBusy(true); message("Подключаем телефон к VPS…");
             String origin = server();
             api(client -> new ServerApi(origin,"").call("pair",new JSONObject().put("code",pairing).put("name",Build.MANUFACTURER + " " + Build.MODEL)),result -> {
                 String token = result.getString("token");
                 if (!token.matches("[A-Za-z0-9_-]{43}")) throw new IllegalStateException("Неожиданный ответ сервера.");
-                vault.save(token); setBusy(false); requestJob();
+                vault.save(token); PushRegistration.schedule(this); setBusy(false); requestJob();
             });
         } catch (Exception error) { failure(error); }
     }
@@ -154,9 +197,15 @@ public class MainActivity extends Activity {
         try { if (vault.read().isEmpty()) { message("Подключите телефон кнопкой в личном Telegram-боте: /lamoda_android. Ничего вводить в приложении не нужно."); return; } }
         catch (Exception error) { failure(error); return; }
         setBusy(true); message("Начинаем обновление избранного…");
-        api(client -> client.call("start",new JSONObject()),result -> {
+        String expected = requestedReminder;
+        api(client -> client.call(expected == null ? "start" : "next",expected == null ? new JSONObject() : null),result -> {
             setBusy(false);
             JSONObject next = result.optJSONObject("job");
+            if (expected != null && (next == null || !expected.equals(next.optString("id")))) {
+                requestedReminder = null; job = null; pendingUpload = null; screenAwake(false);
+                message("Этот сбор уже завершён или отменён. Для нового нажмите «Собрать сейчас»."); return;
+            }
+            requestedReminder = null;
             if (next == null) { job = null; pendingUpload = null; screenAwake(false); message("Сбор пока не начался. Повторите кнопкой «Собрать сейчас»."); return; }
             if (job == null || !job.optString("id").equals(next.optString("id"))) pendingUpload = null;
             job = next; screenAwake(true);
@@ -214,9 +263,9 @@ public class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); open(intent); }
     @Override protected void onResume() {
-        super.onResume(); resumed = true; if (web != null) web.onResume();
+        super.onResume(); resumed = true; refreshPush(); if (web != null) web.onResume();
         // Let a Telegram onNewIntent take priority over the ordinary foreground refresh.
-        if (resumedOnce && !busy && job == null) {
+        if (resumedOnce && !busy && job == null && !reminderOnly) {
             int current = generation;
             handler.postDelayed(() -> { if (resumed && !isDestroyed() && current == generation && !busy && job == null) open(getIntent()); },300);
         }

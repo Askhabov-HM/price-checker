@@ -114,7 +114,7 @@ test('Android obeys source Retry-After and expired jobs leave the schedule enabl
 });
 
 test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, and sends the Telegram launch link',async t => {
-  const {root,lamoda,mobile} = service(t),tracker = new Tracker(root);
+  const {root,lamoda,mobile} = service(t,{pushSender:{configured:() => true,project:'synthetic-project',send:async () => {}}}),tracker = new Tracker(root);
   const auth = new Authentication(await createCredentials('owner','synthetic-test-password'));
   const server = makeServer(tracker,{lamoda,auth}),port = await listen(server,0),base = 'http://127.0.0.1:'+port;
   const sent=[],bot = new TelegramBot(tracker,{lamoda,ownerId:123,publicOrigin:'https://prices.example',logger:() => {},api:{async call(method,data){sent.push(data);return {message_id:1};},close(){}}});
@@ -135,6 +135,13 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
   assert.equal((await fetch(base+'/api/providers/lamoda/status',{headers:device})).status,401);
   assert.equal((await fetch(base+'/api/lamoda-mobile/next')).status,401);
   assert.equal((await fetch(base+'/api/lamoda-mobile/next',{headers:{...device,Origin:'https://other.example'}})).status,403);
+  const push = {enabled:true,token:'synthetic-registration-token',project_id:'synthetic-project'};
+  assert.equal((await post('/api/lamoda-mobile/push',push)).status,401);
+  assert.equal((await post('/api/lamoda-mobile/push',push,{...device,Origin:'https://other.example'})).status,403);
+  assert.equal((await post('/api/lamoda-mobile/push',{...push,enabled:'true'},device)).status,400);
+  const registered = await post('/api/lamoda-mobile/push',push,device);
+  assert.equal(registered.status,200);assert.equal((await registered.json()).enabled,true);
+  assert.equal(lamoda.push.status().enabled,true);
   const started = await (await post('/api/lamoda-mobile/start',{},device)).json();assert.ok(started.job);
   await bot.deliverLamoda();assert.equal(sent.length,1);assert.match(sent[0].text,/телефоне/);
   assert.equal(sent[0].reply_markup.inline_keyboard[0][0].url,'https://prices.example/lamoda/android/open');

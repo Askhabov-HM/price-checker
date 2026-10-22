@@ -19,7 +19,7 @@ export class LamodaMobile {
   status() {
     const device = this.sql.prepare('SELECT name,last_seen FROM mobile_device WHERE id=1').get();
     const job = this.sql.prepare("SELECT id,expires,next_page FROM mobile_jobs WHERE status='pending' AND expires>? ORDER BY rowid DESC LIMIT 1").get(this.current());
-    return {enabled:!!device,device:device || null,job:job || null};
+    return {enabled:!!device,device:device || null,job:job || null,push:this.push?.status() ?? null};
   }
   pairing() {
     const code = randomBytes(16).toString('hex'),expires = this.current()+10*60000;
@@ -32,7 +32,7 @@ export class LamodaMobile {
     if (!row || row.expires <= this.current() || row.code_hash !== hash(code)) throw unavailable();
     const token = randomBytes(32).toString('base64url');
     this.db.transaction(() => {
-      this.cancel();this.sql.prepare('DELETE FROM mobile_pairing').run();
+      this.cancel();this.push?.reset();this.sql.prepare('DELETE FROM mobile_pairing').run();
       this.sql.prepare('INSERT OR REPLACE INTO mobile_device VALUES(1,?,?,?)').run(hash(token),typeof name === 'string' ? name.slice(0,80) : 'Android',new Date(this.current()).toISOString());
     });
     return {token};
@@ -43,7 +43,7 @@ export class LamodaMobile {
     if (valid) this.sql.prepare('UPDATE mobile_device SET last_seen=? WHERE id=1').run(new Date(this.current()).toISOString());
     return !!valid;
   }
-  revoke() {this.cancel();this.sql.prepare('DELETE FROM mobile_device').run();this.sql.prepare('DELETE FROM mobile_pairing').run();}
+  revoke() {this.cancel();this.push?.reset();this.sql.prepare('DELETE FROM mobile_device').run();this.sql.prepare('DELETE FROM mobile_pairing').run();}
   cancel() {
     this.sql.prepare("UPDATE mobile_jobs SET status='canceled',result=NULL WHERE status='pending'").run();
     this.sql.prepare("DELETE FROM mobile_pages WHERE job_id IN (SELECT id FROM mobile_jobs WHERE status!='pending')").run();
@@ -89,13 +89,14 @@ export class LamodaMobile {
     const error = {code,retry_after_ms:Number.isSafeInteger(retryAfter) ? Math.max(0,Math.min(retryAfter,365*86400000)) : 0,http_status:[403,429].includes(httpStatus) ? httpStatus : null};
     this.sql.prepare("UPDATE mobile_jobs SET status='error',error=? WHERE id=? AND status='pending'").run(JSON.stringify(error),id);
   }
-  async collect(check,signal) {
+  async collect(check,signal,{remind = true} = {}) {
     this.cancel();
     this.sql.prepare("DELETE FROM mobile_jobs WHERE status!='pending'").run();
     const id = randomBytes(16).toString('hex'),expires = this.current()+45*60000;
     this.sql.prepare("INSERT INTO mobile_jobs(id,check_id,status,expires) VALUES(?,?,'pending',?)").run(id,check,expires);
     this.sql.prepare('INSERT INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)')
       .run('android:'+id,check,JSON.stringify({store:'lamoda',kind:'android',finishedAt:new Date(this.current()).toISOString()}));
+    if (remind) this.push?.enqueue(id);
     try {
       while (!signal.aborted && this.current()<expires) {
         const row = this.sql.prepare('SELECT status,result,error FROM mobile_jobs WHERE id=?').get(id);
