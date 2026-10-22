@@ -48,7 +48,7 @@ final class ServerApi {
         });
     }
     JSONObject call(String action, JSONObject body) throws Exception {
-        if (!action.matches("pair|next|start|page|fail|push")) throw new IllegalArgumentException("Некорректное действие.");
+        if (!action.matches("pair|next|start|page|fail|push|stop")) throw new IllegalArgumentException("Некорректное действие.");
         HttpsURLConnection connection = (HttpsURLConnection) new URL(origin + "/api/lamoda-mobile/" + action).openConnection();
         try {
             configureTls(connection); connection.setInstanceFollowRedirects(false);

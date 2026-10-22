@@ -2,8 +2,13 @@
 globalThis.__priceCheckerReadPage = async function(page) {
   if (!['https://lamoda.ru','https://www.lamoda.ru'].includes(location.origin)
     || !Number.isSafeInteger(page) || page<1 || page>1000) return {error:'invalid_data'};
+  globalThis.__priceCheckerCancel?.();
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  globalThis.__priceCheckerCancel = cancel;
+  const timeout = setTimeout(cancel,45000);
   try {
-    const response = await fetch('/wishlist/?page='+page,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(45000)});
+    const response = await fetch('/wishlist/?page='+page,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});
     if (!response.ok) {
       const retry = response.headers.get('Retry-After');
       const retryMs = !retry ? 0 : /^\d+$/.test(retry) ? Number(retry)*1000 : Math.max(0,Date.parse(retry)-Date.now()) || 0;
@@ -37,5 +42,9 @@ globalThis.__priceCheckerReadPage = async function(page) {
       wishlist:user?.wishlist?.map(item=>({product_sku:item.product_sku,...(item.adjacent_skus == null ? {} : {adjacent_skus:item.adjacent_skus})}))},payload:{pagination:payload?.pagination,products}};
     if (new TextEncoder().encode(JSON.stringify(result)).length>1900000) return {error:'invalid_data'};
     return result;
-  } catch {return {error:'account_unverified'};}
+  } catch {return {error:controller.signal.aborted ? 'interrupted' : 'account_unverified'};}
+  finally {
+    clearTimeout(timeout);
+    if (globalThis.__priceCheckerCancel === cancel) delete globalThis.__priceCheckerCancel;
+  }
 };
