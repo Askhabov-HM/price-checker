@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
@@ -38,8 +39,9 @@ public class MainActivity extends Activity {
     private TokenVault vault;
     private JSONObject job, pendingUpload;
     private boolean busy, resumed, autoReadOnLoad, pageReady, resumedOnce;
-    private long readStarted;
-    private int generation;
+    private final ReadSession reads = new ReadSession();
+    private int generation, documentVersion, readRestarts, lastReadPage;
+    private String lastReadJob = "";
     private String collector;
     private Button collect, notifications;
     private boolean reminderOnly;
@@ -54,7 +56,7 @@ public class MainActivity extends Activity {
         root.addView(title);
         LinearLayout actions = new LinearLayout(this);
         actions.addView(button("Подключение", this::connection), new LinearLayout.LayoutParams(0, dp(48), 1));
-        collect = button("Собрать сейчас", () -> { reminderOnly = false; requestedReminder = null; requestJob(); });
+        collect = button("Собрать сейчас", () -> { reminderOnly = false; requestedReminder = null; readRestarts = 0; requestJob(); });
         actions.addView(collect, new LinearLayout.LayoutParams(0, dp(48), 1));
         root.addView(actions);
         notifications = button("Уведомления",this::notificationSettings); root.addView(notifications);
@@ -70,8 +72,9 @@ public class MainActivity extends Activity {
         // Do not expose addJavascriptInterface, tokens or arbitrary server scripts to Lamoda content.
         web.setWebViewClient(new WebViewClient() {
             @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                pageReady = false;
-                if (job != null && !busy) autoReadOnLoad = true;
+                documentVersion++; pageReady = false;
+                if (reads.invalidate()) recoverRead();
+                else if (job != null && !busy && readRestarts <= 2) autoReadOnLoad = true;
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (!request.isForMainFrame()) return false;
@@ -81,7 +84,7 @@ public class MainActivity extends Activity {
             @Override public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
                 pageReady = AddressPolicy.lamoda(url);
-                if (autoReadOnLoad && AddressPolicy.lamoda(url) && !busy) { autoReadOnLoad = false; continueCollect(); }
+                resumeReadWhenReady();
             }
             @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 view.destroy(); recreate(); return true;
@@ -100,6 +103,23 @@ public class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private Button button(String text, Runnable action) { Button button = new Button(this); button.setText(text); button.setAllCaps(false); button.setOnClickListener(view -> action.run()); return button; }
     private void message(String text) { if (status != null) status.setText(text); }
+    private void resumeReadWhenReady() {
+        if (!autoReadOnLoad || !pageReady || busy || !resumed) return;
+        int document = documentVersion;
+        handler.postDelayed(() -> {
+            if (isDestroyed() || document != documentVersion || !autoReadOnLoad || !pageReady || busy || !resumed) return;
+            web.evaluateJavascript("document.readyState",state -> {
+                if (!isDestroyed() && document == documentVersion && autoReadOnLoad && pageReady && !busy && resumed && "\"complete\"".equals(state)) {
+                    autoReadOnLoad = false; continueCollect();
+                }
+            });
+        },350);
+    }
+    private void recoverRead() {
+        setBusy(false); autoReadOnLoad = job != null && ++readRestarts <= 2;
+        if (autoReadOnLoad) message("Страница обновилась. Продолжим сбор после её загрузки…");
+        else { screenAwake(false); message("Lamoda несколько раз обновила страницу. Дождитесь её загрузки и нажмите «Собрать сейчас»."); }
+    }
     private String server() { return getSharedPreferences("connection",0).getString("server", BuildConfig.DEFAULT_SERVER); }
     private void setBusy(boolean value) { busy = value; collect.setEnabled(!value); }
     private void screenAwake(boolean value) {
@@ -121,7 +141,7 @@ public class MainActivity extends Activity {
         });
     }
     private void failure(Exception error) {
-        setBusy(false); screenAwake(false);
+        reads.invalidate(); setBusy(false); screenAwake(false);
         String text = error.getMessage();
         message(text == null ? "Не удалось выполнить действие. Проверьте сеть и повторите." : text);
     }
@@ -180,7 +200,7 @@ public class MainActivity extends Activity {
             String pairing = intent != null && intent.getData() != null ? AddressPolicy.invitation(intent.getData().toString()) : "";
             // Consume the invitation once, including across activity recreation. Never accept a server override from a link.
             if (intent != null) intent.setData(null);
-            generation++;
+            generation++; reads.invalidate(); readRestarts = 0;
             pageReady = false; if (!reminderOnly) web.loadUrl(WISHLIST);
             if (pairing.isEmpty()) { requestJob(); return; }
             job = null; pendingUpload = null; setBusy(true); message("Подключаем телефон к VPS…");
@@ -210,35 +230,41 @@ public class MainActivity extends Activity {
             if (job == null || !job.optString("id").equals(next.optString("id"))) pendingUpload = null;
             job = next; screenAwake(true);
             autoReadOnLoad = true;
-            if (pageReady && AddressPolicy.lamoda(web.getUrl())) { autoReadOnLoad = false; continueCollect(); }
+            if (pageReady && AddressPolicy.lamoda(web.getUrl())) resumeReadWhenReady();
             else if (!AddressPolicy.lamoda(web.getUrl())) web.loadUrl(WISHLIST);
         });
     }
     private void continueCollect() {
         if (busy) return;
+        if (!resumed) { autoReadOnLoad = true; return; }
         if (job == null) { requestJob(); return; }
         if (job.optLong("expires") <= System.currentTimeMillis()) { job = null; pendingUpload = null; requestJob(); return; }
         if (pendingUpload != null) { setBusy(true); upload(); return; }
         if (!AddressPolicy.lamoda(web.getUrl())) { message("Сначала откройте Lamoda и войдите в аккаунт."); return; }
         if (!pageReady) { autoReadOnLoad = true; message("Ждём загрузки избранного…"); return; }
         autoReadOnLoad = false;
-        setBusy(true); screenAwake(true); readStarted = System.currentTimeMillis();
+        setBusy(true); screenAwake(true);
         int page = job.optInt("next_page",1);
+        String jobId = job.optString("id");
+        if (!jobId.equals(lastReadJob) || page != lastReadPage) { readRestarts = 0; lastReadJob = jobId; lastReadPage = page; }
+        int read = reads.begin(SystemClock.elapsedRealtime(),resumed);
         message("Читаем страницу избранного " + page + "… Не закрывайте приложение.");
-        String script = collector + "\nglobalThis.__pcMobileResult={pending:true};globalThis.__priceCheckerReadPage("+page+").then(value=>{globalThis.__pcMobileResult=value;},()=>{globalThis.__pcMobileResult={error:'account_unverified'};});";
-        web.evaluateJavascript(script,ignored -> handler.postDelayed(this::poll,600));
+        String script = collector + "\nglobalThis.__pcMobileReadId="+read+";globalThis.__pcMobileResult={pending:true};globalThis.__priceCheckerReadPage("+page+").then(value=>{if(globalThis.__pcMobileReadId==="+read+")globalThis.__pcMobileResult=value;},()=>{if(globalThis.__pcMobileReadId==="+read+")globalThis.__pcMobileResult={error:'account_unverified'};});";
+        web.evaluateJavascript(script,ignored -> { if (reads.current(read)) handler.postDelayed(() -> poll(read),600); });
     }
-    private void poll() {
-        if (isDestroyed() || !busy || job == null) return;
-        if (!resumed) { handler.postDelayed(this::poll,1000); return; }
-        if (!AddressPolicy.lamoda(web.getUrl()) || System.currentTimeMillis()-readStarted > 75000) { setBusy(false); message("Страница изменилась или не отвечает. Откройте Lamoda и повторите сбор."); return; }
-        web.evaluateJavascript("JSON.stringify(globalThis.__pcMobileResult || {pending:true})",value -> {
-            if (isDestroyed() || !busy || job == null) return;
+    private void poll(int read) {
+        if (isDestroyed() || !busy || job == null || !reads.current(read)) return;
+        if (!resumed) { handler.postDelayed(() -> poll(read),1000); return; }
+        if (!AddressPolicy.lamoda(web.getUrl()) || reads.timedOut(SystemClock.elapsedRealtime())) { reads.invalidate(); setBusy(false); screenAwake(false); message("Страница изменилась или не отвечает. Откройте Lamoda и повторите сбор."); return; }
+        web.evaluateJavascript("JSON.stringify(globalThis.__pcMobileReadId === "+read+" ? globalThis.__pcMobileResult : {context_lost:true})",value -> {
+            if (isDestroyed() || !busy || job == null || !reads.current(read)) return;
             try {
                 Object decoded = new JSONTokener(value).nextValue();
                 if (!(decoded instanceof String)) throw new IllegalStateException("Страница не вернула данные.");
                 JSONObject result = new JSONObject((String) decoded);
-                if (result.optBoolean("pending")) { handler.postDelayed(this::poll,600); return; }
+                if (result.optBoolean("context_lost")) { reads.invalidate(); recoverRead(); resumeReadWhenReady(); return; }
+                if (result.optBoolean("pending")) { handler.postDelayed(() -> poll(read),600); return; }
+                reads.invalidate();
                 String error = result.optString("error");
                 if (!error.isEmpty()) {
                     if (error.equals("login_required") || error.equals("account_unverified")) {
@@ -263,7 +289,7 @@ public class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); open(intent); }
     @Override protected void onResume() {
-        super.onResume(); resumed = true; refreshPush(); if (web != null) web.onResume();
+        super.onResume(); resumed = true; reads.resume(SystemClock.elapsedRealtime()); refreshPush(); if (web != null) web.onResume(); resumeReadWhenReady();
         // Let a Telegram onNewIntent take priority over the ordinary foreground refresh.
         if (resumedOnce && !busy && job == null && !reminderOnly) {
             int current = generation;
@@ -271,7 +297,7 @@ public class MainActivity extends Activity {
         }
         resumedOnce = true;
     }
-    @Override protected void onPause() { resumed = false; CookieManager.getInstance().flush(); if (web != null) web.onPause(); super.onPause(); }
-    @Override protected void onDestroy() { generation++; handler.removeCallbacksAndMessages(null); network.shutdownNow(); if (web != null) web.destroy(); super.onDestroy(); }
+    @Override protected void onPause() { reads.pause(SystemClock.elapsedRealtime()); resumed = false; CookieManager.getInstance().flush(); if (web != null) web.onPause(); super.onPause(); }
+    @Override protected void onDestroy() { generation++; reads.invalidate(); handler.removeCallbacksAndMessages(null); network.shutdownNow(); if (web != null) web.destroy(); super.onDestroy(); }
     @Override public void onBackPressed() { if (!busy && web.canGoBack()) web.goBack(); else super.onBackPressed(); }
 }
