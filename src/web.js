@@ -125,6 +125,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         const input = await readJson(request,action === 'page' ? 2*1024*1024 : action === 'push' ? 8192 : 4096);
         if (action === 'pair') return send(response,200,lamoda.mobile.pair(input.code,input.name));
         if (action === 'push') return send(response,200,lamoda.push.register(input));
+        if (action === 'stop') return send(response,200,await lamoda.stopMobile(input.job_id));
         if (action === 'start') {
           if (!lamoda.running) await lamoda.start({trigger:'android'});
           return send(response,200,{job:lamoda.mobile.next()});

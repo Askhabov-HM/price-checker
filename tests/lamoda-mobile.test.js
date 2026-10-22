@@ -113,6 +113,42 @@ test('Android obeys source Retry-After and expired jobs leave the schedule enabl
   assert.equal(lamoda.db.checks()[0].status,'interrupted');assert.equal(lamoda.status().schedule_enabled,true);
 });
 
+test('Android Stop discards partial pages, preserves history and schedules the next check',async t => {
+  const {lamoda,mobile} = service(t);pair(mobile);lamoda.db.bindAccount('42');lamoda.settings({schedule_enabled:true});
+  const seed = state(1,{favorites:['SYNTHETIC001']}),stamp = new Date().toISOString();
+  lamoda.db.record(lamoda.db.begin('seed',stamp),parseWishlistState(seed.user,seed.payload).items,stamp);
+  const before = lamoda.config();await lamoda.start({trigger:'android'});const job = mobile.next(),first = state();
+  first.payload.products[0].price_amount='80';await mobile.accept(job.id,1,first.user,first.payload);
+  assert.deepEqual(await lamoda.stopMobile(job.id),{ok:true});
+  assert.equal(lamoda.db.checks()[0].status,'interrupted');assert.equal(mobile.next(),null);
+  assert.equal(lamoda.db.dashboard().items[0].price,10000);assert.equal(lamoda.db.dashboard().items[0].price_at,stamp);
+  assert.equal(lamoda.db.db.prepare('SELECT COUNT(*) AS n FROM mobile_pages').get().n,0);
+  assert.equal(lamoda.config().schedule_enabled,true);assert.equal(lamoda.config().interval_minutes,before.interval_minutes);
+  assert.equal(lamoda.config().schedule_anchor,before.schedule_anchor);assert.ok(lamoda.config().next_check);
+  await assert.rejects(mobile.accept(job.id,2,state(2).user,state(2).payload));
+  await lamoda.start({trigger:'schedule'});const next = mobile.next();assert.notEqual(next.id,job.id);
+  await lamoda.stopMobile(job.id);assert.equal(mobile.next().id,next.id);assert.equal(lamoda.controller.signal.aborted,false);
+  await lamoda.stopMobile(next.id);
+});
+
+test('Android Stop rejects invalid identifiers and can cancel a completed upload before history is committed',async t => {
+  const {lamoda,mobile} = service(t);pair(mobile);await lamoda.start();const job = mobile.next();
+  await assert.rejects(lamoda.stopMobile('invalid'));assert.equal(mobile.next().id,job.id);
+  const first = state(1,{favorites:['SYNTHETIC001']});await mobile.accept(job.id,1,first.user,first.payload);
+  // Completion is still waiting in the server collector's poll loop.
+  await lamoda.stopMobile(job.id);
+  assert.equal(lamoda.db.dashboard().items.length,0);assert.equal(lamoda.db.checks()[0].status,'interrupted');
+  await lamoda.stopMobile(job.id);await lamoda.stopMobile('0123456789abcdef0123456789abcdef');
+});
+
+test('Android Stop racing final-page validation rejects the late upload without saving prices',async t => {
+  const {lamoda,mobile} = service(t);pair(mobile);await lamoda.start();const job = mobile.next();
+  await mobile.accept(job.id,1,state().user,state().payload);
+  const upload = mobile.accept(job.id,2,state(2).user,state(2).payload),stopped = lamoda.stopMobile(job.id);
+  await assert.rejects(upload);await stopped;
+  assert.equal(lamoda.db.dashboard().items.length,0);assert.equal(lamoda.db.checks()[0].status,'interrupted');
+});
+
 test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, and sends the Telegram launch link',async t => {
   const {root,lamoda,mobile} = service(t,{pushSender:{configured:() => true,project:'synthetic-project',send:async () => {}}}),tracker = new Tracker(root);
   const auth = new Authentication(await createCredentials('owner','synthetic-test-password'));
@@ -150,10 +186,27 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
     assert.equal(result.status,200);
   }
   await lamoda.running;assert.equal(lamoda.db.dashboard().items.length,2);
+  const stopJob = await (await post('/api/lamoda-mobile/start',{},device)).json();
+  assert.equal((await post('/api/lamoda-mobile/stop',{job_id:stopJob.job.id})).status,401);
+  assert.equal((await post('/api/lamoda-mobile/stop',{job_id:stopJob.job.id},{...device,Origin:'https://other.example'})).status,403);
+  assert.equal((await post('/api/lamoda-mobile/stop',{job_id:stopJob.job.id},device)).status,200);
+  assert.equal(lamoda.db.checks()[0].status,'interrupted');
   assert.equal(tracker.db.get("SELECT COUNT(*) AS n FROM sqlite_master WHERE name LIKE 'mobile_%'").n,0);
   assert.equal((await fetch(base+'/lamoda/android/open')).status,200);
   const script = await fetch(base+'/lamoda/android/launch.js');
   assert.equal(script.status,200);assert.match(script.headers.get('content-type'),/javascript/);assert.equal(await script.text(),androidLaunchScript);
+});
+
+test('Android Stop aborts an in-flight wishlist fetch without starting another request',async () => {
+  const source = readFileSync(new URL('../apps/lamoda-android/app/src/main/assets/collector.js',import.meta.url),'utf8');
+  let calls = 0,signal;
+  const context = {location:{origin:'https://www.lamoda.ru'},AbortController,setTimeout,clearTimeout,
+    fetch:(_url,options) => new Promise((_resolve,reject) => {
+      calls++;signal = options.signal;signal.addEventListener('abort',() => reject(new Error('aborted')),{once:true});
+    })};
+  runInNewContext(source,context);const pending = context.__priceCheckerReadPage(1);
+  context.__priceCheckerCancel();assert.equal(signal.aborted,true);
+  assert.equal((await pending).error,'interrupted');assert.equal(calls,1);assert.equal(context.__priceCheckerCancel,undefined);
 });
 
 test('Android collector uses only fixed same-origin wishlist GETs and strips profile information',async () => {
@@ -162,7 +215,7 @@ test('Android collector uses only fixed same-origin wishlist GETs and strips pro
   input.user.wishlist[0].adjacent_skus = ['SYNTHETIC001','SYNTHETIC009'];
   input.payload.products[0] = {...product('SYNTHETIC009'),is_hybrid:true,hybrid_products:['SYNTHETIC001','SYNTHETIC009']};
   const script = 'var __NUXT__ = {\n        user: '+JSON.stringify(input.user)+',\n        payload: '+JSON.stringify(input.payload)+',\n};';
-  const calls=[],context = {location:{origin:'https://www.lamoda.ru'},AbortSignal,TextDecoder,TextEncoder,
+  const calls=[],context = {location:{origin:'https://www.lamoda.ru'},AbortController,setTimeout,clearTimeout,TextDecoder,TextEncoder,
     DOMParser:class {parseFromString(){return {scripts:[{textContent:script}]};}},
     fetch:async (url,options) => {calls.push({url,options});return new Response('<html>synthetic</html>',{headers:{'content-type':'text/html'}});}};
   runInNewContext(source,context);

@@ -43,11 +43,12 @@ export class LamodaService {
     try {release = await acquireInstance(join(this.root,'.data/lamoda/collector.lock'));} catch {throw new ValidationError('Lamoda занята сбором или входом.');}
     if (this.closing || this.running) {await release();throw new ValidationError('Приложение останавливается или проверка уже выполняется.');}
     this.controller = new AbortController();
-    this.running = this.execute(trigger,this.controller.signal).finally(async () => {await release();this.running = null;});
+    this.running = this.execute(trigger,this.controller.signal).finally(async () => {await release();this.running = null;this.activeCheck = null;});
     this.running.catch(() => {});return {started:true};
   }
   async execute(trigger,signal) {
     const check = this.db.begin(trigger,this.stamp());
+    this.activeCheck = check;
     try {
       const mobile = this.mobile.enabled();
       const result = mobile ? await this.mobile.collect(check,signal,{remind:trigger !== 'android'}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
@@ -68,6 +69,14 @@ export class LamodaService {
       this.db.updateState({action_required:Number(required),message,not_before:notBefore,next_check:next});
       this.logger({time:this.stamp(),store:'lamoda',event:'collection_error',check_id:check,reason:code,http_status:error?.http_status ?? null,next_check:next});
     }
+  }
+  async stopMobile(id) {
+    const check = this.mobile.stop(id);
+    if (check !== null && check === this.activeCheck) {
+      this.controller?.abort();
+      await this.running;
+    }
+    return {ok:true};
   }
   async startScheduler() {
     let release;

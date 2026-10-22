@@ -50,6 +50,15 @@ export class LamodaMobile {
     this.sql.prepare("UPDATE telegram_outbox SET delivered_at=? WHERE delivered_at IS NULL AND event_id LIKE 'android:%'").run(new Date(this.current()).toISOString());
   }
   next() {return this.status().job;}
+  stop(id) {
+    if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) throw jobError();
+    // A delayed stop may refer to an old job. Never cancel a newer scheduled check.
+    const row = this.sql.prepare('SELECT check_id,status,result FROM mobile_jobs WHERE id=?').get(id);
+    if (!row || !(row.status === 'pending' || row.status === 'complete' && row.result !== null)) return null;
+    this.sql.prepare("UPDATE mobile_jobs SET status='canceled',result=NULL WHERE id=?").run(id);
+    this.sql.prepare('DELETE FROM mobile_pages WHERE job_id=?').run(id);
+    return row.check_id;
+  }
   job(id) {
     const row = typeof id === 'string' && /^[a-f0-9]{32}$/.test(id) ? this.sql.prepare('SELECT * FROM mobile_jobs WHERE id=?').get(id) : null;
     if (!row || row.expires <= this.current() || !['pending','complete'].includes(row.status)) throw jobError();
@@ -76,7 +85,11 @@ export class LamodaMobile {
       this.sql.prepare('UPDATE mobile_jobs SET next_page=?,bytes=bytes+? WHERE id=?').run(page+1,Buffer.byteLength(data),id);
     });
     if (page >= parsed.pagination.pages) {
-      const result = await readAllFavorites(async number => JSON.parse(this.sql.prepare('SELECT data FROM mobile_pages WHERE job_id=? AND page=?').get(id,number).data));
+      const result = await readAllFavorites(async number => {
+        const stored = this.sql.prepare('SELECT data FROM mobile_pages WHERE job_id=? AND page=?').get(id,number);
+        if (!stored) throw jobError();
+        return JSON.parse(stored.data);
+      });
       if (this.job(id).status !== 'pending') throw jobError();
       this.sql.prepare("UPDATE mobile_jobs SET status='complete',result=? WHERE id=?").run(JSON.stringify(result),id);
       return {complete:true,count:result.items.length,next_page:page+1};
