@@ -7,7 +7,8 @@ export interface LamodaStatus extends ScheduleSettings {
   available:boolean; configured:boolean; running:boolean; next_check:string|null; not_before:string|null;
   action_required:boolean; message:string; checks:Check[];
   login:{available:boolean;active:boolean;required:boolean;expires_at:string|null};
-  mobile?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;job:{id:string;expires:number;next_page:number}|null};
+  mobile?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;job:{id:string;expires:number;next_page:number}|null;
+    push?:{configured:boolean;enabled:boolean;registered_at:string|null;accepted_at:string|null;error:string|null}|null};
 }
 export interface LamodaPoint extends PricePoint {original_price:number|null;availability:string;price_at:string|null;}
 export interface LamodaItem {

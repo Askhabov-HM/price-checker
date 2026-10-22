@@ -48,7 +48,7 @@ final class ServerApi {
         });
     }
     JSONObject call(String action, JSONObject body) throws Exception {
-        if (!action.matches("pair|next|start|page|fail")) throw new IllegalArgumentException("Некорректное действие.");
+        if (!action.matches("pair|next|start|page|fail|push")) throw new IllegalArgumentException("Некорректное действие.");
         HttpsURLConnection connection = (HttpsURLConnection) new URL(origin + "/api/lamoda-mobile/" + action).openConnection();
         try {
             configureTls(connection); connection.setInstanceFollowRedirects(false);
@@ -74,8 +74,12 @@ final class ServerApi {
             JSONObject result;
             try { result = new JSONObject(output.toString(StandardCharsets.UTF_8.name())); }
             catch (Exception error) { throw new IllegalStateException("Сервер ещё не поддерживает Android-сбор или указан неверный адрес."); }
-            if (status < 200 || status >= 300) throw new IllegalStateException(result.optString("error", "Ошибка сервера: HTTP " + status));
+            if (status < 200 || status >= 300) throw new ApiException(status, result.optString("error", "Ошибка сервера: HTTP " + status));
             return result;
         } finally { connection.disconnect(); }
+    }
+    static final class ApiException extends Exception {
+        final int status;
+        ApiException(int status, String message) { super(message); this.status = status; }
     }
 }

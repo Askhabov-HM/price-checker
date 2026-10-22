@@ -122,8 +122,9 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (request.method === 'GET' && action === 'next') return send(response,200,{job:lamoda.mobile.next()});
         if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
         if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume();return send(response,415,{error:'Ожидается JSON.'});}
-        const input = await readJson(request,action === 'page' ? 2*1024*1024 : 4096);
+        const input = await readJson(request,action === 'page' ? 2*1024*1024 : action === 'push' ? 8192 : 4096);
         if (action === 'pair') return send(response,200,lamoda.mobile.pair(input.code,input.name));
+        if (action === 'push') return send(response,200,lamoda.push.register(input));
         if (action === 'start') {
           if (!lamoda.running) await lamoda.start({trigger:'android'});
           return send(response,200,{job:lamoda.mobile.next()});

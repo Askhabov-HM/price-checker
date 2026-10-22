@@ -7,11 +7,13 @@ import {LamodaChannel} from './channel.js';
 import {LamodaLogin} from './login.js';
 import {LamodaError} from './parser.js';
 import {LamodaMobile} from './mobile.js';
+import {FirebaseSender,LamodaPush} from './push.js';
 
 export class LamodaService {
-  constructor(root,{channel = options => new LamodaChannel(options),current = Date.now,logger = event => console.info(JSON.stringify(event))} = {}) {
+  constructor(root,{channel = options => new LamodaChannel(options),current = Date.now,logger = event => console.info(JSON.stringify(event)),pushSender = new FirebaseSender(root,{current})} = {}) {
     this.root = root;this.db = new LamodaDatabase(root);this.channel = channel;this.current = current;this.logger = logger;
     this.mobile = new LamodaMobile(this.db,{current});
+    this.push = new LamodaPush(this.mobile,pushSender,{current});this.mobile.push = this.push;
     this.login = new LamodaLogin(root,{db:this.db,channel:() => channel({timeout:60000}),onAuthorized:() => {
       this.db.updateState({action_required:0,message:'',next_check:this.nextAttempt()});
     }});
@@ -48,7 +50,7 @@ export class LamodaService {
     const check = this.db.begin(trigger,this.stamp());
     try {
       const mobile = this.mobile.enabled();
-      const result = mobile ? await this.mobile.collect(check,signal) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
+      const result = mobile ? await this.mobile.collect(check,signal,{remind:trigger !== 'android'}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
       if (signal.aborted) throw new LamodaError('interrupted');
       if (mobile && !this.db.configured()) this.db.bindAccount(result.account_id);
       if (!this.db.matches(result.account_id)) throw new LamodaError('account_mismatch');
@@ -74,12 +76,13 @@ export class LamodaService {
     const state = this.db.state();
     if (state.schedule_enabled && !state.action_required && !state.next_check) this.db.updateState({next_check:this.nextAttempt(state.not_before)});
     this.timer = setInterval(() => {this.tick().catch(() => this.logger({time:this.stamp(),store:'lamoda',event:'scheduler_error'}));},30000);this.timer.unref();
+    this.pushTimer = setInterval(() => {this.push.flush().catch(() => this.logger({time:this.stamp(),store:'lamoda',event:'push_error'}));},2000);this.pushTimer.unref();
   }
   async tick() {
     const state = this.db.state();
     if (!this.closing && !this.running && state.schedule_enabled && !state.action_required && state.next_check && Date.parse(state.next_check) <= this.current()) await this.start({trigger:'schedule'});
   }
-  async close() {this.closing = true;clearInterval(this.timer);this.controller?.abort();await this.running;await this.login.close();this.db.close();}
+  async close() {this.closing = true;clearInterval(this.timer);clearInterval(this.pushTimer);this.controller?.abort();await this.running;await this.push.running;await this.login.close();this.db.close();}
 }
 export function createLamodaService(root,options) {
   try {return new LamodaService(root,options);} catch {console.error(JSON.stringify({store:'lamoda',event:'storage_unavailable'}));return null;}

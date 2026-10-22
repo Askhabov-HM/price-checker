@@ -14,6 +14,11 @@ export function LamodaAndroidPage() {
       <Button onClick={() => pairing.mutate()} disabled={pairing.isPending}>Подготовить подключение</Button>
       {pairing.data && <p role="status"><a href={pairing.data.url}>Подключить этот Android</a><br/>Ссылка действует 10 минут и заменяет прежнее подключение. Не пересылайте её.</p>}
       <p>{status.data?.mobile?.enabled ? `Подключён: ${status.data.mobile.device?.name}` : 'Телефон ещё не подключён.'}</p>
+      {status.data?.mobile?.enabled && status.data.mobile.push && <p>{!status.data.mobile.push.configured
+        ? 'Уведомления на телефоне ещё не подключены на сервере.'
+        : status.data.mobile.push.error ? 'Не удалось отправить напоминание на телефон. Проверьте уведомления в приложении; Telegram продолжает работать.'
+        : status.data.mobile.push.enabled ? 'Напоминания на телефоне подключены. Нажатие уведомления откроет приложение и начнёт сбор.'
+        : 'Откройте обновлённое приложение и разрешите уведомления.'}</p>}
       <p>После открытия приложение само перейдёт в избранное и начнёт сбор. Войдите в Lamoda один раз; вход сохраняется между запусками. Держите приложение открытым до завершения. Данные сохраняются в базе Lamoda на VPS после проверки всех страниц.</p>
       {status.data?.mobile?.enabled && <><Button onClick={() => refresh.mutate()} disabled={status.data.running || refresh.isPending}>Обновить избранное</Button>{' '}
         <Button variant="outline" onClick={() => revoke.mutate()} disabled={revoke.isPending}>Отключить телефон</Button></>}
