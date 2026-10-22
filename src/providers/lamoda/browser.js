@@ -5,6 +5,7 @@ import {randomBytes,createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createServer,connect} from 'node:net';
 import {LamodaError,parseWishlistHtml,readAllFavorites} from './parser.js';
+import {LamodaDiagnostics} from './diagnostics.js';
 
 const origin = 'https://www.lamoda.ru';
 const homepage = 'https://lamoda.ru/';
@@ -66,7 +67,7 @@ export class LamodaBrowser {
     if (process.platform !== 'linux' || process.getuid() === 0 || !this.profile
       || !this.profile.startsWith('/var/lib/price-checker-lamoda-browser/') || realpathSync(this.profile) !== this.profile
       || !statSync(this.profile).isDirectory() || statSync(this.profile).uid !== process.getuid()) throw new LamodaError('browser_unavailable');
-    this.display = this.launch('/usr/bin/Xvfb',['-displayfd','3','-screen','0','3840x2160x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
+    this.display = this.launch('/usr/bin/Xvfb',['-displayfd','3','-screen','0','1280x900x24','-nolisten','tcp'],{stdio:['ignore','ignore','ignore','pipe']});
     const display = await new Promise((resolve,reject) => {
       let value = '';const timer = setTimeout(() => reject(new LamodaError('browser_unavailable')),10000);
       this.display.once('error',reject);this.display.once('exit',() => reject(new LamodaError('browser_unavailable')));
@@ -74,7 +75,7 @@ export class LamodaBrowser {
     });
     this.displayNumber = display;
     this.chrome = this.launch(this.chromePath,['--user-data-dir='+this.profile,'--remote-debugging-pipe','--lang=ru',
-      '--window-size=1282,1344','--disable-blink-features=AutomationControlled','--use-gl=angle','--use-angle=swiftshader',
+      '--window-size=1280,900','--window-position=0,0','--disable-blink-features=AutomationControlled','--use-gl=angle','--use-angle=swiftshader',
       '--no-first-run','--no-default-browser-check',...this.proxyArgs,'about:blank'],
     {env:{...process.env,DISPLAY:':'+display},stdio:['ignore','ignore','ignore','pipe','pipe']});
     let buffer = Buffer.alloc(0);
@@ -87,6 +88,9 @@ export class LamodaBrowser {
         const frame = buffer.subarray(0,end);buffer = buffer.subarray(end+1);
         try {const message = JSON.parse(frame.toString('utf8')),pending = this.pending.get(message.id);
           if (pending) {this.pending.delete(message.id);clearTimeout(pending.timer);message.error ? pending.reject(new LamodaError('browser_unavailable')) : pending.resolve(message.result);}
+          else if (message.method) {
+            try {this.diagnostics?.event(message);} catch {this.diagnostics?.close();this.diagnostics = null;}
+          }
         } catch {fail();}
       }
     });
@@ -101,6 +105,10 @@ export class LamodaBrowser {
     }
     if (!target) throw new LamodaError('browser_unavailable');
     this.session = (await this.call('Target.attachToTarget',{targetId:target.targetId,flatten:true})).sessionId;
+    if (process.env.LAMODA_BROWSER_DIAGNOSTICS === '1') {
+      try {this.diagnostics = new LamodaDiagnostics(this.call);await this.diagnostics.start(this.session);}
+      catch {this.diagnostics?.close();this.diagnostics = null;console.error(JSON.stringify({store:'lamoda',event:'diagnostics_unavailable'}));}
+    }
     // Restore only missing/expired cookies before the site's first navigation;
     // a guest page must not replace the saved authorization during bootstrap.
     await this.seedCookies();
@@ -184,6 +192,7 @@ export class LamodaBrowser {
     await this.close();await this.ensure();return {closed:true};
   }
   async close() {
+    this.diagnostics?.close();this.diagnostics = null;
     this.session = null;
     for (const child of this.children.splice(0).reverse()) await stopped(child);
     if (this.login) rmSync(this.login.directory,{recursive:true,force:true});this.login = null;this.chrome = null;this.display = null;

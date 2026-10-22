@@ -28,8 +28,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run check
       - run: npm run check:lamoda
+      - run: node --check src/providers/lamoda/diagnostics.js
       - run: |
-          for script in scripts/setup-lamoda.sh scripts/setup-lamoda-backup.sh scripts/setup-lamoda-proxy.sh; do
+          for script in scripts/setup-lamoda.sh scripts/setup-lamoda-backup.sh scripts/setup-lamoda-proxy.sh scripts/setup-lamoda-browser-preview.sh; do
             bash -n "$script"
           done
       - run: python3 -m py_compile scripts/lamoda-backup.py scripts/lamoda-resource-report.py scripts/lamoda-proxy-config.py

@@ -23,6 +23,10 @@ const server = createServer(socket => {
       if (controller.signal.aborted || request.version !== 1) throw new LamodaError('interrupted');
       switch (request.action) {
         case 'collect': return browser.collect(controller.signal,request.account_digest);
+        case 'diagnostic_start': {
+          if (process.env.LAMODA_BROWSER_DIAGNOSTICS !== '1' || browser.login) throw new LamodaError('invalid_data');
+          await browser.openHome();return {recording:!!browser.diagnostics && !browser.diagnostics.closed};
+        }
         case 'login_start': {
           const result = await browser.startLogin();clearTimeout(loginTimer);
           loginTimer = setTimeout(() => {enqueue(() => browser.endLogin(result.key)).catch(() => {});},21*60000);loginTimer.unref();return result;

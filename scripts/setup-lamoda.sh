@@ -12,6 +12,8 @@ id lamodabrowser >/dev/null 2>&1 || useradd --system --home /var/lib/price-check
 install -d -m 700 -o lamodabrowser -g pricechecker /var/lib/price-checker-lamoda-browser
 install -d -m 700 -o lamodabrowser -g pricechecker /var/lib/price-checker-lamoda-browser/profile
 install -m 644 "$directory/systemd/price-checker-lamoda-browser.service" /etc/systemd/system/
+# Return from an explicitly installed diagnostic preview to the deployed release.
+rm -f -- /etc/systemd/system/price-checker-lamoda-browser.service.d/diagnostics.conf
 systemctl daemon-reload
 if [[ ${1:-} == '--enable-browser' ]]; then
   systemctl enable --now price-checker-lamoda-browser.service
