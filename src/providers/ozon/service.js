@@ -8,6 +8,7 @@ import {OzonLogin} from './login.js';
 import {nextScheduledCheck, scheduleSettings} from '../../schedule.js';
 import {inspectBrowserCollection} from './recovery.js';
 import {collectionQueue} from '../../collection-queue.js';
+import {retryCollectionRead} from '../../collection-retry.js';
 
 const legacyRetryMessages = new Set([
   'Ozon ограничил доступ. Проверки приостановлены.',
@@ -21,9 +22,10 @@ const legacyRetryMessages = new Set([
 ]);
 
 export class OzonService {
-  constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify,monitor = inspectBrowserCollection} = {}) {
+  constructor(root, {client = new OzonClient(root),current = Date.now,pause = delay,notify,monitor = inspectBrowserCollection,logger = event => console.info(JSON.stringify(event))} = {}) {
     this.root = root; this.db = new OzonDatabase(root); this.client = client; this.current = current; this.pause = pause;
     this.collectionQueue = collectionQueue(root);
+    this.logger = logger;
     this.running = null; this.closing = false;
     this.browserStatus=monitor;
     const state = this.db.state();
@@ -107,35 +109,39 @@ export class OzonService {
     this.db.updateState({action_required:1,message:'Проверка Ozon прервана. Проверьте подключение перед повтором.'});
     let target,failed = 0,imported = null;
     try {
-      const context = await this.client.open(signal);
-      this.db.bindContext(context,{legacyDigest:this.client.legacyContextDigest});
+      target = id ? itemSku(id) : null;
+      let fetched;
+      try {
+        fetched = await retryCollectionRead(async () => {
+          try {
+            const context = await this.client.open(signal);
+            this.db.bindContext(context,{legacyDigest:this.client.legacyContextDigest});
+            return id ? await this.client.product(target,this.db.product(target).url) : await this.client.lists();
+          } finally {await this.client.close?.();}
+        },{signal,pause:this.pause,
+          retryable:error => error instanceof OzonReadError && !['login_required','context_mismatch','interrupted'].includes(error.code),
+          onRetry:retry => {
+            this.db.db.prepare('UPDATE checks SET message=? WHERE id=?').run(`Повторная попытка ${retry.attempt} из ${retry.total}.`,check);
+            this.logger({time:this.stamp(),store:'ozon',event:'collection_retry',check_id:check,...retry});
+          }});
+      } catch (error) {
+        if (!id || !(error instanceof OzonReadError) || error.retry_after_ms > 0
+          || !['redirect','invalid_data','network_error','http_error','unexpected_content','response_too_large'].includes(error.code)) throw error;
+        this.db.failure(check,target,error.message,this.stamp(),this.client.source || 'browser');failed++;
+      }
+      if (signal.aborted) throw new OzonReadError('interrupted');
       if (!id) {
-        const lists = await this.client.lists();
-        if (signal.aborted) throw new OzonReadError('interrupted');
         // Re-read availability for every favorite, including unavailable items,
         // so returned products immediately resume recording fresh prices.
-        imported = lists.favorites;
+        imported = fetched.favorites;
         this.db.recordFavorites(check,imported,this.stamp(),this.client.source || 'browser');
       } else this.db.snapshotLists(check);
       // The full refresh is complete after reading favorites; only an explicit
       // single-product request may open a product card.
       const targets = id ? [this.db.product(itemSku(id))] : [];
-      if (targets.length > 100) throw new OzonReadError('invalid_data');
       if (id) this.db.progress(check,targets.length);
-      for (const [index, product] of targets.entries()) {
-        target = product.sku;
-        if (signal.aborted) throw new OzonReadError('interrupted');
-        if (index) await this.pause(2500,undefined,{signal});
-        try {
-          const result = await this.client.product(product.sku,product.url);
-          this.db.observe(check,result,this.stamp(),this.client.source || 'browser');
-        } catch (error) {
-          if (!(error instanceof OzonReadError) || error.retry_after_ms > 0
-            || !['redirect','invalid_data','network_error','http_error','unexpected_content','response_too_large'].includes(error.code)) throw error;
-          this.db.failure(check,product.sku,error.message,this.stamp(),this.client.source || 'browser');failed++;
-        }
-        target = null;
-      }
+      if (id && !failed) this.db.observe(check,fetched,this.stamp(),this.client.source || 'browser');
+      target = null;
       const next = this.db.state().schedule_enabled ? nextScheduledCheck(this.scheduleConfig(),new Date(this.current())) : null;
       const message = imported !== null
         ? `Избранное обновлено. Товаров: ${imported.length}. Цены получены: ${imported.filter(item => item.listed_price_kopecks !== null).length}.`
@@ -154,7 +160,7 @@ export class OzonService {
       const next = actionRequired ? null : this.nextAttempt(notBefore);
       this.db.updateState({not_before:notBefore,next_check:next,action_required:Number(actionRequired),message});
       this.db.finish(check,signal.aborted ? 'interrupted' : 'error',message,this.stamp());
-    } finally {await this.client.close?.();}
+    }
   }
   async startScheduler() {
     let release;

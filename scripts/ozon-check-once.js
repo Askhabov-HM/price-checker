@@ -1,11 +1,12 @@
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {OzonClient} from '../src/providers/ozon/client.js';
+import {OzonClient,OzonReadError} from '../src/providers/ozon/client.js';
 import {browserCollection} from '../src/providers/ozon/recovery.js';
 import {OzonDatabase} from '../src/providers/ozon/database.js';
 import {writePrivateJson} from '../src/providers/ozon/session.js';
 import {acquireInstance} from '../src/instance.js';
 import {acquireCollection} from '../src/collection-queue.js';
+import {retryCollectionRead} from '../src/collection-retry.js';
 
 const root='/opt/price-checker/current',baselinePath=process.argv[2];
 const controller=new AbortController();
@@ -33,8 +34,13 @@ try {
       },
       close:()=>channel.close(),
     };
-  }});const contextDigest=await client.open(controller.signal);
-  const lists=await client.lists(),items=lists.favorites.map(item=>db.withSavedPrice(item));
+  }});
+  const {contextDigest,lists}=await retryCollectionRead(async()=>{
+    try{return {contextDigest:await client.open(controller.signal),lists:await client.lists()};}
+    finally{await client.close();}
+  },{signal:controller.signal,retryable:error=>error instanceof OzonReadError && !['login_required','context_mismatch','interrupted'].includes(error.code)});
+  controller.signal.throwIfAborted();
+  const items=lists.favorites.map(item=>db.withSavedPrice(item));
   const old=new Map(baseline.items.map(item=>[item.sku,item]));
   const unavailable=items.filter(item=>['out_of_stock','unavailable'].includes(item.availability));
   db.progress(check,items.length);

@@ -231,12 +231,14 @@ final class CollectionEngine {
             JSONObject body = new JSONObject().put("job_id",job.getString("id")).put("code",code)
                     .put("http_status",result == null ? 0 : result.optInt("http_status"))
                     .put("retry_after_ms",result == null ? 0 : result.optLong("retry_after_ms"));
-            boolean login = code.equals("login_required") || code.equals("account_unverified");
+            boolean login = code.equals("login_required") || code.equals("account_mismatch");
+            boolean retry = CollectionRetryPolicy.retrySource(code,result == null ? 0 : result.optLong("retry_after_ms"));
             api(client -> client.call("fail",body),ignored -> {
                 String message = login ? "Откройте Lamoda, войдите или завершите проверку сайта. Затем нажмите «Собрать сейчас»."
+                        : retry ? "Ошибка Lamoda. Повторим сбор в фоне."
                         : "Ошибка Lamoda передана VPS. Расписание и пауза источника сохранены.";
                 if (login && !visible) ReminderService.attention(context,message);
-                finish(true,message);
+                finish(!retry,message);
             });
         } catch (Exception error) { networkFailure(error); }
     }

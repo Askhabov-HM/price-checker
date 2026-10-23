@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {LamodaService} from '../src/providers/lamoda/service.js';
-import {parseWishlistState} from '../src/providers/lamoda/parser.js';
+import {parseWishlistState,LamodaError} from '../src/providers/lamoda/parser.js';
 import {Tracker} from '../src/service.js';
 import {makeServer,listen} from '../src/web.js';
 import {Authentication,createCredentials} from '../src/auth.js';
@@ -18,7 +18,7 @@ const state = (page = 1,options = {}) => {
     payload:{products:[product(favorites[page-1])],pagination:{page,limit:1,offset:page-1,found:favorites.length,pages:favorites.length}}};
 };
 function service(t,options = {}) {
-  const root = temporary(t),lamoda = new LamodaService(root,{logger:() => {},...options});
+  const root = temporary(t),lamoda = new LamodaService(root,{pause:async () => {},logger:() => {},...options});
   cleanup(t,() => lamoda.close());return {root,lamoda,mobile:lamoda.mobile};
 }
 function pair(mobile) {return mobile.pair(mobile.pairing().code,'Synthetic Android').token;}
@@ -99,6 +99,8 @@ test('Android refuses other accounts and changed membership, and a failed partia
   const other = state(2,{account:99});await assert.rejects(mobile.accept(job.id,2,other.user,other.payload),e => e.code==='account_mismatch');
   const changed = state(2,{favorites:['SYNTHETIC001','SYNTHETIC003']});
   await assert.rejects(mobile.accept(job.id,2,changed.user,changed.payload),e => e.code==='incomplete_data');
+  // The source keeps failing on each of the following read attempts.
+  mobile.collect = async () => {throw new LamodaError('incomplete_data');};
   mobile.fail(job.id,'incomplete_data');await lamoda.running;
   assert.equal(lamoda.db.dashboard().items.length,1);assert.equal(lamoda.db.dashboard().items[0].price,10000);
   assert.equal(lamoda.db.dashboard().items[0].price_at,stamp);assert.equal(lamoda.db.checks()[0].status,'error');
