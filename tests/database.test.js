@@ -262,3 +262,55 @@ test('unknown lists and prototype property names are rejected', t => {
   const {db} = setup(t);
   for (const key of ['__proto__', 'toString', 'missing']) assert.throws(() => db.rows(key));
 });
+
+test('history batches queries and retains readings before the period for checks finishing inside it', t => {
+  const {db, id, joinList} = setup(t);
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-04T00:00:00Z'));
+  const other = db.variant(item({sku: '456'}));
+  joinList('cart', [id, other]);
+  const check = db.startCheck('manual');
+  db.observation(id, item(), 'public', check, '2026-10-02T23:59:00+00:00');
+  db.observation(other, item({price_kopecks: 20000}), 'public', check, '2026-10-03T00:01:00+00:00');
+  db.observation(id, item({price_kopecks: 99999}), 'cart', check, '2026-10-03T00:01:00+00:00');
+  const queries = [];
+  const all = db.all.bind(db);
+  t.mock.method(db, 'all', (sql, ...args) => {queries.push([sql, args]); return all(sql, ...args);});
+  const history = db.listHistory('cart', 'public', 1);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].price, 35000);
+  assert.equal(queries.length, 3);
+  const [sql, args] = queries.find(([sql]) => sql.includes('json_each'));
+  const plan = all('EXPLAIN QUERY PLAN ' + sql, ...args).map(row => row.detail).join('\n');
+  assert.match(plan, /SEARCH o USING INDEX observation_history/);
+  for (let i = 0; i < 20; i++) db.observation(id, item(), 'public', db.startCheck('manual'), '2026-10-03T01:00:00+00:00');
+  queries.length = 0;
+  assert.equal(db.listHistory('cart', 'public', 1).length, 21);
+  assert.equal(queries.length, 3);
+});
+
+test('batched history keeps message order, latest duplicate readings and quantity semantics', t => {
+  const {db, id, joinList} = setup(t);
+  const other = db.variant(item({sku: '456'}));
+  joinList('cart', [id, other]);
+  db.syncList('cart', [[id, 8], [other, 3]], '2026-10-01T00:00:00+00:00');
+  const stamp = '2026-10-02T10:00:00+00:00', check = db.startCheck('manual');
+  db.observation(other, {status: 'error', message: 'First'}, 'public', check, stamp);
+  db.observation(id, {status: 'error', message: 'Second'}, 'public', check, stamp);
+  db.observation(other, {status: 'error', message: 'Replacement'}, 'public', check, stamp);
+  db.observation(id, item(), 'public', null, stamp);
+  db.observation(other, item({price_kopecks: 20000}), 'public', null, stamp);
+  const [failed, manual] = db.listHistory('cart', 'public', 0);
+  assert.equal(failed.message, 'Replacement; Second');
+  assert.equal(failed.known_total, 0);
+  assert.equal(manual.price, 35000);
+  assert.equal(manual.composition, JSON.stringify([[id, other], [id, other]]));
+});
+
+test('history index is installed on existing databases and survives reopening', t => {
+  const {db, root} = setup(t);
+  db.connection.exec('DROP INDEX observation_history');
+  const reopened = new Database(join(root, 'prices.sqlite3'));
+  cleanup(t, () => reopened.close());
+  assert.deepEqual(reopened.all('PRAGMA index_info(observation_history)').map(row => row.name), ['context', 'check_id', 'checked_at', 'id']);
+  assert.ok(reopened.get("SELECT 1 FROM sqlite_master WHERE name='observation_lookup'"));
+});
