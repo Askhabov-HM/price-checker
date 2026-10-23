@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -51,9 +52,9 @@ def prepare(provider, server, destination):
         json.dump(config, output)
 
 
-def verify():
+def verify(proxy='http://127.0.0.1:17891', country='KZ'):
     def request(url):
-        response = subprocess.run(['/usr/bin/curl', '--disable', '--proxy', 'http://127.0.0.1:17891',
+        response = subprocess.run(['/usr/bin/curl', '--disable', '--proxy', proxy,
                                    '--noproxy', '', '--silent', '--show-error', '--fail',
                                    '--connect-timeout', '6', '--max-time', '12', url],
                                   capture_output=True, text=True, timeout=15)
@@ -67,10 +68,13 @@ def verify():
     address = ipaddress.ip_address(data.get('ip', ''))
     if address.version != 4 or not address.is_global:
         raise ProxyError('Invalid VPN exit IP')
-    location = request('https://ipwho.is/')
-    if location.get('success') is False or location.get('country_code') != 'KZ':
-        raise ProxyError('Kazakhstan exit was not confirmed')
-    print(json.dumps({'https': True, 'exit_ipv4': str(address), 'country': 'KZ'}))
+    location = request('https://ipwho.is/'+str(address))
+    code = location.get('country_code')
+    if location.get('success') is False or location.get('ip') != str(address) or not isinstance(code, str) or not re.fullmatch('[A-Z]{2}', code):
+        raise ProxyError('VPN exit country was not confirmed')
+    if country is not None and code != country:
+        raise ProxyError('Expected VPN exit country was not confirmed')
+    return {'https': True, 'exit_ipv4': str(address), 'country': code}
 
 
 def main():
@@ -80,13 +84,16 @@ def main():
     create.add_argument('provider')
     create.add_argument('server')
     create.add_argument('destination')
-    commands.add_parser('verify')
+    check = commands.add_parser('verify')
+    check.add_argument('--country', default='KZ')
     args = parser.parse_args()
     try:
         if args.command == 'prepare':
             prepare(args.provider, args.server, args.destination)
         else:
-            verify()
+            if args.country != 'ANY' and not re.fullmatch('[A-Z]{2}', args.country):
+                raise ProxyError('Expected an ISO country code or ANY')
+            print(json.dumps(verify(country=None if args.country == 'ANY' else args.country)))
     except (ProxyError, OSError, ImportError, ValueError, TypeError, subprocess.SubprocessError):
         parser.exit(1, 'Ozon VPN preparation or HTTPS verification failed; private details omitted.\n')
 

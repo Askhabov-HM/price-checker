@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install one complete private Kazakhstan VPN profile for Ozon only.
+# Install one complete private VPN profile for Ozon only.
 set -euo pipefail
-if [[ $EUID != 0 || $# -lt 1 || $# -gt 2 ]]; then
-  echo 'Usage: sudo bash scripts/setup-ozon-proxy.sh PRIVATE_PROVIDER_YAML [SERVER_IP]' >&2
+if [[ $EUID != 0 || $# -lt 1 || $# -gt 3 ]]; then
+  echo 'Usage: sudo bash scripts/setup-ozon-proxy.sh PRIVATE_PROVIDER_YAML [SERVER_IP] [COUNTRY_CODE]' >&2
   exit 1
 fi
 directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -33,6 +33,11 @@ fi
 
 provider=$1
 server=${2:-95.56.251.12}
+country=${3:-KZ}
+if [[ $country != ANY && ! $country =~ ^[A-Z]{2}$ ]]; then
+  echo 'Expected an ISO country code or ANY.' >&2
+  exit 1
+fi
 configdir=/etc/price-checker-ozon-proxy
 config=$configdir/config.json
 environment=/etc/price-checker-ozon-proxy.env
@@ -101,7 +106,7 @@ done
 systemctl daemon-reload
 systemctl restart "$service"
 sleep 1
-python3 "$helper" verify
+python3 "$helper" verify --country "$country"
 systemctl enable "$service"
 browser_restart=1
 systemctl try-restart price-checker-ozon-recovery.service
