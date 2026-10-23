@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install one complete private Kazakhstan VPN profile for Ozon only.
 set -euo pipefail
-if [[ $EUID != 0 || $# != 2 ]]; then
-  echo 'Usage: sudo bash scripts/setup-ozon-proxy.sh PRIVATE_PROVIDER_YAML SERVER_IP' >&2
+if [[ $EUID != 0 || $# -lt 1 || $# -gt 2 ]]; then
+  echo 'Usage: sudo bash scripts/setup-ozon-proxy.sh PRIVATE_PROVIDER_YAML [SERVER_IP]' >&2
   exit 1
 fi
 directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -32,17 +32,24 @@ NODE
 fi
 
 provider=$1
-server=$2
+server=${2:-95.56.251.12}
 configdir=/etc/price-checker-ozon-proxy
 config=$configdir/config.json
+environment=/etc/price-checker-ozon-proxy.env
 service=price-checker-ozon-proxy.service
 helper=$directory/ozon-proxy-config.py
+consumers=(price-checker.service price-checker-ozon-recovery@.service price-checker-ozon-browser.service)
+managed_paths=("$config" "/etc/systemd/system/$service" "$environment"
+  /etc/systemd/system/price-checker-ozon-recovery.service.d/ozon-proxy.conf)
+for consumer in "${consumers[@]}"; do
+  managed_paths+=("/etc/systemd/system/$consumer.d/ozon-proxy.conf")
+done
 test -x /usr/local/bin/mihomo
 test -x /usr/bin/curl
 getent passwd priceproxy >/dev/null
 python3 -c 'import yaml'
-for path in "$configdir" "$config" /var/lib/price-checker-ozon-proxy "/etc/systemd/system/$service"; do
-  [[ ! -L $path ]]
+for path in "$configdir" /var/lib/price-checker-ozon-proxy "${managed_paths[@]}"; do
+  [[ ! -L $path && ! -L $(dirname -- "$path") ]]
 done
 install -d -o root -g priceproxy -m 750 "$configdir"
 workdir=$(mktemp -d "$configdir/.setup.XXXXXX")
@@ -53,11 +60,14 @@ browser_restart=0
 cleanup() {
   if (( rollback )); then
     systemctl stop "$service" || true
-    if [[ -f $workdir/previous.json ]]; then
-      install -o priceproxy -g priceproxy -m 600 "$workdir/previous.json" "$config"
-    else
-      rm -f -- "$config"
-    fi
+    for index in "${!managed_paths[@]}"; do
+      if [[ -f $workdir/previous.$index ]]; then
+        cp -p -- "$workdir/previous.$index" "${managed_paths[$index]}"
+      else
+        rm -f -- "${managed_paths[$index]}"
+      fi
+    done
+    systemctl daemon-reload || true
     if (( was_active )); then systemctl start "$service" || true; fi
     if (( browser_restart )); then systemctl try-restart price-checker-ozon-recovery.service || true; fi
   fi
@@ -71,11 +81,23 @@ if ! /usr/local/bin/mihomo -t -d "$workdir" -f "$workdir/candidate.json" >"$work
   echo 'Ozon VPN profile validation failed; private details omitted.' >&2
   exit 1
 fi
-if [[ -f $config ]]; then cp -p -- "$config" "$workdir/previous.json"; fi
+for index in "${!managed_paths[@]}"; do
+  if [[ -f ${managed_paths[$index]} ]]; then cp -p -- "${managed_paths[$index]}" "$workdir/previous.$index"; fi
+done
 rollback=1
 install -o priceproxy -g priceproxy -m 600 "$workdir/candidate.json" "$configdir/config.next"
 mv -- "$configdir/config.next" "$config"
 install -m 644 "$directory/systemd/$service" "/etc/systemd/system/$service"
+printf 'OZON_PROXY_URL=http://127.0.0.1:17891\n' > "$workdir/proxy.env"
+install -o root -g root -m 600 "$workdir/proxy.env" "$environment"
+install -d -m 755 /etc/systemd/system/price-checker-ozon-recovery.service.d
+install -m 644 "$directory/systemd/price-checker-ozon-proxy-order.conf" \
+  /etc/systemd/system/price-checker-ozon-recovery.service.d/ozon-proxy.conf
+for consumer in "${consumers[@]}"; do
+  install -d -m 755 "/etc/systemd/system/$consumer.d"
+  install -m 644 "$directory/systemd/price-checker-ozon-proxy.conf" \
+    "/etc/systemd/system/$consumer.d/ozon-proxy.conf"
+done
 systemctl daemon-reload
 systemctl restart "$service"
 sleep 1
@@ -84,4 +106,7 @@ systemctl enable "$service"
 browser_restart=1
 systemctl try-restart price-checker-ozon-recovery.service
 rollback=0
+if [[ ! -f $workdir/previous.2 ]] || ! cmp -s "$workdir/previous.2" "$environment"; then
+  echo 'Restart the web application to load its new Ozon proxy URL.'
+fi
 echo 'Dedicated Ozon VPN route installed and verified.'
