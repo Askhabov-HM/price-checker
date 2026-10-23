@@ -61,10 +61,8 @@ export class LamodaDatabase {
     const row = this.db.prepare('SELECT * FROM checks WHERE id=?').get(check);
     const kind = status === 'success' ? 'success' : message === 'Нужен повторный вход в Lamoda.' ? 'login' : 'error';
     const previous = this.db.prepare('SELECT * FROM notification_state WHERE id=1').get();
-    if (kind === 'success' || previous.kind !== kind || previous.reason !== message) {
-      const payload = {store:'lamoda',kind,down,up,finishedAt:now,recovered:kind === 'success' && !!previous.kind && previous.kind !== 'success'};
-      this.db.prepare('INSERT OR IGNORE INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)').run(row.event_id,check,JSON.stringify(payload));
-    }
+    const payload = {store:'lamoda',kind,down,up,finishedAt:now,recovered:kind === 'success' && !!previous.kind && previous.kind !== 'success'};
+    this.db.prepare('INSERT OR IGNORE INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)').run(row.event_id,check,JSON.stringify(payload));
     this.db.prepare('UPDATE notification_state SET kind=?,reason=? WHERE id=1').run(kind,message);
   }
   record(check,items,now,source = 'browser') {

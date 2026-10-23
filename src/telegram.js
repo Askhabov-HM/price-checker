@@ -212,13 +212,9 @@ export class TelegramBot {
     const previous = this.db.setting(this.reportStateKey(store));
     const changes = store === 'ozon' ? ozonChanges(this.ozon.db, check) : randewooChanges(this.db, check);
     const payload = report(store, check, changes, previous);
-    // Keep useful partial price results, while silencing an unchanged failure.
-    if (payload.kind === 'success' || !previous?.announced || payload.kind !== previous.kind
-      || payload.reason !== previous.reason || payload.down || payload.up) {
-      const table = store === 'ozon' ? 'telegram_ozon_outbox' : 'telegram_outbox';
-      this.db.run(`INSERT OR IGNORE INTO ${table}(check_id,owner_id,text) VALUES(?,?,?)`,
-        check.id, this.ownerId, JSON.stringify(payload));
-    }
+    const table = store === 'ozon' ? 'telegram_ozon_outbox' : 'telegram_outbox';
+    this.db.run(`INSERT OR IGNORE INTO ${table}(check_id,owner_id,text) VALUES(?,?,?)`,
+      check.id, this.ownerId, JSON.stringify(payload));
     this.db.setSetting(this.reportStateKey(store), {kind: payload.kind, reason: payload.reason, announced: true});
   }
 
