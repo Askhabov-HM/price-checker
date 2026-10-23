@@ -26,7 +26,7 @@ public final class CollectionWorker extends Worker {
             main.post(() -> {
                 if (isStopped() || epoch != CollectionTasks.epoch(context)) { done.complete(true); return; }
                 CollectionEngine.get(context).start(getId().toString(),getRunAttemptCount() == 0 && getInputData().getBoolean("manual",false),
-                        getInputData().getString("job"),done);
+                        CollectionRetryPolicy.expectedJob(getRunAttemptCount(),getInputData().getString("job")),done);
             });
             // Ordinary workers have a ten-minute limit. Leave time for cleanup before that limit.
             return done.get(8,TimeUnit.MINUTES) ? Result.success() : Result.retry();

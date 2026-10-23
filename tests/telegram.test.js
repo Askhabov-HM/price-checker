@@ -8,6 +8,7 @@ import {Tracker} from '../src/service.js';
 import {TelegramApi, TelegramBot, TelegramError, checkMessage, ozonCheckMessage, createTelegramBot} from '../src/telegram.js';
 import {cleanup, item, temporary} from './helpers.js';
 import {OzonDatabase} from '../src/providers/ozon/database.js';
+import {LamodaDatabase} from '../src/providers/lamoda/database.js';
 
 const ownerId = 670157270;
 const publicOrigin = 'https://prices.example';
@@ -21,10 +22,10 @@ function fakeApi() {
     return true;
   }, close() {}};
 }
-function setup(t, {client = {}, api = fakeApi(), root = temporary(t), ozon} = {}) {
+function setup(t, {client = {}, api = fakeApi(), root = temporary(t), ozon,lamoda} = {}) {
   const tracker = new Tracker(root, {client}), logs = [];
   cleanup(t, () => tracker.close());
-  const bot = new TelegramBot(tracker, {ownerId, publicOrigin, api, ozon, logger: entry => logs.push(entry)});
+  const bot = new TelegramBot(tracker, {ownerId, publicOrigin, api, ozon,lamoda, logger: entry => logs.push(entry)});
   cleanup(t, () => bot.close());
   return {tracker, bot, api, root, logs};
 }
@@ -236,13 +237,13 @@ test('Ozon counts only fresh PRICE changes and resumes comparison with the price
   assert.match(ozonCheckMessage(ozon.db, ozon.db.checks()[0]), /Изменений цен нет/);
 });
 
-test('repeated failures are silent, a changed reason is reported, and recovery is announced once per store', async t => {
+test('every failure is reported and recovery is announced once per store', async t => {
   const {tracker, bot, api, ozon} = setupOzon(t);
   finish(tracker.db, 'manual', 'error', 'Synthetic failure A'); await bot.flush();
   finish(tracker.db, 'manual', 'error', 'Synthetic failure A'); await bot.flush();
-  assert.equal(api.calls.length, 1);
-  finish(tracker.db, 'manual', 'error', 'Synthetic failure B'); await bot.flush();
   assert.equal(api.calls.length, 2);
+  finish(tracker.db, 'manual', 'error', 'Synthetic failure B'); await bot.flush();
+  assert.equal(api.calls.length, 3);
   finishOzon(ozon, []); await bot.flush();
   assert.doesNotMatch(api.calls.at(-1).data.text, /снова работает/);
   finish(tracker.db); await bot.flush();
@@ -250,6 +251,37 @@ test('repeated failures are silent, a changed reason is reported, and recovery i
   finish(tracker.db); await bot.flush();
   assert.doesNotMatch(api.calls.at(-1).data.text, /снова работает/);
   assert.ok(api.calls.every(call => !/Synthetic failure/.test(call.data.text)));
+});
+
+test('each store reports identical errors for separate checks and does not resend a delivered check after restart',async t => {
+  for (const store of ['randewoo','ozon','lamoda']) await t.test(store,async t => {
+    const root = temporary(t);
+    const ozon = store === 'ozon' ? {db:new OzonDatabase(root),running:false} : undefined;
+    const lamoda = store === 'lamoda' ? {db:new LamodaDatabase(root)} : undefined;
+    if (ozon) cleanup(t,() => ozon.db.close());
+    if (lamoda) cleanup(t,() => lamoda.db.close());
+    const {tracker,bot,api} = setup(t,{root,ozon,lamoda});
+    const complete = () => {
+      const message = 'Synthetic private repeated error';
+      if (ozon) return finishOzon(ozon,null,'error',message);
+      if (lamoda) {
+        const stamp = new Date().toISOString(),check = lamoda.db.begin('schedule',stamp);
+        lamoda.db.failure(check,message,stamp);return check;
+      }
+      return finish(tracker.db,'schedule','error',message);
+    };
+    for (let i = 0; i < 3; i++) complete();
+    await bot.flush();await bot.flush();
+    assert.equal(api.calls.length,3);
+    assert.ok(api.calls.every(call => call.data.text.includes('Не удалось выполнить проверку.')));
+    assert.ok(api.calls.every(call => !call.data.text.includes('Synthetic private')));
+    await bot.close();
+    const workingApi = fakeApi(),resumed = new TelegramBot(tracker,{ownerId,publicOrigin,api:workingApi,ozon,lamoda,logger:() => {}});
+    cleanup(t,() => resumed.close());
+    await resumed.flush();assert.equal(workingApi.calls.length,0);
+    complete();await resumed.flush();await resumed.flush();
+    assert.equal(workingApi.calls.length,1);
+  });
 });
 
 test('partial reports preserve separate counters and do not expose the underlying error details', async t => {
@@ -273,6 +305,9 @@ test('confirmed Ozon login loss has the protected login button and the callback 
   assert.match(payload.text, /^🔐.*Ozon/);
   assert.equal(payload.reply_markup.inline_keyboard[0][0].url, publicOrigin + '/ozon/login');
   assert.doesNotMatch(payload.text, /Снижений|Повышений/);
+  finishOzon(ozon,null,'error','Нужно обновить вход в Ozon.');
+  await bot.notifyOzonLogin();await bot.notifyOzonLogin();await bot.flush();
+  assert.equal(api.calls.length,2);
 });
 
 test('a saved-price-only unavailable Randewoo observation never counts as a price change', t => {

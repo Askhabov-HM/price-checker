@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 import {FetchError, ValidationError} from './errors.js';
+import {COLLECTION_ATTEMPTS} from './collection-retry.js';
 
 export function quote(value) {
   if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new ValidationError('Некорректные заголовки сессии');
@@ -67,7 +68,7 @@ export class CurlTransport {
     if (data !== undefined) config.push('header = "Content-Type: application/json"', 'data = ' + quote(JSON.stringify(data)));
     for (const header of headers) config.push('header = ' + quote(header));
     if (pathname === '/favorites') config.push('header = "Content-Type: application/json"');
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= COLLECTION_ATTEMPTS; attempt++) {
       if (this.closed) throw new FetchError('Приложение останавливается');
       const started = Date.now();
       const result = await this.execute(config);
@@ -78,7 +79,7 @@ export class CurlTransport {
         const requested = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
         if (Number.isFinite(requested)) wait = Math.max(wait, requested);
       }
-      const retry = method === 'GET' && attempt < 3 && !this.closed && !result.failure && wait <= 10000
+      const retry = method === 'GET' && attempt < COLLECTION_ATTEMPTS && !this.closed && !result.failure && wait <= 10000
         && (transientCodes.has(result.code) || result.code === 0 && transientStatuses.has(response.status));
       // Deliberate allowlist: no raw stderr, headers, query, payload, phone, code or credentials.
       this.logger({time: new Date().toISOString(), event: 'randewoo_request', path: pathname, method,

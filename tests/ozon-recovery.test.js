@@ -48,7 +48,7 @@ test('a cold collection starts in one browser under the collector lock and never
   assert.deepEqual(readFileSync(path),before);
 });
 
-test('a browser 403 stops the queue and cannot open another browser or fall back to HTTP',async t => {
+test('a browser 403 retries the collection three times without falling back to HTTP or saving prices',async t => {
   const root = temporary(t);await connectTestOzon(root);const http=forbidHttp(t);let browsers = 0,reads = 0,closed = 0;
   const client = new OzonClient(root,{browser:async () => {
     browsers++;return {read:async request => {
@@ -59,7 +59,7 @@ test('a browser 403 stops the queue and cannot open another browser or fall back
   const service = new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());
   service.watch(TEST_OZON_URL);service.watch('https://www.ozon.ru/product/456/');
   await service.start();await service.running;
-  assert.equal(http(),0);assert.equal(browsers,1);assert.equal(reads,1);assert.equal(closed,1);
+  assert.equal(http(),0);assert.equal(browsers,4);assert.equal(reads,4);assert.equal(closed,4);
   assert.equal(service.status().action_required,false);assert.equal(service.status().not_before,null);
   assert.equal(service.db.detail('ozon:item:123',0).points.length,0);
   assert.equal(service.db.detail('ozon:item:456',0).points.length,0);
@@ -72,7 +72,7 @@ test('a different account, SKU, user agent or request identity cannot save brows
     [value => {value.request_url='https://other.test/';},false],[value => {value.version=1;},false]]) {
     const root = temporary(t);await connectTestOzon(root);
     const client = new OzonClient(root,{browser:async () => fakeBrowser(async request => {const value=exported(request);change(value);return value;})});
-    const service = new OzonService(root,{client});cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);
+    const service = new OzonService(root,{client,pause:async () => {}});cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);
     await service.start({id});await service.running;
     assert.equal(http(),0);assert.equal(service.db.detail(id,0).product.regular_kopecks,null);assert.equal(service.status().action_required,actionRequired);
   }

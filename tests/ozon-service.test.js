@@ -12,10 +12,10 @@ import {acquireInstance} from '../src/instance.js';
 import {temporary, cleanup, item} from './helpers.js';
 import {TEST_OZON_URL, connectTestOzon, ozonPage, jsonResponse, favoriteTile,responseBrowser} from './ozon-fixture.js';
 
-test('a scheduled 403 preserves data and retries once at the next existing interval', async t => {
+test('a scheduled 403 exhausts three retries and tries again at the next existing interval', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let now = Date.parse('2026-10-20T10:00:00Z'), blocked = true, calls = 0;
-  const service = new OzonService(root,{current:() => now,client:new OzonClient(root,{browser:responseBrowser(async () => {
+  const service = new OzonService(root,{pause:async () => {},current:() => now,client:new OzonClient(root,{browser:responseBrowser(async () => {
     calls++; return blocked ? new Response('',{status:403}) : jsonResponse(ozonPage());
   })})});
   cleanup(t,() => service.close());
@@ -23,13 +23,13 @@ test('a scheduled 403 preserves data and retries once at the next existing inter
   const anchor = service.status().schedule_anchor;
   now = Date.parse(service.status().next_check)+1;
   await service.tick(); await service.running;
-  assert.equal(calls,1); assert.equal(service.status().checks[0].status,'error');
+  assert.equal(calls,4); assert.equal(service.status().checks[0].status,'error');
   assert.equal(service.status().action_required,false); assert.equal(service.status().schedule_enabled,true);
   assert.equal(service.status().next_check,'2026-10-20T12:00:00.000Z');
-  await service.tick(); assert.equal(calls,1);
+  await service.tick(); assert.equal(calls,4);
   blocked = false; now = Date.parse(service.status().next_check)+1;
   await service.tick(); await service.running;
-  assert.equal(calls,2); assert.equal(service.status().checks[0].status,'success');
+  assert.equal(calls,5); assert.equal(service.status().checks[0].status,'success');
   assert.equal(service.status().schedule_anchor,anchor);
 });
 
@@ -78,7 +78,7 @@ test('the browser pipeline persists two prices, survives restart, marks seller c
     if (new URL(url).searchParams.get('url').startsWith('/product/')) assert.equal(new URL(url).searchParams.get('url'),'/product/test-item-123/');
     return blocked ? new Response('private-response',{status:403}) : jsonResponse(ozonPage({seller}));
   })});
-  let service = new OzonService(root,{client:client(),current:() => now});
+  let service = new OzonService(root,{pause:async () => {},client:client(),current:() => now});
   const id = service.watch(TEST_OZON_URL);
   assert.equal(service.status().schedule_enabled,false);
   await service.start({id}); await service.running;
@@ -92,7 +92,7 @@ test('the browser pipeline persists two prices, survives restart, marks seller c
   assert.equal(calls,4);
   await service.close();
   now += OZON_INTERVAL_MS + 1; seller = '66';
-  service = new OzonService(root,{client:client(),current:() => now});
+  service = new OzonService(root,{pause:async () => {},client:client(),current:() => now});
   cleanup(t,() => service.close());
   await service.start({id}); await service.running;
   detail = service.db.detail(id,0,now);
@@ -101,7 +101,7 @@ test('the browser pipeline persists two prices, survives restart, marks seller c
   now += OZON_INTERVAL_MS + 1; blocked = true;
   const previousCalls = calls;
   await service.start({id}); await service.running;
-  assert.equal(calls-previousCalls,1);
+  assert.equal(calls-previousCalls,4);
   detail = service.db.detail(id,0,now);
   assert.equal(detail.product.status,'error'); assert.equal(detail.product.ozon_card_kopecks,90000);
   assert.equal(detail.points.at(-1).ozon_card_kopecks,null);
@@ -109,14 +109,14 @@ test('the browser pipeline persists two prices, survives restart, marks seller c
   assert.equal(service.status().action_required,false);
   assert.doesNotMatch(JSON.stringify(service.status()),/synthetic-session|Synthetic test address|account_id|delivery_digest|private-response/);
   now += 86400000; await service.start({id}); await service.running;
-  assert.equal(calls-previousCalls,2);
+  assert.equal(calls-previousCalls,8);
   assert.deepEqual(readFileSync(join(root,'.data/prices.sqlite3')),before);
 });
 
 test('only an explicit source pause creates a manual backoff; errors do not latch collection',async t => {
   for (const [status,retry,wait] of [[503,null,0],[403,'120',120000],[429,null,0],[429,'30000',30000000]]) {
     const root=temporary(t);await connectTestOzon(root);const now=Date.now();
-    const service=new OzonService(root,{current:() => now,client:new OzonClient(root,{browser:responseBrowser(async () =>
+    const service=new OzonService(root,{pause:async () => {},current:() => now,client:new OzonClient(root,{browser:responseBrowser(async () =>
       new Response('',{status,headers:retry ? {'Retry-After':retry} : {}}))})});
     cleanup(t,() => service.close());const id=service.watch(TEST_OZON_URL);await service.start({id});await service.running;
     assert.equal(service.status().not_before,wait ? new Date(now+wait).toISOString() : null);
@@ -181,7 +181,7 @@ test('full refresh reads all favorites beyond five pages and accepts the final s
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let mode = 'wrong';
-  const service = new OzonService(root,{client:new OzonClient(root,{browser:responseBrowser(async () => {
+  const service = new OzonService(root,{pause:async () => {},client:new OzonClient(root,{browser:responseBrowser(async () => {
     const page = ozonPage({account:mode === 'wrong' ? 999 : 123});
     if (mode === 'partial') delete page.nextPage;
     return jsonResponse(page);

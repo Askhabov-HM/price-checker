@@ -31,13 +31,13 @@ function fixture(results) {
   return {transport, calls, logs, waits};
 }
 
-test('temporary curl failures retry twice, log each attempt and keep credentials out of argv and logs', async () => {
-  const {transport, calls, logs, waits} = fixture([{code: 56, output: ''}, {code: 28, output: ''}, {status: 200}]);
+test('temporary curl failures retry three times, log each attempt and keep credentials out of argv and logs', async () => {
+  const {transport, calls, logs, waits} = fixture([{code: 56, output: ''}, {code: 28, output: ''}, {code: 7, output: ''}, {status: 200}]);
   const result = await transport.request('/product/fragrance?private=query', {session: {cookie: 'secret-cookie', user_agent: 'private-agent'}, checkId: 42});
   assert.equal(result.payload, 'ok');
-  assert.deepEqual(waits, [1000, 2000]);
-  assert.deepEqual(logs.map(log => [log.curl_code, log.error, log.retry, log.check_id]), [[56, 'receive', true, 42], [28, 'timeout', true, 42], [0, null, false, 42]]);
-  assert.equal(calls.length, 3);
+  assert.deepEqual(waits, [1000, 2000, 4000]);
+  assert.deepEqual(logs.map(log => [log.curl_code, log.error, log.retry, log.check_id]), [[56, 'receive', true, 42], [28, 'timeout', true, 42], [7, 'connect', true, 42], [0, null, false, 42]]);
+  assert.equal(calls.length, 4);
   for (const call of calls) {
     assert.deepEqual(call.args, ['-q', '--config', '-']);
     assert.ok(call.config.includes('secret-cookie'));
@@ -77,8 +77,8 @@ test('sending codes and other POST requests never retries a connection failure o
 });
 
 test('exhausted retries give a useful saved error and missing curl fails immediately', async () => {
-  const f = fixture(Array.from({length: 3}, () => ({code: 6, output: ''})));
-  await assert.rejects(f.transport.request('/cart'), /curl 6: dns/); assert.equal(f.calls.length, 3);
+  const f = fixture(Array.from({length: 4}, () => ({code: 6, output: ''})));
+  await assert.rejects(f.transport.request('/cart'), /curl 6: dns/); assert.equal(f.calls.length, 4);
   const missing = fixture([{error: 'ENOENT'}]);
   await assert.rejects(missing.transport.request('/cart'), /Не найдена программа curl/); assert.equal(missing.calls.length, 1);
 });

@@ -102,10 +102,10 @@ export class LamodaMobile {
     const error = {code,retry_after_ms:Number.isSafeInteger(retryAfter) ? Math.max(0,Math.min(retryAfter,365*86400000)) : 0,http_status:[403,429].includes(httpStatus) ? httpStatus : null};
     this.sql.prepare("UPDATE mobile_jobs SET status='error',error=? WHERE id=? AND status='pending'").run(JSON.stringify(error),id);
   }
-  async collect(check,signal,{remind = true} = {}) {
+  async collect(check,signal,{remind = true,expires = this.current()+10*60000} = {}) {
     this.cancel();
     this.sql.prepare("DELETE FROM mobile_jobs WHERE status!='pending'").run();
-    const id = randomBytes(16).toString('hex'),expires = this.current()+10*60000;
+    const id = randomBytes(16).toString('hex');
     this.sql.prepare("INSERT INTO mobile_jobs(id,check_id,status,expires) VALUES(?,?,'pending',?)").run(id,check,expires);
     this.sql.prepare('INSERT INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)')
       .run('android:'+id,check,JSON.stringify({store:'lamoda',kind:'android',finishedAt:new Date(this.current()).toISOString()}));

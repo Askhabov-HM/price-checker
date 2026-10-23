@@ -112,7 +112,7 @@ test('Lamoda commits membership, observations, and its own outbox atomically',t 
 });
 test('Lamoda errors retain prices and retry on schedule while respecting Retry-After',async t => {
   const root = mkdtempSync(join(tmpdir(),'lamoda-service-unit-'));let clock = Date.parse('2026-10-01T10:00:00Z'),failure = null;const events = [];
-  const service = new LamodaService(root,{current:() => clock,logger:event => events.push(event),channel:() => ({available:() => true,
+  const service = new LamodaService(root,{pause:async () => {},current:() => clock,logger:event => events.push(event),channel:() => ({available:() => true,
     request:async () => {if (failure) throw failure;return {account_id:'42',items:parsed(state()).items};}})});
   t.after(async () => {await service.close();rmSync(root,{recursive:true,force:true});});
   service.db.bindAccount('42');service.settings({schedule_enabled:true});await service.start();await service.running;

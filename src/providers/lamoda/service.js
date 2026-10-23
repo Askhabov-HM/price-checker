@@ -1,4 +1,5 @@
 import {join} from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
 import {acquireInstance} from '../../instance.js';
 import {ValidationError} from '../../errors.js';
 import {nextScheduledCheck,scheduleSettings} from '../../schedule.js';
@@ -9,11 +10,13 @@ import {LamodaError} from './parser.js';
 import {LamodaMobile} from './mobile.js';
 import {FirebaseSender,LamodaPush} from './push.js';
 import {collectionQueue} from '../../collection-queue.js';
+import {retryCollectionRead} from '../../collection-retry.js';
 
 export class LamodaService {
-  constructor(root,{channel = options => new LamodaChannel(options),current = Date.now,logger = event => console.info(JSON.stringify(event)),pushSender = new FirebaseSender(root,{current})} = {}) {
+  constructor(root,{channel = options => new LamodaChannel(options),current = Date.now,pause = delay,logger = event => console.info(JSON.stringify(event)),pushSender = new FirebaseSender(root,{current})} = {}) {
     this.root = root;this.db = new LamodaDatabase(root);this.channel = channel;this.current = current;this.logger = logger;
     this.collectionQueue = collectionQueue(root);
+    this.pause = pause;
     this.mobile = new LamodaMobile(this.db,{current});
     this.push = new LamodaPush(this.mobile,pushSender,{current});this.mobile.push = this.push;
     this.login = new LamodaLogin(root,{db:this.db,channel:() => channel({timeout:60000}),onAuthorized:() => {
@@ -65,11 +68,20 @@ export class LamodaService {
     const check = this.db.begin(trigger,this.stamp());
     this.activeCheck = check;
     try {
-      const mobile = this.mobile.enabled();
-      const result = mobile ? await this.mobile.collect(check,signal,{remind}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
-      if (signal.aborted) throw new LamodaError('interrupted');
-      if (mobile && !this.db.configured()) this.db.bindAccount(result.account_id);
-      if (!this.db.matches(result.account_id)) throw new LamodaError('account_mismatch');
+      const mobile = this.mobile.enabled(),expires = this.current()+10*60000;
+      const result = await retryCollectionRead(async () => {
+        if (mobile && this.current() >= expires) throw new LamodaError('interrupted');
+        const result = mobile ? await this.mobile.collect(check,signal,{remind,expires}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
+        if (signal.aborted) throw new LamodaError('interrupted');
+        if (mobile && !this.db.configured()) this.db.bindAccount(result.account_id);
+        if (!this.db.matches(result.account_id)) throw new LamodaError('account_mismatch');
+        return result;
+      },{signal,pause:(ms,value,options) => this.pause(mobile ? Math.min(ms,Math.max(0,expires-this.current())) : ms,value,options),
+        retryable:error => error instanceof LamodaError && !['login_required','account_mismatch','interrupted'].includes(error.code),
+        onRetry:retry => {
+          this.db.db.prepare('UPDATE checks SET message=? WHERE id=?').run(`Повторная попытка ${retry.attempt} из ${retry.total}.`,check);
+          this.logger({time:this.stamp(),store:'lamoda',event:'collection_retry',check_id:check,...retry});
+        }});
       this.db.record(check,result.items,this.stamp(),mobile ? 'android' : 'browser');
       this.db.updateState({action_required:0,message:'',not_before:null,next_check:this.nextAttempt()});
       this.logger({time:this.stamp(),store:'lamoda',event:'collection_success',check_id:check,count:result.items.length});
