@@ -3,6 +3,14 @@ import {Button} from '@/components/ui/button';
 import {CollectionNotice} from '@/components/collection-notice';
 import {invalidateLamoda,lamodaMutate,lamodaStatusOptions} from '@/lib/lamoda';
 
+const eventNames:Record<string,string> = {
+  job_created:'Задание создано',push_accepted:'Push принят Firebase',push_error:'Ошибка отправки push',
+  phone_contact:'Телефон запросил задание',no_response:'Телефон не ответил за 10 минут',
+  page_received:'Страница получена',phone_error:'Ошибка на телефоне',failed:'Попытка завершилась ошибкой',
+  completed:'Данные переданы',expired:'Телефон не завершил задание за 10 минут',ended:'Задание прервано'
+};
+const stamp = (value:string) => new Date(value).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'medium'});
+
 export function LamodaAndroidPage() {
   const status = useQuery(lamodaStatusOptions);
   const pairing = useMutation({mutationFn:() => lamodaMutate<{url:string;expires_at:string}>('mobile/connect')});
@@ -26,5 +34,14 @@ export function LamodaAndroidPage() {
       {status.data?.mobile?.job && <p>Ожидаем Android. Следующая страница: {status.data.mobile.job.next_page}. Откройте приложение на телефоне.</p>}
       <p><a href="/lamoda/android/open">Открыть установленное приложение</a></p>
       {error && <p role="alert" className="notice">{error.message}</p>}
-    </section></div>;
+    </section>
+    {!!status.data?.mobile?.diagnostics.length && <section className="activity-card"><h2>Журнал Android</h2>
+      <p className="small-muted">Время сервера. Состояние экрана известно только при ответе телефона.</p>
+      {status.data.mobile.diagnostics.map((entry,index) => <div className="activity-row" key={`${entry.job_id}:${entry.event}:${entry.at}:${index}`}>
+        <span className="activity-time">{stamp(entry.at)}</span>
+        <span className="activity-message">{entry.job_id.slice(0,8)} · {eventNames[entry.event] || entry.event}{entry.page ? ` · страница ${entry.page}` : ''}
+          {entry.reason ? ` · ${entry.reason}` : ''}</span>
+        <span>{entry.screen_locked === null ? '' : entry.screen_locked ? 'Заблокирован' : entry.screen_off ? 'Экран выключен' : 'Разблокирован'}</span>
+      </div>)}
+    </section>}</div>;
 }

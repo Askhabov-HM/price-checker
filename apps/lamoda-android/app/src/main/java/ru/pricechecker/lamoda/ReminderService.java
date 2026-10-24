@@ -45,7 +45,7 @@ public final class ReminderService extends FirebaseMessagingService {
     @Override public void onMessageReceived(RemoteMessage message) {
         String job = message.getData().get("lamoda_job"), expiry = message.getData().get("lamoda_expires");
         if (!ReminderPolicy.valid(job,expiry,System.currentTimeMillis())) return;
-        CollectionTasks.request(this,false,job);
+        CollectionTasks.request(this,false,job,message.getPriority() == RemoteMessage.PRIORITY_HIGH);
         if (!allowed(this)) return;
         Intent intent = new Intent(this,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra("lamoda_job",job).putExtra("lamoda_expires",expiry);

@@ -97,19 +97,23 @@ export class LamodaPush {
     if (!this.sender.configured()) return;
     const row = this.sql.prepare(`SELECT o.*,j.expires,d.token FROM mobile_push_outbox o JOIN mobile_jobs j ON j.id=o.job_id
       JOIN mobile_push_device d ON d.device_hash=o.device_hash JOIN mobile_device m ON m.token_hash=d.device_hash
-      WHERE o.accepted_at IS NULL AND o.next_attempt<=? AND j.status='pending' AND j.expires>? AND d.enabled=1 AND d.token IS NOT NULL LIMIT 1`).get(this.current(),this.current());
+      WHERE o.next_attempt<=? AND o.attempts<4 AND j.status='pending' AND j.expires>? AND d.enabled=1 AND d.token IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM mobile_diagnostics x WHERE x.job_id=o.job_id AND x.event='phone_contact') LIMIT 1`).get(this.current(),this.current());
     if (!row) return;
     try {
       await this.sender.send(row.token,{id:row.job_id,expires:row.expires});
       const stamp = new Date(this.current()).toISOString();
-      this.sql.prepare('UPDATE mobile_push_outbox SET accepted_at=? WHERE job_id=? AND device_hash=?').run(stamp,row.job_id,row.device_hash);
+      this.sql.prepare('UPDATE mobile_push_outbox SET accepted_at=COALESCE(accepted_at,?),attempts=attempts+1,next_attempt=? WHERE job_id=? AND device_hash=?')
+        .run(stamp,this.current()+120000,row.job_id,row.device_hash);
       this.sql.prepare('UPDATE mobile_push_device SET accepted_at=?,error=NULL WHERE device_hash=? AND token=?').run(stamp,row.device_hash,row.token);
+      this.mobile.diagnostic(row.job_id,'push_accepted');
     } catch (error) {
       const known = error instanceof PushError ? error : new PushError('send_failed');
       this.sql.prepare('UPDATE mobile_push_outbox SET attempts=attempts+1,next_attempt=? WHERE job_id=?')
         .run(this.current()+Math.max(known.retry,Math.min(15*60000,30000*2**Math.min(row.attempts,5))),row.job_id);
       this.sql.prepare('UPDATE mobile_push_device SET error=?,token=CASE WHEN ? THEN NULL ELSE token END,enabled=CASE WHEN ? THEN 0 ELSE enabled END WHERE device_hash=? AND token=?')
         .run(known.code,Number(known.invalidToken),Number(known.invalidToken),row.device_hash,row.token);
+      this.mobile.diagnostic(row.job_id,'push_error',{reason:known.code});
     }
   }
 }

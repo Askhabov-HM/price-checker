@@ -161,7 +161,7 @@ final class CollectionEngine {
             if (current != generation) return;
             try {
                 String origin = context.getSharedPreferences("connection",0).getString("server",BuildConfig.DEFAULT_SERVER);
-                JSONObject result = work.run(new ServerApi(origin,new TokenVault(context).read()));
+                JSONObject result = work.run(new ServerApi(origin,new TokenVault(context).read(),context));
                 main.post(() -> {
                     if (current != generation || owner == null) return;
                     try { done.run(result); } catch (Exception error) { networkFailure(error); }

@@ -121,9 +121,14 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         }
         // Existing Android clients retry 5xx responses, but treat job:null as
         // successful completion. Keep a queued request retryable until admitted.
-        const mobileJob = () => lamoda.collectionQueue.status('lamoda').queued
-          ? send(response,503,{error:'Проверка Lamoda ожидает в общей очереди.'},'application/json; charset=utf-8',{'Retry-After':'5'})
-          : send(response,200,{job:lamoda.mobile.next()});
+        const mobileJob = () => {
+          if (lamoda.collectionQueue.status('lamoda').queued)
+            return send(response,503,{error:'Проверка Lamoda ожидает в общей очереди.'},'application/json; charset=utf-8',{'Retry-After':'5'});
+          const job = lamoda.mobile.next();
+          const state = value => value === 'true' ? 1 : value === 'false' ? 0 : null;
+          lamoda.mobile.contact(job?.id,{screenLocked:state(request.headers['x-screen-locked']),screenOff:state(request.headers['x-screen-off'])});
+          return send(response,200,{job});
+        };
         if (request.method === 'GET' && action === 'next') return mobileJob();
         if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
         if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume();return send(response,415,{error:'Ожидается JSON.'});}

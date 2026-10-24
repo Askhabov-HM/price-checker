@@ -8,6 +8,7 @@ import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
+import androidx.work.OutOfQuotaPolicy;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 import java.util.HashSet;
@@ -32,12 +33,16 @@ final class CollectionTasks {
                         .setInputData(new Data.Builder().putBoolean("tick",true).build()).setInitialDelay(15,TimeUnit.MINUTES).build());
     }
     static synchronized void request(Context context, boolean manual, String expected) {
+        request(context,manual,expected,false);
+    }
+    static synchronized void request(Context context, boolean manual, String expected, boolean expedited) {
         if (!connected(context)) return;
         schedule(context);
         Data input = new Data.Builder().putBoolean("manual",manual).putString("job",expected == null ? "" : expected)
                 .putLong("epoch",epoch(context)).build();
-        WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE,manual ? ExistingWorkPolicy.REPLACE : ExistingWorkPolicy.KEEP,
-                new OneTimeWorkRequest.Builder(CollectionWorker.class).setConstraints(NETWORK).setInputData(input).build());
+        OneTimeWorkRequest.Builder work = new OneTimeWorkRequest.Builder(CollectionWorker.class).setConstraints(NETWORK).setInputData(input);
+        if (expedited) work.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST);
+        WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE,manual ? ExistingWorkPolicy.REPLACE : ExistingWorkPolicy.KEEP,work.build());
     }
     static synchronized void rememberStop(Context context, String id) {
         SharedPreferences prefs = preferences(context);
