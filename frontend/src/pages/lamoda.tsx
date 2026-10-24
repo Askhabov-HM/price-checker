@@ -28,29 +28,18 @@ export function LamodaDashboard() {
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30),[settings,setSettings] = useState(false);
   const detail = useQuery(lamodaDetailOptions(selected,days));
   const refresh = useMutation({mutationFn:() => lamodaMutate('refresh'),onSuccess:invalidateLamoda});
-  const desktopPairing = useMutation({mutationFn:() => lamodaMutate<{code:string;expires_at:string}>('desktop/pairing')});
-  const desktopRevoke = useMutation({mutationFn:() => lamodaMutate('desktop/revoke'),onSuccess:invalidateLamoda});
   const check = status?.checks?.[0],version = check ? `${check.id}:${check.status}` : '';
   useEffect(() => {void invalidateLamoda();},[version]);
   const waiting = !!status?.not_before && Date.parse(status.not_before)>now;
-  const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || !status?.available || status.running || waiting || refresh.isPending;
-  const error = statusQuery.error || dashboard.error || refresh.error || desktopPairing.error || desktopRevoke.error;
+  const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || !status?.available || status.running || !!status?.desktop?.job || waiting || refresh.isPending;
+  const error = statusQuery.error || dashboard.error || refresh.error;
   const items = dashboard.data?.items || [],visible = selectLamoda(items,search.q,search.filter,search.sort,search.changeDays,now);
   return <div><CollectionNotice status={status}/><section className="page-heading"><div><div className="eyebrow">LAMODA · ИЗБРАННОЕ</div><h1>Lamoda<span className="title-dot">.</span></h1><p>История цен ваших товаров</p></div>
     <div className="heading-actions"><div className="next-check"><span>Следующая проверка</span><strong>{status?.schedule_enabled ? date(status.next_check) : 'Не запланирована'}</strong></div>
       <Button disabled={blocked} onClick={() => refresh.mutate()}><RefreshCw size={15} className={status?.running && !status.queued ? 'rotating' : ''}/>{status?.queued ? 'В очереди…' : status?.running ? 'Проверяем…' : 'Обновить избранное и цены'}</Button></div></section>
     {error && <p role="alert" className="notice">{error.message}</p>}{status?.message && <p role="status" className="notice">{status.message}</p>}
     <p className="small-muted"><Link to="/lamoda/android" search={search}>{status?.mobile?.enabled ? '📱 Сбор через Android · управление телефоном' : 'Подключить Android для сбора избранного'}</Link></p>
-    <section className="overview-card"><h2>Пробный сбор с ПК</h2>
-      <p>Снимки с ноутбука записываются отдельно и пока не меняют историю цен или расписание Lamoda.</p>
-      <Button variant="outline" disabled={desktopPairing.isPending} onClick={() => desktopPairing.mutate()}>Получить код подключения ПК</Button>
-      {desktopPairing.data && <p role="status">Код для <code>pair-desktop.cmd</code>: <code>{desktopPairing.data.code}</code>. Действует до {date(desktopPairing.data.expires_at)}.</p>}
-      <p>{status?.desktop?.enabled ? `ПК подключён. Последний контакт: ${date(status.desktop.device?.last_seen)}` : 'ПК ещё не подключён.'}</p>
-      {status?.desktop?.job && <p role="status">Пробный сбор ПК: {status.desktop.job.status === 'queued' ? 'ожидает общей очереди' : 'читает избранное'}.</p>}
-      {status?.desktop?.not_before && Date.parse(status.desktop.not_before)>now && <p>Следующий пробный сбор возможен после {date(status.desktop.not_before)}.</p>}
-      {status?.desktop?.latest && <p>Последний пробный снимок: {date(status.desktop.latest.received_at)}, товаров: {status.desktop.latest.item_count}.</p>}
-      {status?.desktop?.enabled && <Button variant="outline" disabled={desktopRevoke.isPending} onClick={() => desktopRevoke.mutate()}>Отключить ПК</Button>}
-    </section>
+    <p className="small-muted"><Link to="/lamoda/desktop" search={search}>💻 Пробный сбор с ПК · отдельная история</Link></p>
     {(!status?.configured || status.action_required) && !status?.mobile?.enabled && <p className="notice">Подключите нужный аккаунт для получения избранного. <Link to="/lamoda/login" search={search}>Войти в Lamoda</Link></p>}
     <section className="overview-card"><div className="card-heading"><div><h2>Ваше избранное</h2><p>Все категории · одна строка на товар и цвет</p></div><Button variant="outline" disabled={!status?.available} onClick={() => setSettings(true)}><Settings size={15}/>Расписание</Button></div>
       <p className="small-muted">{status?.schedule_enabled ? 'Расписание включено. ' : 'Автоматические проверки выключены. '}{status?.schedule_mode === 'hours' ? `Часы запуска: ${status.schedule.join(', ')}` : `Интервал: ${status?.interval_minutes || 30} минут`} · Москва</p>

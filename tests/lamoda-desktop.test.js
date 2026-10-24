@@ -109,11 +109,16 @@ test('Desktop HTTP API requires owner pairing and accepts only a scoped device t
     {Cookie:cookie,'X-CSRF-Token':session.csrf_token})).json();
   const paired = await (await post('/api/lamoda-desktop/pair',{code:invite.code})).json();
   const device = {Authorization:'Bearer '+paired.token};
+  assert.equal((await post('/api/providers/lamoda/desktop/schedule',{enabled:true},device)).status,401);
+  const schedule = await (await post('/api/providers/lamoda/desktop/schedule',{enabled:true},
+    {Cookie:cookie,'X-CSRF-Token':session.csrf_token})).json();
+  assert.equal(schedule.enabled,true);assert.equal(schedule.interval_minutes,3);
   assert.equal((await fetch(base+'/api/providers/lamoda/status',{headers:device})).status,401);
   assert.equal((await post('/api/lamoda-desktop/snapshot',{run_id:'a'.repeat(32),pages:[pageState(1),pageState(2)]})).status,401);
   assert.equal((await fetch(base+'/api/lamoda-desktop/config',{headers:{...device,Origin:'https://other.example'}})).status,403);
   const config = await (await fetch(base+'/api/lamoda-desktop/config',{headers:device})).json();
   assert.equal(config.mode,'staging');assert.equal(config.account_digest,accountDigest);
+  assert.equal(config.schedule.enabled,true);
   const started = await (await post('/api/lamoda-desktop/start',{},device)).json();
   let job = started.job;
   for (let attempt=0;job.status==='queued' && attempt<20;attempt++) {
@@ -129,6 +134,12 @@ test('Desktop HTTP API requires owner pairing and accepts only a scoped device t
   assert.equal(lamoda.db.db.prepare('SELECT COUNT(*) AS n FROM observations').get().n,0);
   const status = await (await fetch(base+'/api/providers/lamoda/desktop/status',{headers:{Cookie:cookie}})).json();
   assert.equal(status.latest.item_count,2);
+  const dashboard = await (await fetch(base+'/api/providers/lamoda/desktop/dashboard',{headers:{Cookie:cookie}})).json();
+  assert.equal(dashboard.items.length,2);assert.equal(dashboard.history.length,1);
+  assert.equal(dashboard.items[0].price,10000);
+  const detail = await (await fetch(base+'/api/providers/lamoda/desktop/product/'+dashboard.items[0].id+'/history?days=30',
+    {headers:{Cookie:cookie}})).json();
+  assert.equal(detail.points.length,1);
 });
 
 test('Desktop credentials store only a protected token and a staged run uses one upload',async t => {
@@ -189,4 +200,65 @@ test('Windows collector reuses its private CDP profile and closes only its backg
   assert.equal(result.count,2);assert.equal(result.pages.length,2);
   assert.deepEqual(calls.filter(value => value === 'Target.closeTarget'),['Target.closeTarget']);
   assert.equal(calls.includes('Browser.close'),false);
+});
+
+test('Desktop schedule stays separate from Android and indexes snapshots for the PC page',async t => {
+  let now = Date.now();
+  const root = temporary(t),lamoda = new LamodaService(root,{current:() => now,logger:() => {},pushSender:{configured:() => false}});
+  cleanup(t,() => lamoda.close());lamoda.db.bindAccount('42');
+  const invitation = lamoda.desktop.pairing();lamoda.desktop.pair(invitation.code,'Test laptop');
+  const androidSettings = lamoda.config();
+  assert.equal(lamoda.desktop.schedule().enabled,false);
+  const settings = lamoda.desktop.setSchedule(true);
+  assert.equal(settings.interval_minutes,3);
+  assert.equal(Date.parse(settings.next_check),now+180000);
+  assert.deepEqual(lamoda.config(),androidSettings);
+  assert.throws(() => lamoda.desktop.start({scheduled:true}),/пока не назначен/);
+  now += 180000;
+  const job = lamoda.desktop.start({scheduled:true});
+  for (let attempt=0;lamoda.desktop.getJob(job.id).status==='queued' && attempt<20;attempt++) await new Promise(resolve => setTimeout(resolve,5));
+  assert.equal(lamoda.desktop.getJob(job.id).status,'active');
+  now += 30000;
+  const saved = await lamoda.desktop.recordJob(job.id,'e'.repeat(32),[pageState(1),pageState(2)]);
+  assert.equal(saved.count,2);
+  assert.equal(Date.parse(lamoda.desktop.schedule().next_check),Date.parse(settings.next_check)+180000);
+  const dashboard = lamoda.desktop.dashboard();
+  assert.equal(dashboard.items.length,2);assert.equal(dashboard.history.length,1);
+  assert.equal(dashboard.activity[0].status,'success');
+  assert.equal(dashboard.items[0].price,10000);
+  assert.equal(lamoda.desktop.detail(dashboard.items[0].id,30).points.length,1);
+  assert.equal(lamoda.db.db.prepare('SELECT COUNT(*) AS n FROM observations').get().n,0);
+  assert.equal(lamoda.db.db.prepare('SELECT COUNT(*) AS n FROM checks').get().n,0);
+  assert.deepEqual(lamoda.config(),androidSettings);
+  await lamoda.desktop.job.ticket.done;
+  now = Date.parse(lamoda.desktop.schedule().next_check);
+  const lost = lamoda.desktop.start({scheduled:true});
+  for (let attempt=0;lamoda.desktop.getJob(lost.id).status==='queued' && attempt<20;attempt++) await new Promise(resolve => setTimeout(resolve,5));
+  lamoda.desktop.fail(lost.id,{code:'login_required'});
+  assert.equal(lamoda.desktop.schedule().action_required,true);
+  assert.equal(lamoda.desktop.schedule().next_check,null);
+  assert.throws(() => lamoda.desktop.start({scheduled:true}),/пока не назначен/);
+  lamoda.desktop.setSchedule(true);
+  assert.equal(lamoda.desktop.schedule().action_required,false);
+  lamoda.desktop.setSchedule(false);
+  assert.equal(lamoda.desktop.schedule().next_check,null);
+});
+
+test('Existing desktop snapshots are indexed on upgrade and errors stay on the PC page',async t => {
+  let now = Date.now();
+  const root = temporary(t),db = new LamodaDatabase(root);db.bindAccount('42');
+  const desktop = new LamodaDesktop(db,{current:() => now});
+  await desktop.record('f'.repeat(32),[pageState(1),pageState(2)]);
+  db.db.exec('DELETE FROM desktop_observations; DELETE FROM desktop_indexed; DELETE FROM desktop_products;');
+  db.close();
+  const reopened = new LamodaDatabase(root),restored = new LamodaDesktop(reopened,{current:() => now});
+  cleanup(t,() => reopened.close());
+  assert.equal(restored.dashboard().items.length,2);
+  now += 1000;
+  restored.failure('browser_unavailable');
+  const view = restored.dashboard();
+  assert.equal(view.history.length,2);assert.equal(view.history[1].status,'error');
+  assert.equal(view.items[0].status,'error');
+  assert.equal(restored.detail(view.items[0].id,30).points.at(-1).status,'error');
+  assert.equal(reopened.db.prepare('SELECT COUNT(*) AS n FROM observations').get().n,0);
 });

@@ -31,7 +31,8 @@ test('Windows launcher uses its own persistent profile and starts only the insta
   assert.equal(result.pid,1234);
   assert.equal(result.profile,join(localAppData,'PriceChecker','LamodaCollector','Chrome'));
   assert.equal(invocation[0],chrome);
-  assert.deepEqual(invocation[1],['--user-data-dir='+result.profile,'--new-window','https://www.lamoda.ru/wishlist/']);
+  assert.deepEqual(invocation[1],['--user-data-dir='+result.profile,'--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=0','--new-window','https://www.lamoda.ru/wishlist/']);
   assert.equal(invocation[2].windowsHide,false);
   assert.equal(invocation[2].detached,true);
   assert.equal(invocation[2].stdio,'ignore');
