@@ -8,6 +8,7 @@ import {OzonBrowserPage} from '@/pages/ozon-browser';
 import {LamodaDashboard} from '@/pages/lamoda';
 import {LamodaLoginPage} from '@/pages/lamoda-login';
 import {LamodaAndroidPage} from '@/pages/lamoda-android';
+import {LamodaDesktopPage} from '@/pages/lamoda-desktop';
 import {listIds} from '@/lib/format';
 import type {ChangePeriod, Filter, Period, PriceContext, Sort} from '@/lib/types';
 
@@ -33,5 +34,6 @@ const ozonBrowser = createRoute({getParentRoute:() => root,path:'/ozon/browser',
 const lamoda = createRoute({getParentRoute:() => root,path:'/lamoda',component:LamodaDashboard});
 const lamodaLogin = createRoute({getParentRoute:() => root,path:'/lamoda/login',component:LamodaLoginPage});
 const lamodaAndroid = createRoute({getParentRoute:() => root,path:'/lamoda/android',component:LamodaAndroidPage});
-export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin, ozonBrowser,lamoda,lamodaLogin,lamodaAndroid])});
+const lamodaDesktop = createRoute({getParentRoute:() => root,path:'/lamoda/desktop',component:LamodaDesktopPage});
+export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin, ozonBrowser,lamoda,lamodaLogin,lamodaAndroid,lamodaDesktop])});
 declare module '@tanstack/react-router' {interface Register {router: typeof router;}}

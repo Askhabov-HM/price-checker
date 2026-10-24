@@ -9,6 +9,7 @@ export interface LamodaStatus extends ScheduleSettings, CollectionStatus {
   login:{available:boolean;active:boolean;required:boolean;expires_at:string|null};
   desktop?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;not_before:string|null;
     latest:{run_id:string;received_at:string;item_count:number}|null;
+    schedule:{enabled:boolean;interval_minutes:3;next_check:string|null;action_required:boolean;last_error:string|null};
     job:{id:string;status:'queued'|'active';expires_at:string|null}|null};
   mobile?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;job:{id:string;expires:number;next_page:number}|null;
     push?:{configured:boolean;enabled:boolean;registered_at:string|null;accepted_at:string|null;error:string|null}|null;
@@ -22,10 +23,16 @@ export interface LamodaItem {
 }
 export interface LamodaDashboard {items:LamodaItem[];history:(PricePoint&{count:number;priced_count:number;complete:boolean})[];status:LamodaStatus;}
 export interface LamodaDetail {product:LamodaItem;points:LamodaPoint[];}
+export interface DesktopDashboard {items:LamodaItem[];history:(PricePoint&{count:number;priced_count:number;complete:boolean})[];
+  activity:{at:string;status:'success'|'error';count:number;run_id?:string;message?:string}[];}
 export const lamodaStatusOptions = queryOptions({queryKey:['lamoda','status'],queryFn:({signal}) => request<LamodaStatus>('/api/providers/lamoda/status',{signal}),refetchInterval:q => q.state.data?.running ? 1000 : 15000});
 export const lamodaDashboardOptions = queryOptions({queryKey:['lamoda','dashboard'],queryFn:({signal}) => request<LamodaDashboard>('/api/providers/lamoda/dashboard',{signal})});
 export const lamodaDetailOptions = (id:string|null,days:number) => queryOptions({queryKey:['lamoda','detail',id,days],enabled:id!==null,
   queryFn:({signal}) => request<LamodaDetail>(`/api/providers/lamoda/product/${encodeURIComponent(id||'')}/history?days=${days}`,{signal})});
+export const desktopDashboardOptions = queryOptions({queryKey:['lamoda','desktop','dashboard'],
+  queryFn:({signal}) => request<DesktopDashboard>('/api/providers/lamoda/desktop/dashboard',{signal}),refetchInterval:30000});
+export const desktopDetailOptions = (id:string|null,days:number) => queryOptions({queryKey:['lamoda','desktop','detail',id,days],enabled:id!==null,
+  queryFn:({signal}) => request<LamodaDetail>(`/api/providers/lamoda/desktop/product/${encodeURIComponent(id||'')}/history?days=${days}`,{signal})});
 export async function lamodaMutate<T = {ok:boolean}>(action:string,data:unknown = {}) {
   const auth = await queryClient.fetchQuery({...authOptions,staleTime:0});
   return request<T>('/api/providers/lamoda/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':auth.csrf_token},body:JSON.stringify(data)});

@@ -38,7 +38,7 @@ export class DesktopApi {
   }
   pair(code) {return this.request('pair',{body:{code,name:'Windows laptop'}});}
   config(token) {return this.request('config',{token});}
-  start(token) {return this.request('start',{token,body:{}});}
+  start(token,{scheduled = false} = {}) {return this.request('start',{token,body:{scheduled}});}
   job(token,id) {return this.request('job?id='+encodeURIComponent(id),{token});}
   fail(token,id,error) {return this.request('fail',{token,body:{job_id:id,
     code:error instanceof LamodaError ? error.code : 'invalid_data',
@@ -96,7 +96,7 @@ export class DesktopCredentials {
 }
 
 export async function collectOnce({credentials = new DesktopCredentials(),browser = new WindowsLamodaBrowser(),
-  apiFactory = origin => new DesktopApi(origin),acquire = acquireInstance,wait = delay,current = Date.now} = {}) {
+  apiFactory = origin => new DesktopApi(origin),acquire = acquireInstance,wait = delay,current = Date.now,scheduled = false} = {}) {
   const release = await acquire(join(credentials.directory,'desktop-collector.lock'));
   try {
     const {origin,token} = await credentials.load();
@@ -104,7 +104,9 @@ export async function collectOnce({credentials = new DesktopCredentials(),browse
     const config = await api.config(token);
     if (config.mode !== 'staging' || !/^[a-f0-9]{64}$/.test(config.account_digest || ''))
       throw new Error('Desktop staging is not configured on the server');
-    const started = await api.start(token);
+    const offset = Number.isFinite(Date.parse(config.server_time)) ? Date.parse(config.server_time)-current() : 0;
+    const serverNow = () => current()+offset;
+    const started = await api.start(token,{scheduled});
     const jobId = started.job?.id;
     if (!/^[a-f0-9]{32}$/.test(jobId || '')) throw new Error('Desktop job was not issued');
     let finished = false,failure;
@@ -116,8 +118,8 @@ export async function collectOnce({credentials = new DesktopCredentials(),browse
       }
       if (job.status !== 'active') throw new Error('Desktop job expired before collection');
       const deadline = Date.parse(job.expires_at);
-      if (!Number.isFinite(deadline) || deadline <= current()) throw new Error('Desktop job has no active deadline');
-      const signal = AbortSignal.timeout(Math.max(1,deadline-current()));
+      if (!Number.isFinite(deadline) || deadline <= serverNow()) throw new Error('Desktop job has no active deadline');
+      const signal = AbortSignal.timeout(Math.max(1,deadline-serverNow()));
       const {pages,count} = await retryCollectionRead(() => browser.collect(config.account_digest,{signal}),{
         signal,wait,retryable:error => error instanceof LamodaError
           && !['login_required','account_mismatch','interrupted'].includes(error.code),pause:wait});
@@ -126,7 +128,7 @@ export async function collectOnce({credentials = new DesktopCredentials(),browse
       for (let attempt = 1; attempt <= 4; attempt++) {
         try {result = await api.snapshot(token,jobId,runId,pages);break;}
         catch (error) {
-          if (attempt === 4 || error.status && error.status < 500 || error.retryAfter || deadline-current() <= 5000) throw error;
+          if (attempt === 4 || error.status && error.status < 500 || error.retryAfter || deadline-serverNow() <= 5000) throw error;
           await wait(5000);
         }
       }

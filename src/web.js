@@ -118,8 +118,11 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (!(action === 'pair' && request.method === 'POST') && !lamoda.desktop.authenticate(request.headers.authorization)) {
           request.resume();return send(response,401,{error:'Подключите ПК заново.'});
         }
-        if (request.method === 'GET' && action === 'config') return send(response,200,{
-          account_digest:lamoda.db.accountDigest(),server_time:new Date().toISOString(),mode:'staging'});
+        if (request.method === 'GET' && action === 'config') {
+          const pause = Math.max(Date.parse(lamoda.db.state().not_before)||0,Date.parse(lamoda.desktop.notBefore())||0);
+          return send(response,200,{account_digest:lamoda.db.accountDigest(),server_time:new Date(lamoda.current()).toISOString(),mode:'staging',
+            schedule:lamoda.desktop.schedule(),not_before:pause ? new Date(pause).toISOString() : null});
+        }
         if (request.method === 'GET' && action === 'job') return send(response,200,{job:lamoda.desktop.getJob(url.searchParams.get('id'))});
         if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
         if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
@@ -127,7 +130,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         }
         const input = await readJson(request,action === 'snapshot' ? 16*1024*1024 : 4096);
         if (action === 'pair') return send(response,200,lamoda.desktop.pair(input.code,input.name));
-        if (action === 'start') return send(response,200,{job:lamoda.desktop.start()});
+        if (action === 'start') return send(response,200,{job:lamoda.desktop.start({scheduled:input.scheduled === true})});
         if (action === 'fail') return send(response,200,lamoda.desktop.fail(input.job_id,input));
         if (action === 'snapshot') return send(response,200,await lamoda.desktop.recordJob(input.job_id,input.run_id,input.pages));
         return send(response,404,{error:'Действие ПК не найдено.'});
@@ -187,6 +190,13 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
           if (url.pathname === '/api/providers/lamoda/status') return send(response,200,{...(lamoda ? lamoda.status() : {available:false,configured:false,message:'Раздел Lamoda временно недоступен.'}),csrf_token:token});
           if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
           if (url.pathname === '/api/providers/lamoda/desktop/status') return send(response,200,lamoda.desktop.status());
+          if (url.pathname === '/api/providers/lamoda/desktop/dashboard') return send(response,200,lamoda.desktop.dashboard());
+          const desktopProduct = /^\/api\/providers\/lamoda\/desktop\/product\/(lamoda:item:[A-Z0-9]{6,32})\/history$/.exec(decodeURIComponent(url.pathname));
+          if (desktopProduct) {
+            const days = url.searchParams.get('days') ?? '30';
+            if (!['0','7','30','90','365'].includes(days)) throw new ValidationError('Некорректный период Lamoda.');
+            return send(response,200,lamoda.desktop.detail(desktopProduct[1],Number(days)));
+          }
           if (url.pathname === '/api/providers/lamoda/login/status') return send(response,200,lamoda.login.status());
           if (url.pathname.startsWith('/api/providers/lamoda/login/assets/')) {
             if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker'});
@@ -275,6 +285,10 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
           if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});
           if (url.pathname.endsWith('/pairing')) return send(response,200,lamoda.desktop.pairing());
           await lamoda.desktop.revoke();return send(response,200,{ok:true});
+        }
+        if (url.pathname === '/api/providers/lamoda/desktop/schedule') {
+          if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});
+          return send(response,200,lamoda.desktop.setSchedule(data.enabled));
         }
         if (['/api/providers/lamoda/mobile/pairing','/api/providers/lamoda/mobile/connect','/api/providers/lamoda/mobile/revoke'].includes(url.pathname)) {
           if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});

@@ -1,6 +1,7 @@
 import {createHash,randomBytes} from 'node:crypto';
 import {ValidationError} from '../../errors.js';
 import {LamodaError,parseWishlistState,readAllFavorites} from './parser.js';
+import {DesktopHistory} from './desktop-history.js';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const invalidPairing = () => new ValidationError('Ссылка подключения ПК недействительна. Создайте новую в Price Checker.');
@@ -15,9 +16,17 @@ export class LamodaDesktop {
       CREATE TABLE IF NOT EXISTS desktop_pairing(id INTEGER PRIMARY KEY CHECK(id=1),code_hash TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS desktop_state(id INTEGER PRIMARY KEY CHECK(id=1),not_before TEXT);
       INSERT OR IGNORE INTO desktop_state(id) VALUES(1);
+      CREATE TABLE IF NOT EXISTS desktop_failures(id INTEGER PRIMARY KEY,at TEXT NOT NULL,code TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS desktop_snapshots(run_id TEXT PRIMARY KEY,received_at TEXT NOT NULL,account_digest TEXT NOT NULL,
         item_count INTEGER NOT NULL,payload_hash TEXT NOT NULL,items_json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS desktop_snapshots_received ON desktop_snapshots(received_at DESC);`);
+    const columns = new Set(this.sql.prepare('PRAGMA table_info(desktop_state)').all().map(row => row.name));
+    if (!columns.has('schedule_enabled')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('next_check')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN next_check TEXT');
+    if (!columns.has('action_required')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN action_required INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('last_error')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN last_error TEXT');
+    this.history = new DesktopHistory(db,current);
+    if (this.schedule().enabled && !this.schedule().next_check) this.nextCheck();
   }
   pairing() {
     const code = randomBytes(16).toString('hex');
@@ -45,27 +54,57 @@ export class LamodaDesktop {
   }
   async revoke() {
     await this.close();
+    this.setSchedule(false);
     this.sql.prepare('DELETE FROM desktop_device').run();
     this.sql.prepare('DELETE FROM desktop_pairing').run();
   }
   status() {
     const device = this.sql.prepare('SELECT name,last_seen FROM desktop_device WHERE id=1').get();
     const latest = this.sql.prepare('SELECT run_id,received_at,item_count FROM desktop_snapshots ORDER BY received_at DESC LIMIT 1').get();
-    return {enabled:!!device,device:device || null,latest:latest || null,not_before:this.notBefore(),
+    return {enabled:!!device,device:device || null,latest:latest || null,not_before:this.notBefore(),schedule:this.schedule(),
       job:this.job && this.job.status !== 'ended' ? this.jobState(this.job) : null};
   }
+  schedule() {
+    const state = this.sql.prepare('SELECT schedule_enabled,next_check,action_required,last_error FROM desktop_state WHERE id=1').get();
+    return {enabled:!!state.schedule_enabled,interval_minutes:3,next_check:state.next_check,
+      action_required:!!state.action_required,last_error:state.last_error};
+  }
+  setSchedule(enabled) {
+    if (typeof enabled !== 'boolean') throw new ValidationError('Некорректное расписание ПК.');
+    if (enabled && (!this.db.configured() || !this.status().enabled)) throw new ValidationError('Сначала подключите ПК и аккаунт Lamoda.');
+    this.sql.prepare('UPDATE desktop_state SET schedule_enabled=?,next_check=?,action_required=0 WHERE id=1')
+      .run(Number(enabled),enabled && (!this.job || this.job.status === 'ended') ? new Date(this.current()+3*60000).toISOString() : null);
+    return this.schedule();
+  }
+  nextCheck(slot = null) {
+    const now = this.current(),step = 3*60000;
+    const nextAt = Number.isFinite(slot) ? slot+step*Math.max(1,Math.floor((now-slot)/step)+1) : now+step;
+    const settings = this.schedule();
+    const next = settings.enabled && !settings.action_required ? new Date(nextAt).toISOString() : null;
+    this.sql.prepare('UPDATE desktop_state SET next_check=? WHERE id=1').run(next);
+  }
+  dashboard() {return this.history.dashboard();}
+  detail(id,days) {return this.history.detail(id,days);}
   notBefore() {return this.sql.prepare('SELECT not_before FROM desktop_state WHERE id=1').get().not_before;}
   jobState(job) {return {id:job.id,status:job.status,expires_at:job.expires ? new Date(job.expires).toISOString() : null};}
-  start() {
+  start({scheduled = false} = {}) {
     if (!this.queue || !this.db.configured()) throw new ValidationError('Пробный сбор Lamoda на ПК не настроен.');
+    let slot = null;
+    if (scheduled) {
+      const schedule = this.schedule();
+      if (!schedule.enabled || schedule.action_required || !schedule.next_check || Date.parse(schedule.next_check) > this.current())
+        throw new ValidationError('Плановый сбор ПК пока не назначен.');
+      slot = Date.parse(schedule.next_check);
+    }
     if (Math.max(Date.parse(this.notBefore()) || 0,Date.parse(this.db.state().not_before) || 0) > this.current())
       throw new ValidationError('Сохраняется пауза источника Lamoda.');
     if (this.job && this.job.status !== 'ended') return this.jobState(this.job);
     const queueState = this.queue.status('lamoda');
     if (queueState.queued || queueState.active_store === 'lamoda') throw new ValidationError('Lamoda уже выполняет проверку.');
-    const job = {id:randomBytes(16).toString('hex'),status:'queued',expires:null,runId:null,
-      controller:new AbortController(),resolve:null,timer:null};
+    const job = {id:randomBytes(16).toString('hex'),status:'queued',expires:null,runId:null,slot,
+      controller:new AbortController(),resolve:null,timer:null,failed:false};
     this.job = job;
+    this.sql.prepare('UPDATE desktop_state SET next_check=NULL WHERE id=1').run();
     const ticket = this.queue.enqueue('lamoda',() => {
       job.status = 'active';job.expires = this.current()+10*60000;
       clearTimeout(job.timer);
@@ -87,16 +126,28 @@ export class LamodaDesktop {
   finish(job) {
     if (job.status === 'ended') return;
     clearTimeout(job.timer);job.status = 'ended';
+    if (!job.runId && !job.failed) this.failure('interrupted');
+    this.nextCheck(job.slot);
     if (job.resolve) job.resolve();else job.controller.abort();
+  }
+  failure(code) {
+    const safe = typeof code === 'string' && /^[a-z_]{1,40}$/.test(code) ? code : 'invalid_data';
+    this.sql.prepare('INSERT INTO desktop_failures(at,code) VALUES(?,?)').run(new Date(this.current()).toISOString(),safe);
   }
   fail(id,{code,retry_after_ms:retryAfter} = {}) {
     const job = this.currentJob(id);
+    if (job.status === 'ended') return {ok:true};
+    const safeCode = typeof code === 'string' && /^[a-z_]{1,40}$/.test(code) ? code : 'invalid_data';
     if (job.status === 'active' && ['access_limited','rate_limited'].includes(code)
       && Number.isSafeInteger(retryAfter) && retryAfter > 0) {
       const value = new Date(this.current()+Math.min(retryAfter,365*86400000)).toISOString();
       if (Date.parse(value) > (Date.parse(this.notBefore()) || 0))
         this.sql.prepare('UPDATE desktop_state SET not_before=? WHERE id=1').run(value);
     }
+    if (['login_required','account_mismatch'].includes(safeCode))
+      this.sql.prepare('UPDATE desktop_state SET action_required=1,next_check=NULL,last_error=? WHERE id=1').run(safeCode);
+    else this.sql.prepare('UPDATE desktop_state SET last_error=? WHERE id=1').run(safeCode);
+    job.failed = true;this.failure(safeCode);
     this.finish(job);return {ok:true};
   }
   async close() {if (this.job) {this.finish(this.job);await this.job.ticket?.done.catch(() => {});}}
@@ -125,17 +176,21 @@ export class LamodaDesktop {
     const account = this.db.accountDigest();
     const items = JSON.stringify(result.items);
     const payloadHash = digest(account+'\n'+items);
-    beforeWrite();
-    const existing = this.sql.prepare('SELECT payload_hash,item_count,received_at FROM desktop_snapshots WHERE run_id=?').get(runId);
-    if (existing) {
-      if (existing.payload_hash !== payloadHash) throw new LamodaError('incomplete_data');
-      return {run_id:runId,count:existing.item_count,received_at:existing.received_at,duplicate:true};
-    }
-    const received = new Date(this.current()).toISOString();
-    this.sql.prepare('INSERT INTO desktop_snapshots VALUES(?,?,?,?,?,?)')
-      .run(runId,received,account,result.items.length,payloadHash,items);
-    this.sql.prepare('UPDATE desktop_state SET not_before=NULL WHERE id=1').run();
-    afterWrite();
-    return {run_id:runId,count:result.items.length,received_at:received,duplicate:false};
+    const saved = this.db.transaction(() => {
+      beforeWrite();
+      const existing = this.sql.prepare('SELECT payload_hash,item_count,received_at FROM desktop_snapshots WHERE run_id=?').get(runId);
+      if (existing) {
+        if (existing.payload_hash !== payloadHash) throw new LamodaError('incomplete_data');
+        return {run_id:runId,count:existing.item_count,received_at:existing.received_at,duplicate:true};
+      }
+      const received = new Date(this.current()).toISOString();
+      this.sql.prepare('INSERT INTO desktop_snapshots VALUES(?,?,?,?,?,?)')
+        .run(runId,received,account,result.items.length,payloadHash,items);
+      this.history.index(runId,received,result.items);
+      this.sql.prepare('UPDATE desktop_state SET not_before=NULL,action_required=0,last_error=NULL WHERE id=1').run();
+      return {run_id:runId,count:result.items.length,received_at:received,duplicate:false};
+    });
+    if (!saved.duplicate) afterWrite();
+    return saved;
   }
 }

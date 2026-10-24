@@ -33,8 +33,9 @@ export class LamodaService {
   }
   status() {const state = this.config(),desktop = this.desktop.status();
     const pause = Math.max(Date.parse(state.not_before)||0,Date.parse(desktop.not_before)||0);
-    return {...state,available:true,configured:this.db.configured(),running:!!this.running || !!desktop.job,
+    return {...state,available:true,configured:this.db.configured(),running:!!this.running,
     ...this.collectionQueue.status('lamoda'),
+    queued:!!this.running && this.collectionQueue.status('lamoda').queued,
     next_check:state.schedule_enabled ? state.next_check : null,not_before:pause ? new Date(pause).toISOString() : null,
     action_required:!!state.action_required,checks:this.db.checks(),login:this.login.status(),mobile:this.mobile.status(),desktop};}
   settings(data) {
