@@ -28,7 +28,7 @@ export function money(value) {
 
 // Lamoda's wishlist response embeds each state member as JSON on its own line.
 // Parse only the two observed JSON members, never execute the site's scripts.
-export function parseWishlistHtml(html) {
+export function wishlistStateHtml(html) {
   if (typeof html !== 'string' || Buffer.byteLength(html) > 12*1024*1024) throw invalid();
   const $ = load(html);
   const scripts = $('script').toArray().map(node => $(node).text()).filter(text => /^\s*var\s+__NUXT__\s*=/.test(text));
@@ -41,7 +41,31 @@ export function parseWishlistHtml(html) {
   };
   const user = read('user');
   if (user && Object.hasOwn(user,'customer') && user.customer === null) throw new LamodaError('login_required');
-  return parseWishlistState(user,read('payload'));
+  return {user,payload:read('payload')};
+}
+
+export function parseWishlistHtml(html) {
+  const {user,payload} = wishlistStateHtml(html);
+  return parseWishlistState(user,payload);
+}
+
+export function minimalWishlistState(user,payload) {
+  parseWishlistState(user,payload);
+  const keys = ['sku','name','price_iso_code','seo_tail','prices','price_amount','old_price_amount',
+    'is_available','is_sellable','thumbnail','color_family','is_hybrid','hybrid_products'];
+  const pagination = payload?.pagination;
+  const state = {
+    user:{customer:user?.customer ? {id:user.customer.id,is_active:user.customer.is_active} : null,
+      wishlist:user?.wishlist?.map(item => ({product_sku:item.product_sku,
+        ...(item.adjacent_skus == null ? {} : {adjacent_skus:item.adjacent_skus})}))},
+    payload:{pagination:pagination && Object.fromEntries(['found','limit','offset','page','pages'].map(key => [key,pagination[key]])),
+      products:payload?.products?.map(product => ({
+        ...Object.fromEntries(keys.filter(key => Object.hasOwn(product,key)).map(key => [key,key === 'prices' && Array.isArray(product.prices)
+          ? product.prices.map(entry => ({price:entry?.price})) : product[key]])),
+        brand:{name:product.brand?.name}}))},
+  };
+  parseWishlistState(state.user,state.payload);
+  return state;
 }
 
 export function parseWishlistState(user, payload) {

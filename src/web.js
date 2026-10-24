@@ -111,6 +111,27 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       if (request.method === 'GET' && url.pathname === '/lamoda/android/launch.js') {
         return send(response,200,androidLaunchScript,'text/javascript; charset=utf-8');
       }
+      if (url.pathname.startsWith('/api/lamoda-desktop/')) {
+        if (!lamoda?.desktop) return send(response,503,{error:'Сбор Lamoda на ПК недоступен.'});
+        if (request.headers.origin) {request.resume();return send(response,403,{error:'Используйте программу для ПК.'});}
+        const action = url.pathname.slice('/api/lamoda-desktop/'.length);
+        if (!(action === 'pair' && request.method === 'POST') && !lamoda.desktop.authenticate(request.headers.authorization)) {
+          request.resume();return send(response,401,{error:'Подключите ПК заново.'});
+        }
+        if (request.method === 'GET' && action === 'config') return send(response,200,{
+          account_digest:lamoda.db.accountDigest(),server_time:new Date().toISOString(),mode:'staging'});
+        if (request.method === 'GET' && action === 'job') return send(response,200,{job:lamoda.desktop.getJob(url.searchParams.get('id'))});
+        if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
+        if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
+          request.resume();return send(response,415,{error:'Ожидается JSON.'});
+        }
+        const input = await readJson(request,action === 'snapshot' ? 16*1024*1024 : 4096);
+        if (action === 'pair') return send(response,200,lamoda.desktop.pair(input.code,input.name));
+        if (action === 'start') return send(response,200,{job:lamoda.desktop.start()});
+        if (action === 'fail') return send(response,200,lamoda.desktop.fail(input.job_id,input));
+        if (action === 'snapshot') return send(response,200,await lamoda.desktop.recordJob(input.job_id,input.run_id,input.pages));
+        return send(response,404,{error:'Действие ПК не найдено.'});
+      }
       if (url.pathname.startsWith('/api/lamoda-mobile/')) {
         if (!lamoda?.mobile) return send(response,503,{error:'Сбор через Android недоступен.'});
         // Native clients use a scoped device token, never browser cookies or CSRF exemptions for other APIs.
@@ -165,6 +186,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname.startsWith('/api/providers/lamoda/')) {
           if (url.pathname === '/api/providers/lamoda/status') return send(response,200,{...(lamoda ? lamoda.status() : {available:false,configured:false,message:'Раздел Lamoda временно недоступен.'}),csrf_token:token});
           if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
+          if (url.pathname === '/api/providers/lamoda/desktop/status') return send(response,200,lamoda.desktop.status());
           if (url.pathname === '/api/providers/lamoda/login/status') return send(response,200,lamoda.login.status());
           if (url.pathname.startsWith('/api/providers/lamoda/login/assets/')) {
             if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker'});
@@ -249,6 +271,11 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       const data = await readJson(request);
       if (url.pathname.startsWith('/api/providers/lamoda/')) {
         if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
+        if (['/api/providers/lamoda/desktop/pairing','/api/providers/lamoda/desktop/revoke'].includes(url.pathname)) {
+          if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});
+          if (url.pathname.endsWith('/pairing')) return send(response,200,lamoda.desktop.pairing());
+          await lamoda.desktop.revoke();return send(response,200,{ok:true});
+        }
         if (['/api/providers/lamoda/mobile/pairing','/api/providers/lamoda/mobile/connect','/api/providers/lamoda/mobile/revoke'].includes(url.pathname)) {
           if (!auth || !session) return send(response,403,{error:'Войдите в Price Checker.'});
           if (url.pathname.endsWith('/connect')) {
