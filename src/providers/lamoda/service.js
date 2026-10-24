@@ -8,6 +8,7 @@ import {LamodaChannel} from './channel.js';
 import {LamodaLogin} from './login.js';
 import {LamodaError} from './parser.js';
 import {LamodaMobile} from './mobile.js';
+import {LamodaDesktop} from './desktop.js';
 import {FirebaseSender,LamodaPush} from './push.js';
 import {collectionQueue} from '../../collection-queue.js';
 import {retryCollectionRead} from '../../collection-retry.js';
@@ -18,6 +19,7 @@ export class LamodaService {
     this.collectionQueue = collectionQueue(root);
     this.pause = pause;
     this.mobile = new LamodaMobile(this.db,{current});
+    this.desktop = new LamodaDesktop(this.db,{current,queue:this.collectionQueue});
     this.push = new LamodaPush(this.mobile,pushSender,{current});this.mobile.push = this.push;
     this.login = new LamodaLogin(root,{db:this.db,channel:() => channel({timeout:60000}),onAuthorized:() => {
       this.db.updateState({action_required:0,message:'',next_check:this.nextAttempt()});
@@ -29,9 +31,12 @@ export class LamodaService {
     const state = this.config();if (!state.schedule_enabled) return null;
     return nextScheduledCheck(state,new Date(Math.max(this.current(),(Date.parse(notBefore)||0)-1)));
   }
-  status() {const state = this.config();return {...state,available:true,configured:this.db.configured(),running:!!this.running,
+  status() {const state = this.config(),desktop = this.desktop.status();
+    const pause = Math.max(Date.parse(state.not_before)||0,Date.parse(desktop.not_before)||0);
+    return {...state,available:true,configured:this.db.configured(),running:!!this.running || !!desktop.job,
     ...this.collectionQueue.status('lamoda'),
-    next_check:state.schedule_enabled ? state.next_check : null,action_required:!!state.action_required,checks:this.db.checks(),login:this.login.status(),mobile:this.mobile.status()};}
+    next_check:state.schedule_enabled ? state.next_check : null,not_before:pause ? new Date(pause).toISOString() : null,
+    action_required:!!state.action_required,checks:this.db.checks(),login:this.login.status(),mobile:this.mobile.status(),desktop};}
   settings(data) {
     const old = this.config(),config = scheduleSettings(data,old);
     if (config.schedule_enabled && (!this.db.configured() || old.action_required)) throw new ValidationError('Сначала подключите аккаунт Lamoda.');
@@ -42,9 +47,11 @@ export class LamodaService {
   }
   allowed(checkRunning = true) {
     if (this.closing || checkRunning && this.running) throw new ValidationError('Проверка Lamoda уже выполняется.');
+    if (this.desktop.status().job) throw new ValidationError('Пробный сбор Lamoda на ПК уже выполняется.');
     const state = this.db.state();
     if ((!this.db.configured() || state.action_required) && !this.mobile.enabled()) throw new ValidationError('Нужно подтвердить вход в Lamoda.');
     if (Date.parse(state.not_before) > this.current()) throw new ValidationError('Сохраняется пауза источника Lamoda.');
+    if (Date.parse(this.desktop.notBefore()) > this.current()) throw new ValidationError('Сохраняется пауза источника Lamoda.');
   }
   async start({trigger = 'manual'} = {}) {
     this.allowed();
@@ -116,9 +123,10 @@ export class LamodaService {
   }
   async tick() {
     const state = this.db.state();
-    if (!this.closing && !this.running && state.schedule_enabled && !state.action_required && state.next_check && Date.parse(state.next_check) <= this.current()) await this.start({trigger:'schedule'});
+    if (!this.closing && !this.running && !this.desktop.status().job && !(Date.parse(this.desktop.notBefore()) > this.current())
+      && state.schedule_enabled && !state.action_required && state.next_check && Date.parse(state.next_check) <= this.current()) await this.start({trigger:'schedule'});
   }
-  async close() {this.closing = true;clearInterval(this.timer);clearInterval(this.pushTimer);this.controller?.abort();await this.running?.catch(() => {});await this.push.running;await this.login.close();this.db.close();}
+  async close() {this.closing = true;clearInterval(this.timer);clearInterval(this.pushTimer);this.controller?.abort();await this.desktop.close();await this.running?.catch(() => {});await this.push.running;await this.login.close();this.db.close();}
 }
 export function createLamodaService(root,options) {
   try {return new LamodaService(root,options);} catch {console.error(JSON.stringify({store:'lamoda',event:'storage_unavailable'}));return null;}
