@@ -64,6 +64,8 @@ export class Database {
         CREATE INDEX observation_lookup ON observations(variant_id,context,checked_at DESC,id DESC);`));
       this.statements.clear();
     }
+    // Create after legacy table migrations, which replace observations and its indexes.
+    this.connection.exec('CREATE INDEX IF NOT EXISTS observation_history ON observations(context,check_id,checked_at,id)');
     this.transaction(() => {
       for (const [key, label] of Object.entries(LISTS)) this.run('INSERT OR IGNORE INTO lists VALUES(?,?)', key, label);
       this.run("UPDATE checks SET status='interrupted',finished_at=?,message='Приложение было закрыто во время проверки' WHERE status='running'", now());
@@ -204,15 +206,44 @@ export class Database {
     const runs = this.all(`SELECT o.check_id,MAX(o.checked_at) AS checked_at,MIN(o.id) AS first_id FROM observations o JOIN memberships m ON m.variant_id=o.variant_id
       WHERE m.list_id=? AND o.context=? AND o.checked_at>=? AND o.checked_at>=m.joined_at AND (m.left_at IS NULL OR o.checked_at<m.left_at)
       GROUP BY o.check_id,CASE WHEN o.check_id IS NULL THEN o.checked_at END ORDER BY checked_at,first_id`, listId, context, since);
-    return runs.map(run => {
+    if (!runs.length) return [];
+    const memberships = this.all(`SELECT id,variant_id,joined_at,left_at FROM memberships
+      WHERE list_id=? AND joined_at<=? AND (left_at IS NULL OR left_at>?)`, listId, runs.at(-1).checked_at, runs[0].checked_at);
+    const events = memberships.flatMap(member => [
+      {stamp: member.joined_at, member, join: true},
+      ...(member.left_at == null ? [] : [{stamp: member.left_at, member, join: false}]),
+    ]).sort((a, b) => a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : Number(b.join) - Number(a.join));
+    // JSON supplies a bounded table of selected runs without SQLite's parameter-count limit.
+    // Include readings before `since` when their check finishes inside the selected period.
+    // CROSS JOIN keeps the small run table outermost; materialize JSON extraction once per run.
+    const observations = this.all(`WITH selected AS MATERIALIZED (
+        SELECT key AS run_index,json_extract(value,'$.check_id') AS check_id,
+          json_extract(value,'$.checked_at') AS checked_at FROM json_each(?))
+      SELECT r.run_index,o.variant_id,o.checked_at,o.price,o.in_stock,o.status,o.message
+      FROM selected r CROSS JOIN observations o
+        ON o.context=? AND o.check_id IS r.check_id AND o.checked_at<=r.checked_at
+        AND o.checked_at>=CASE WHEN r.check_id IS NULL THEN r.checked_at ELSE '' END
+      ORDER BY r.run_index,o.checked_at,o.id`, JSON.stringify(runs), context);
+    const active = new Map();
+    let eventIndex = 0, observationIndex = 0;
+    return runs.map((run, runIndex) => {
       const stamp = run.checked_at;
-      const members = this.all('SELECT variant_id FROM memberships WHERE list_id=? AND joined_at<=? AND (left_at IS NULL OR left_at>?) ORDER BY variant_id', listId, stamp, stamp).map(row => row.variant_id);
-      const observations = this.all(`SELECT o.* FROM observations o
-        WHERE o.context=? AND o.check_id IS ? AND o.checked_at<=? AND (o.check_id IS NOT NULL OR o.checked_at=?)
-        AND EXISTS(SELECT 1 FROM memberships m WHERE m.variant_id=o.variant_id AND m.list_id=?
-          AND m.joined_at<=? AND (m.left_at IS NULL OR m.left_at>?) AND o.checked_at>=m.joined_at)
-        ORDER BY o.checked_at,o.id`, context, run.check_id, stamp, stamp, listId, stamp, stamp);
-      const rows = [...new Map(observations.map(row => [row.variant_id, row])).values()];
+      while (eventIndex < events.length && events[eventIndex].stamp <= stamp) {
+        const {member, join} = events[eventIndex++];
+        if (join) active.set(member.id, member);
+        else active.delete(member.id);
+      }
+      const members = [...active.values()].map(member => member.variant_id).sort((a, b) => a - b);
+      const joined = new Map();
+      for (const member of active.values()) {
+        if (!joined.has(member.variant_id) || member.joined_at < joined.get(member.variant_id)) joined.set(member.variant_id, member.joined_at);
+      }
+      const latest = new Map();
+      while (observationIndex < observations.length && observations[observationIndex].run_index === runIndex) {
+        const row = observations[observationIndex++];
+        if (joined.has(row.variant_id) && row.checked_at >= joined.get(row.variant_id)) latest.set(row.variant_id, row);
+      }
+      const rows = [...latest.values()];
       const known = rows.filter(row => row.status === 'ok' && row.price != null && row.in_stock);
       const failed = rows.filter(row => row.status === 'error');
       const complete = known.length === members.length && members.length > 0;

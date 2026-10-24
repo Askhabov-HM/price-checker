@@ -55,4 +55,40 @@ describe('chart scales and gaps', () => {
     expect(rows[0].chartPrice).toBeNull();
     expect(seriesIds).toEqual([]);
   });
+
+  it('alternates adjacent compositions between two lanes even at identical times', () => {
+    const points = ['a', 'a', 'b', 'c', 'c', 'd'].map((composition, index) => ({composition, price: 100 + index, checked_at: '2026-10-11T00:00:00Z'}));
+    for (const scale of ['checks', 'time'] as const) {
+      const {rows} = chartData(points, scale, true);
+      expect(rows.map(row => row.series0)).toEqual([100, 101, null, 103, 104, null]);
+      expect(rows.map(row => row.series1)).toEqual([null, null, 102, null, null, 105]);
+      expect(rows.map(row => row.checked_at)).toEqual(points.map(point => point.checked_at));
+    }
+    expect(chartData(points, 'checks').rows.map(row => row.series0)).toEqual(points.map(point => point.price));
+  });
+
+  it('keeps unavailable baselines and prices separate from successful lanes', () => {
+    const points = [
+      {price: null, in_stock: false}, {price: 100, in_stock: true},
+      {price: null, in_stock: false}, {price: 80, in_stock: true},
+      {price: 70, status: 'error' as const}, {price: 60, in_stock: true},
+    ].map(point => ({...point, checked_at: '2026-10-11T00:00:00Z'}));
+    const {rows} = chartData(points, 'checks');
+    expect(rows.map(row => row.unavailableBaseline)).toEqual([0, null, null, null, null, null]);
+    expect(rows.map(row => row.unavailablePrice)).toEqual([null, null, 100, null, null, null]);
+    expect(rows.map(row => row.errorPrice)).toEqual([null, null, null, null, 70, null]);
+    expect(rows.map(row => row.series0)).toEqual([null, 100, null, null, null, 60]);
+    expect(rows.map(row => row.series1)).toEqual([null, null, null, 80, null, null]);
+  });
+
+  it('uses constant fields per reading with thousands of segments and preserves every price', () => {
+    const points = Array.from({length: 2000}, (_, index) => ({price: index, composition: String(index), checked_at: '2026-10-11T00:00:00Z'}));
+    const {rows, seriesIds} = chartData(points, 'checks', true);
+    expect(seriesIds).toHaveLength(points.length);
+    expect(rows).toHaveLength(points.length);
+    for (const [index, row] of rows.entries()) {
+      expect(Object.keys(row).filter(key => /^series\d+$/.test(key))).toEqual(['series0', 'series1']);
+      expect([row.series0, row.series1]).toEqual(index % 2 ? [null, index] : [index, null]);
+    }
+  });
 });

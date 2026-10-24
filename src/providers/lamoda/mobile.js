@@ -13,13 +13,24 @@ export class LamodaMobile {
       CREATE TABLE IF NOT EXISTS mobile_pairing(id INTEGER PRIMARY KEY CHECK(id=1),code_hash TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS mobile_jobs(id TEXT PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id),status TEXT NOT NULL,expires INTEGER NOT NULL,
         next_page INTEGER NOT NULL DEFAULT 1,result TEXT,error TEXT,bytes INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS mobile_pages(job_id TEXT NOT NULL REFERENCES mobile_jobs(id) ON DELETE CASCADE,page INTEGER NOT NULL,digest TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(job_id,page));`);
+      CREATE TABLE IF NOT EXISTS mobile_pages(job_id TEXT NOT NULL REFERENCES mobile_jobs(id) ON DELETE CASCADE,page INTEGER NOT NULL,digest TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(job_id,page));
+      CREATE TABLE IF NOT EXISTS mobile_diagnostics(id INTEGER PRIMARY KEY,job_id TEXT NOT NULL,event TEXT NOT NULL,at TEXT NOT NULL,
+        page INTEGER,reason TEXT,screen_locked INTEGER,screen_off INTEGER);
+      CREATE INDEX IF NOT EXISTS mobile_diagnostics_job ON mobile_diagnostics(job_id,id);`);
+  }
+  diagnostic(jobId,event,{page = null,reason = null,screenLocked = null,screenOff = null} = {}) {
+    this.sql.prepare('INSERT INTO mobile_diagnostics(job_id,event,at,page,reason,screen_locked,screen_off) VALUES(?,?,?,?,?,?,?)')
+      .run(jobId,event,new Date(this.current()).toISOString(),page,reason,screenLocked,screenOff);
+    this.sql.prepare('DELETE FROM mobile_diagnostics WHERE id <= (SELECT MAX(id)-5000 FROM mobile_diagnostics)').run();
+  }
+  diagnostics() {
+    return this.sql.prepare('SELECT job_id,event,at,page,reason,screen_locked,screen_off FROM mobile_diagnostics ORDER BY id DESC LIMIT 40').all();
   }
   enabled() {return !!this.sql.prepare('SELECT id FROM mobile_device WHERE id=1').get();}
   status() {
     const device = this.sql.prepare('SELECT name,last_seen FROM mobile_device WHERE id=1').get();
     const job = this.sql.prepare("SELECT id,expires,next_page FROM mobile_jobs WHERE status='pending' AND expires>? ORDER BY rowid DESC LIMIT 1").get(this.current());
-    return {enabled:!!device,device:device || null,job:job || null,push:this.push?.status() ?? null};
+    return {enabled:!!device,device:device || null,job:job || null,push:this.push?.status() ?? null,diagnostics:this.diagnostics()};
   }
   pairing() {
     const code = randomBytes(16).toString('hex'),expires = this.current()+10*60000;
@@ -49,7 +60,10 @@ export class LamodaMobile {
     this.sql.prepare("DELETE FROM mobile_pages WHERE job_id IN (SELECT id FROM mobile_jobs WHERE status!='pending')").run();
     this.sql.prepare("UPDATE telegram_outbox SET delivered_at=? WHERE delivered_at IS NULL AND event_id LIKE 'android:%'").run(new Date(this.current()).toISOString());
   }
-  next() {return this.status().job;}
+  next() {return this.sql.prepare("SELECT id,expires,next_page FROM mobile_jobs WHERE status='pending' AND expires>? ORDER BY rowid DESC LIMIT 1").get(this.current()) || null;}
+  contact(jobId,{screenLocked = null,screenOff = null} = {}) {
+    if (jobId) this.diagnostic(jobId,'phone_contact',{screenLocked,screenOff});
+  }
   stop(id) {
     if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) throw jobError();
     // A delayed stop may refer to an old job. Never cancel a newer scheduled check.
@@ -83,6 +97,7 @@ export class LamodaMobile {
     this.db.transaction(() => {
       this.sql.prepare('INSERT INTO mobile_pages VALUES(?,?,?,?)').run(id,page,digest,data);
       this.sql.prepare('UPDATE mobile_jobs SET next_page=?,bytes=bytes+? WHERE id=?').run(page+1,Buffer.byteLength(data),id);
+      this.diagnostic(id,'page_received',{page});
     });
     if (page >= parsed.pagination.pages) {
       const result = await readAllFavorites(async number => {
@@ -101,12 +116,14 @@ export class LamodaMobile {
     if (!['login_required','account_mismatch','account_unverified','incomplete_data','invalid_data','access_limited','rate_limited','interrupted'].includes(code)) code = 'invalid_data';
     const error = {code,retry_after_ms:Number.isSafeInteger(retryAfter) ? Math.max(0,Math.min(retryAfter,365*86400000)) : 0,http_status:[403,429].includes(httpStatus) ? httpStatus : null};
     this.sql.prepare("UPDATE mobile_jobs SET status='error',error=? WHERE id=? AND status='pending'").run(JSON.stringify(error),id);
+    this.diagnostic(id,'phone_error',{reason:code});
   }
   async collect(check,signal,{remind = true,expires = this.current()+10*60000} = {}) {
     this.cancel();
     this.sql.prepare("DELETE FROM mobile_jobs WHERE status!='pending'").run();
     const id = randomBytes(16).toString('hex');
     this.sql.prepare("INSERT INTO mobile_jobs(id,check_id,status,expires) VALUES(?,?,'pending',?)").run(id,check,expires);
+    this.diagnostic(id,'job_created');
     this.sql.prepare('INSERT INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)')
       .run('android:'+id,check,JSON.stringify({store:'lamoda',kind:'android',finishedAt:new Date(this.current()).toISOString()}));
     if (remind) this.push?.enqueue(id);
@@ -120,6 +137,11 @@ export class LamodaMobile {
       }
       throw new LamodaError('interrupted');
     } finally {
+      const row = this.sql.prepare('SELECT status FROM mobile_jobs WHERE id=?').get(id);
+      const contacted = this.sql.prepare("SELECT 1 FROM mobile_diagnostics WHERE job_id=? AND event='phone_contact' LIMIT 1").get(id);
+      const event = row?.status === 'complete' ? 'completed' : row?.status === 'error' ? 'failed'
+        : this.current() >= expires ? contacted ? 'expired' : 'no_response' : 'ended';
+      this.diagnostic(id,event);
       this.sql.prepare("UPDATE mobile_jobs SET status='canceled' WHERE id=? AND status='pending'").run(id);
       this.sql.prepare('UPDATE mobile_jobs SET result=NULL WHERE id=?').run(id);
       this.sql.prepare('UPDATE telegram_outbox SET delivered_at=? WHERE event_id=? AND delivered_at IS NULL')

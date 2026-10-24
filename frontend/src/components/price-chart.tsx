@@ -21,7 +21,13 @@ export function chartData(points: PricePoint[], scale: ChartScale, total = false
       unavailablePrice, unavailableBaseline: unavailable && unavailablePrice == null ? 0 : null};
   });
   const seriesIds = [...new Set(rows.filter(row => row.chartPrice != null).map(row => row.series))];
-  return {rows: rows.map(row => ({...row, ...Object.fromEntries(seriesIds.map(id => [`series${id}`, row.series === id ? row.chartPrice : null]))})), seriesIds};
+  // Adjacent segments alternate lanes; every other lane is null at their boundary.
+  // Two fixed Lines preserve gaps (including equal timestamps) without an N × S matrix.
+  const lanes = new Map(seriesIds.map((id, index) => [id, index % 2]));
+  return {rows: rows.map(row => ({...row,
+    series0: lanes.get(row.series) === 0 ? row.chartPrice : null,
+    series1: lanes.get(row.series) === 1 ? row.chartPrice : null,
+  })), seriesIds};
 }
 
 const ChartContext = createContext<{points: PricePoint[]; total: boolean} | null>(null);

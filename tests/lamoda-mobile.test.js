@@ -81,6 +81,8 @@ test('Android stages every page before changing history, accepts identical retri
   assert.deepEqual(await mobile.accept(job.id,1,first.user,first.payload),a);
   assert.equal((await mobile.accept(job.id,2,second.user,second.payload)).complete,true);
   await lamoda.running;
+  assert.deepEqual(mobile.diagnostics().filter(row => row.job_id === job.id).map(row => row.event).toReversed(),
+    ['job_created','page_received','page_received','completed']);
   assert.equal(lamoda.db.dashboard().items.length,2);assert.equal(lamoda.db.matches('42'),true);
   const sellerItem = lamoda.db.dashboard().items.find(item => item.sku === 'SYNTHETIC002');
   assert.equal(sellerItem.price,10000);assert.match(sellerItem.url,/\/synthetic009\//);
@@ -116,6 +118,7 @@ test('Android obeys Retry-After and its ten-minute expiry releases the queue wit
   clock+=10*60000-1;assert.equal(mobile.next().id,job.id);assert.equal(lamoda.collectionQueue.status('ozon').queued,true);
   clock++;assert.equal(mobile.next(),null);
   await assert.rejects(mobile.accept(job.id,1,state().user,state().payload));await lamoda.running;
+  assert.equal(mobile.diagnostics().find(row => row.job_id === job.id)?.event,'no_response');
   assert.equal(await next.done,'next store');
   assert.equal(lamoda.db.checks()[0].status,'interrupted');assert.equal(lamoda.status().schedule_enabled,true);
 });
@@ -185,7 +188,10 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
   const registered = await post('/api/lamoda-mobile/push',push,device);
   assert.equal(registered.status,200);assert.equal((await registered.json()).enabled,true);
   assert.equal(lamoda.push.status().enabled,true);
-  const started = await (await post('/api/lamoda-mobile/start',{},device)).json();assert.ok(started.job);
+  const started = await (await post('/api/lamoda-mobile/start',{},
+    {...device,'X-Screen-Locked':'true','X-Screen-Off':'true'})).json();assert.ok(started.job);
+  const contact = mobile.diagnostics().find(row => row.event === 'phone_contact');
+  assert.equal(contact.job_id,started.job.id);assert.equal(contact.screen_locked,1);assert.equal(contact.screen_off,1);
   await bot.deliverLamoda();assert.equal(sent.length,1);assert.match(sent[0].text,/телефоне/);
   assert.equal(sent[0].reply_markup.inline_keyboard[0][0].url,'https://prices.example/lamoda/android/open');
   for (const page of [1,2]) {

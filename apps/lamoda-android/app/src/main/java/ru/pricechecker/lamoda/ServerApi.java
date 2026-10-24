@@ -1,5 +1,8 @@
 package ru.pricechecker.lamoda;
 
+import android.app.KeyguardManager;
+import android.content.Context;
+import android.os.PowerManager;
 import org.json.JSONObject;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
@@ -18,7 +21,9 @@ import javax.net.ssl.X509TrustManager;
 final class ServerApi {
     private final String origin;
     private final String token;
-    ServerApi(String origin, String token) { this.origin = AddressPolicy.server(origin); this.token = token; }
+    private final Context context;
+    ServerApi(String origin, String token) { this(origin,token,null); }
+    ServerApi(String origin, String token, Context context) { this.origin = AddressPolicy.server(origin); this.token = token; this.context = context; }
     private static boolean pinned(X509Certificate cert) {
         try {
             cert.checkValidity();
@@ -55,6 +60,10 @@ final class ServerApi {
             connection.setConnectTimeout(15000); connection.setReadTimeout(20000);
             connection.setRequestProperty("Accept", "application/json");
             if (!token.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + token);
+            if (context != null) {
+                connection.setRequestProperty("X-Screen-Locked",String.valueOf(context.getSystemService(KeyguardManager.class).isDeviceLocked()));
+                connection.setRequestProperty("X-Screen-Off",String.valueOf(!context.getSystemService(PowerManager.class).isInteractive()));
+            }
             if (body != null) {
                 byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
                 if (bytes.length > 2 * 1024 * 1024) throw new IllegalArgumentException("Ответ избранного слишком большой.");

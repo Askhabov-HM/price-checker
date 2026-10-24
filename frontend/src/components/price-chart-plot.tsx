@@ -9,7 +9,7 @@ import {isUnavailable} from '@/lib/availability';
 export default function Plot({id, small = false}: {id?: string; small?: boolean}) {
   const {points, total} = useChart();
   const scale = usePreferences(state => state.chartScale);
-  const {rows, seriesIds} = useMemo(() => chartData(points, scale, total), [points, scale, total]);
+  const {rows} = useMemo(() => chartData(points, scale, total), [points, scale, total]);
   const valid = points.filter(point => point.status !== 'error' && point.price != null && Number.isFinite(point.price));
   const errors = points.filter(point => point.status === 'error').length;
   const unavailable = points.filter(isUnavailable).length;
@@ -31,7 +31,7 @@ export default function Plot({id, small = false}: {id?: string; small?: boolean}
             : rub(point.price);
           return <div className="chart-tooltip"><strong className={unavailable ? 'availability-unavailable' : undefined}>{title}</strong><span>{date(point.checked_at, {second: '2-digit'})}</span>{unavailable && <span className="availability-unavailable">Нет в наличии · отслеживаем возвращение</span>}{point.status === 'error' && <span>{point.message || 'Не удалось получить цену'}</span>}</div>;
         }} />}
-        {seriesIds.map(series => <Line key={series} type="linear" dataKey={`series${series}`} stroke="var(--chart-line)" strokeWidth={small ? 1.8 : 2.5} connectNulls={false} isAnimationActive={false} dot={{r: small ? 2.5 : 4, fill: 'var(--chart-line)', stroke: 'var(--chart-point-border)', strokeWidth: small ? 0 : 2}} activeDot={small ? false : {r: 6}} />)}
+        {[0, 1].map(series => <Line key={series} type="linear" dataKey={`series${series}`} stroke="var(--chart-line)" strokeWidth={small ? 1.8 : 2.5} connectNulls={false} isAnimationActive={false} dot={{r: small ? 2.5 : 4, fill: 'var(--chart-line)', stroke: 'var(--chart-point-border)', strokeWidth: small ? 0 : 2}} activeDot={small ? false : {r: 6}} />)}
         {(['errorPrice', 'errorBaseline'] as const).map(dataKey => <Line key={dataKey} dataKey={dataKey} yAxisId={dataKey === 'errorBaseline' ? 'error-baseline' : 0} stroke="none" isAnimationActive={false} dot={{className: 'chart-error-dot', r: small ? 2.5 : 4, fill: 'var(--chart-error)', stroke: 'var(--chart-point-border)', strokeWidth: small ? 0 : 2}} activeDot={small ? false : {r: 6, fill: 'var(--chart-error)', stroke: 'var(--chart-point-border)'}} />)}
         {(['unavailablePrice', 'unavailableBaseline'] as const).map(dataKey => <Line key={dataKey} dataKey={dataKey} yAxisId={dataKey === 'unavailableBaseline' ? 'error-baseline' : 0} stroke="none" isAnimationActive={false} dot={{className: 'chart-unavailable-dot', r: small ? 2.5 : 4, fill: 'var(--chart-unavailable)', stroke: 'var(--chart-point-border)', strokeWidth: small ? 0 : 2}} activeDot={small ? false : {r: 6, fill: 'var(--chart-unavailable)', stroke: 'var(--chart-point-border)'}} />)}
       </LineChart>

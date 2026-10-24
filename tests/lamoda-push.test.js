@@ -68,6 +68,10 @@ test('Push retry is independent of collection, durable, deduplicated and honors 
   now+=179999;await lamoda.push.flush();assert.equal(attempts,1);
   now++;await Promise.all([lamoda.push.flush(),lamoda.push.flush()]);assert.equal(attempts,2);
   await lamoda.push.flush();assert.equal(attempts,2);assert.ok(lamoda.push.status().accepted_at);
+  now+=120000;await lamoda.push.flush();assert.equal(attempts,3);
+  lamoda.mobile.contact(job.id,{screenLocked:1,screenOff:1});
+  now+=120000;await lamoda.push.flush();assert.equal(attempts,3);
+  assert.equal(lamoda.mobile.diagnostics().filter(row => row.job_id === job.id && row.event === 'push_accepted').length,2);
   assert.doesNotMatch(JSON.stringify(lamoda.status()),/synthetic-registration-token/);
 });
 
