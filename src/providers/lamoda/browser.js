@@ -9,6 +9,7 @@ import {LamodaDiagnostics} from './diagnostics.js';
 
 const origin = 'https://www.lamoda.ru';
 const homepage = 'https://lamoda.ru/';
+const wishlist = origin+'/wishlist/';
 const allowedOrigins = [origin,new URL(homepage).origin];
 export function lamodaBrowserProxyArgs(value = process.env.LAMODA_PROXY_URL) {
   if (value === undefined) return [];
@@ -117,6 +118,10 @@ export class LamodaBrowser {
     await this.ensure();
     await this.call('Page.navigate',{url:homepage},this.session);
   }
+  async openWishlist() {
+    await this.ensure();
+    await this.call('Page.navigate',{url:wishlist},this.session);
+  }
   async preparePage() {
     await this.ensure();
     const expression = '({origin:location.origin,ready:document.readyState})';
@@ -171,7 +176,7 @@ export class LamodaBrowser {
   }
   async startLogin() {
     if (this.login) throw new LamodaError('browser_unavailable');
-    await this.openHome();
+    await this.openWishlist();
     const directory = join('/var/lib/price-checker-lamoda-browser','login-'+randomBytes(12).toString('hex'));mkdirSync(directory,{mode:0o700});
     const password = randomBytes(6).toString('base64url'),auth = join(directory,'vnc-auth'),firstChild = this.children.length;
     try {

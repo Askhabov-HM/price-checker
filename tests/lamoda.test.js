@@ -141,10 +141,10 @@ test('Lamoda browser transport uses CDP only and saves nothing for a different a
   assert.throws(() => wishlistExpression('1;alert(1)'));assert.throws(() => wishlistExpression(0));
 });
 
-test('Lamoda opens only its homepage for interactive login without reading favorites',async () => {
+test('Lamoda opens the wishlist for interactive viewing without collector reads',async () => {
   const calls = [],browser = new LamodaBrowser({call:async (method,args) => {calls.push({method,args});return {};}});
-  await browser.openHome();
-  assert.deepEqual(calls,[{method:'Page.navigate',args:{url:'https://lamoda.ru/'}}]);
+  await browser.openWishlist();
+  assert.deepEqual(calls,[{method:'Page.navigate',args:{url:'https://www.lamoda.ru/wishlist/'}}]);
 });
 test('Lamoda login is bound to its owner and cannot replace a previously connected account',async t => {
   const {root,db} = store(t);db.bindAccount('42');let account = '99';const actions = [];
