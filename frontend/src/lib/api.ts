@@ -1,5 +1,6 @@
 import {QueryClient, queryOptions} from '@tanstack/react-query';
 import type {AuthState, DashboardData, DetailData, ListId, Period, PriceContext, Status} from './types';
+import {mutationRefetch,settledRevision} from './collection-state';
 
 export const queryClient = new QueryClient({defaultOptions: {queries: {retry: 1, staleTime: 1000}, mutations: {retry: false}}});
 
@@ -64,9 +65,12 @@ export async function mutate<T = {ok: boolean}>(path: string, data: unknown): Pr
   return request<T>(path, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': status.csrf_token || ''}, body: JSON.stringify(data)});
 }
 export async function invalidatePrices() {
+  const before = settledRevision(queryClient.getQueryData<Status>(['status']));
+  await queryClient.invalidateQueries({queryKey:['status']});
+  const status = queryClient.getQueryData<Status>(['status']);
+  const refetchType = mutationRefetch(status?.running,before,settledRevision(status));
   await Promise.all([
-    queryClient.invalidateQueries({queryKey: ['status']}),
-    queryClient.invalidateQueries({queryKey: ['dashboard']}),
-    queryClient.invalidateQueries({queryKey: ['detail']}),
+    queryClient.invalidateQueries({queryKey: ['dashboard'],refetchType}),
+    queryClient.invalidateQueries({queryKey: ['detail'],refetchType}),
   ]);
 }

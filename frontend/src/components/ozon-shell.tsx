@@ -6,11 +6,13 @@ import {authOptions, logout} from '@/lib/api';
 import {Button} from './ui/button';
 import {ozonStatusOptions} from '@/lib/ozon';
 import {OzonSettingsDialog} from './forms';
+import {CollectionDataBoundary,settledRevision,useCollectionDataGate} from '@/hooks/use-collection-data';
 
 export function OzonShell() {
   const search = useSearch({from:'__root__'}), auth = useQuery(authOptions);
   const signOut = useMutation({mutationFn:logout});
   const status = useQuery(ozonStatusOptions), [settings,setSettings] = useState(false);
+  const ready = useCollectionDataGate('ozon',!!status.data,!!status.data?.running,settledRevision(status.data));
   return <><aside className="sidebar"><Link className="brand" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}><span className="brand-icon">p<span>·</span></span><span>pricechecker<small>ИСТОРИЯ ВАШИХ ЦЕН</small></span></Link>
     <div className="sidebar-label">МАГАЗИНЫ</div><nav aria-label="Магазины"><Link className="nav-link" to="/$listId" params={{listId:'cart'}} search={search}><ArrowLeft size={19}/><span>Randewoo</span></Link><Link className="nav-link active" aria-current="page" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}><ShoppingBag size={19}/><span>Ozon</span></Link></nav>
     <Link className="ozon-provider-link" to="/lamoda" search={search}>Lamoda ↗</Link>
@@ -18,5 +20,5 @@ export function OzonShell() {
     <div className="sidebar-bottom"><Link className="nav-link" aria-label="Браузер Ozon" to="/ozon/browser" search={search}><Monitor size={19}/><span>Браузер Ozon</span></Link>
       <Button id="ozon-settings-button" variant="ghost" className="settings-button max-[850px]:size-10 max-[850px]:p-0" aria-label="Настройки Ozon" disabled={!status.data} onClick={() => setSettings(true)}><Settings size={16}/><span className="sidebar-action-label">Настройки Ozon</span></Button></div></aside>
     <main className="main"><header className="topbar"><div className="breadcrumb">Моя коллекция <span>/</span> <b>Ozon</b></div><div className="topbar-right">{auth.data?.required && <Button variant="ghost" size="sm" aria-label="Выйти из Price Checker" disabled={signOut.isPending} onClick={() => signOut.mutate()}><LogOut size={16}/>Выйти</Button>}</div></header>
-      <div className="workspace">{signOut.error && <p className="notice" role="alert">{signOut.error.message}</p>}<Outlet/><footer className="page-footer"><span>pricechecker · Ozon</span><span>Цены из вашего избранного</span></footer></div></main><OzonSettingsDialog status={status.data} open={settings} onClose={() => setSettings(false)}/></>;
+      <div className="workspace">{signOut.error && <p className="notice" role="alert">{signOut.error.message}</p>}<CollectionDataBoundary value={{ozon:ready}}><Outlet/></CollectionDataBoundary><footer className="page-footer"><span>pricechecker · Ozon</span><span>Цены из вашего избранного</span></footer></div></main><OzonSettingsDialog status={status.data} open={settings} onClose={() => setSettings(false)}/></>;
 }

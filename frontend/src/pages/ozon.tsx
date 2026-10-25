@@ -1,4 +1,5 @@
-import {useEffect, useState} from 'react';
+import {useState} from 'react';
+import {useCollectionData} from '@/hooks/use-collection-data';
 import {useNavigate, useSearch} from '@tanstack/react-router';
 import {useMutation, useQuery} from '@tanstack/react-query';
 import {RefreshCw, Plus, Pause, Play, Settings} from 'lucide-react';
@@ -18,17 +19,17 @@ const labels: Record<OzonList,string> = {favorites:'Избранное',watching
 const stock: Record<string,string> = {available:'В наличии',out_of_stock:'Нет в наличии',unavailable:'Недоступен',unknown:'Наличие не подтверждено'};
 export function OzonDashboard() {
   const search = useSearch({from:'/ozon'}), navigate = useNavigate({from:'/ozon'});
-  const statusQuery = useQuery(ozonStatusOptions), dashboard = useQuery(ozonDashboardOptions(search.ozonList));
+  const ready = useCollectionData('ozon');
+  const statusQuery = useQuery(ozonStatusOptions), dashboard = useQuery({...ozonDashboardOptions(search.ozonList),enabled:ready});
   const status = statusQuery.data, now = useNow();
+  const latestCheck = status?.checks?.[0];
   const [url,setUrl] = useState(''), [selected,setSelected] = useState<string | null>(null), [days,setDays] = useState(30);
   const [settingsOpen,setSettingsOpen] = useState(false);
-  const detail = useQuery(ozonDetailOptions(selected,days));
+  const detail = useQuery({...ozonDetailOptions(selected,days),enabled:ready && selected !== null});
   const refresh = useMutation({mutationFn:(id: string | null) => ozonMutate('refresh',id ? {id} : {}),onSuccess:invalidateOzon});
   const schedule = useMutation({mutationFn:(enabled: boolean) => ozonMutate('settings',{schedule_enabled:enabled}),onSuccess:invalidateOzon});
   const add = useMutation({mutationFn:() => ozonMutate<{id:string}>('watch/add',{url}),onSuccess:() => {setUrl(''); void navigate({search:previous => ({...previous,ozonList:'watching'})}); return invalidateOzon();}});
   const remove = useMutation({mutationFn:(id: string) => ozonMutate('watch/remove',{id}),onSuccess:invalidateOzon});
-  const latestCheck = status?.checks?.[0], version = latestCheck ? `${latestCheck.id}:${latestCheck.status}:${latestCheck.completed}` : '';
-  useEffect(() => {void invalidateOzon();},[version]);
   const waiting = !!status?.not_before && Date.parse(status.not_before) > now;
   const blocked = !status?.configured || !status.available || status.running || status.action_required || waiting || refresh.isPending;
   const error = refresh.error || add.error || remove.error || schedule.error || dashboard.error || statusQuery.error;

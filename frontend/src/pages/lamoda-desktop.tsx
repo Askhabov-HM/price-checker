@@ -1,6 +1,7 @@
 import {useState} from 'react';
 import {Link,useNavigate,useSearch} from '@tanstack/react-router';
 import {useMutation,useQuery} from '@tanstack/react-query';
+import {useCollectionData} from '@/hooks/use-collection-data';
 import {Monitor} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
@@ -14,9 +15,10 @@ const stock:Record<string,string> = {available:'В наличии',unavailable:'
 
 export function LamodaDesktopPage() {
   const search = useSearch({from:'/lamoda/desktop'}),navigate = useNavigate({from:'/lamoda/desktop'}),now = useNow();
-  const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery(desktopDashboardOptions),desktop = statusQuery.data?.desktop;
+  const ready = useCollectionData('desktop');
+  const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery({...desktopDashboardOptions,enabled:ready}),desktop = statusQuery.data?.desktop;
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30);
-  const detail = useQuery(desktopDetailOptions(selected,days));
+  const detail = useQuery({...desktopDetailOptions(selected,days),enabled:ready && selected !== null});
   const pairing = useMutation({mutationFn:() => lamodaMutate<{code:string;expires_at:string}>('desktop/pairing')});
   const schedule = useMutation({mutationFn:(enabled:boolean) => lamodaMutate('desktop/schedule',{enabled}),onSuccess:invalidateLamoda});
   const revoke = useMutation({mutationFn:() => lamodaMutate('desktop/revoke'),onSuccess:invalidateLamoda});

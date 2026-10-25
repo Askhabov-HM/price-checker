@@ -61,8 +61,9 @@ export class LamodaDesktop {
   status() {
     const device = this.sql.prepare('SELECT name,last_seen FROM desktop_device WHERE id=1').get();
     const latest = this.sql.prepare('SELECT run_id,received_at,item_count FROM desktop_snapshots ORDER BY received_at DESC LIMIT 1').get();
+    const lastFailure = this.sql.prepare('SELECT id FROM desktop_failures ORDER BY id DESC LIMIT 1').get();
     return {enabled:!!device,device:device || null,latest:latest || null,not_before:this.notBefore(),schedule:this.schedule(),
-      job:this.job && this.job.status !== 'ended' ? this.jobState(this.job) : null};
+      last_failure_id:lastFailure?.id || 0,job:this.job && this.job.status !== 'ended' ? this.jobState(this.job) : null};
   }
   schedule() {
     const state = this.sql.prepare('SELECT schedule_enabled,next_check,action_required,last_error FROM desktop_state WHERE id=1').get();

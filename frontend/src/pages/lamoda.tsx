@@ -1,4 +1,5 @@
-import {useEffect,useState} from 'react';
+import {useState} from 'react';
+import {useCollectionData} from '@/hooks/use-collection-data';
 import {Link,useNavigate,useSearch} from '@tanstack/react-router';
 import {useMutation,useQuery} from '@tanstack/react-query';
 import {RefreshCw,Settings} from 'lucide-react';
@@ -24,12 +25,11 @@ function LamodaSettings({status,onClose}:{status:LamodaStatus;onClose:()=>void})
 }
 export function LamodaDashboard() {
   const search = useSearch({from:'/lamoda'}),navigate = useNavigate({from:'/lamoda'}),now = useNow();
-  const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery(lamodaDashboardOptions),status = statusQuery.data;
+  const ready = useCollectionData('lamoda');
+  const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery({...lamodaDashboardOptions,enabled:ready}),status = statusQuery.data;
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30),[settings,setSettings] = useState(false);
-  const detail = useQuery(lamodaDetailOptions(selected,days));
+  const detail = useQuery({...lamodaDetailOptions(selected,days),enabled:ready && selected !== null});
   const refresh = useMutation({mutationFn:() => lamodaMutate('refresh'),onSuccess:invalidateLamoda});
-  const check = status?.checks?.[0],version = check ? `${check.id}:${check.status}` : '';
-  useEffect(() => {void invalidateLamoda();},[version]);
   const waiting = !!status?.not_before && Date.parse(status.not_before)>now;
   const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || !status?.available || status.running || !!status?.desktop?.job || waiting || refresh.isPending;
   const error = statusQuery.error || dashboard.error || refresh.error;

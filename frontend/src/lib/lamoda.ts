@@ -2,13 +2,14 @@ import {queryOptions} from '@tanstack/react-query';
 import {authOptions,queryClient,request} from './api';
 import type {Check,Filter,Sort,ChangePeriod,ScheduleSettings,PriceChangeEvent,PricePoint,CollectionStatus} from './types';
 import {hasRecentChange} from './price-changes';
+import {desktopRevision,mutationRefetch,settledRevision} from './collection-state';
 
 export interface LamodaStatus extends ScheduleSettings, CollectionStatus {
   available:boolean; configured:boolean; running:boolean; next_check:string|null; not_before:string|null;
   action_required:boolean; message:string; checks:Check[];
   login:{available:boolean;active:boolean;required:boolean;expires_at:string|null};
   desktop?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;not_before:string|null;
-    latest:{run_id:string;received_at:string;item_count:number}|null;
+    latest:{run_id:string;received_at:string;item_count:number}|null;last_failure_id?:number;
     schedule:{enabled:boolean;interval_minutes:3;next_check:string|null;action_required:boolean;last_error:string|null};
     job:{id:string;status:'queued'|'active';expires_at:string|null}|null};
   mobile?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;job:{id:string;expires:number;next_page:number}|null;
@@ -25,19 +26,27 @@ export interface LamodaDashboard {items:LamodaItem[];history:(PricePoint&{count:
 export interface LamodaDetail {product:LamodaItem;points:LamodaPoint[];}
 export interface DesktopDashboard {items:LamodaItem[];history:(PricePoint&{count:number;priced_count:number;complete:boolean})[];
   activity:{at:string;status:'success'|'error';count:number;run_id?:string;message?:string}[];}
-export const lamodaStatusOptions = queryOptions({queryKey:['lamoda','status'],queryFn:({signal}) => request<LamodaStatus>('/api/providers/lamoda/status',{signal}),refetchInterval:q => q.state.data?.running ? 1000 : 15000});
+export const lamodaStatusOptions = queryOptions({queryKey:['lamoda','status'],queryFn:({signal}) => request<LamodaStatus>('/api/providers/lamoda/status',{signal}),refetchInterval:q => q.state.data?.running || q.state.data?.desktop?.job ? 1000 : 15000});
 export const lamodaDashboardOptions = queryOptions({queryKey:['lamoda','dashboard'],queryFn:({signal}) => request<LamodaDashboard>('/api/providers/lamoda/dashboard',{signal})});
 export const lamodaDetailOptions = (id:string|null,days:number) => queryOptions({queryKey:['lamoda','detail',id,days],enabled:id!==null,
   queryFn:({signal}) => request<LamodaDetail>(`/api/providers/lamoda/product/${encodeURIComponent(id||'')}/history?days=${days}`,{signal})});
 export const desktopDashboardOptions = queryOptions({queryKey:['lamoda','desktop','dashboard'],
-  queryFn:({signal}) => request<DesktopDashboard>('/api/providers/lamoda/desktop/dashboard',{signal}),refetchInterval:30000});
+  queryFn:({signal}) => request<DesktopDashboard>('/api/providers/lamoda/desktop/dashboard',{signal})});
 export const desktopDetailOptions = (id:string|null,days:number) => queryOptions({queryKey:['lamoda','desktop','detail',id,days],enabled:id!==null,
   queryFn:({signal}) => request<LamodaDetail>(`/api/providers/lamoda/desktop/product/${encodeURIComponent(id||'')}/history?days=${days}`,{signal})});
 export async function lamodaMutate<T = {ok:boolean}>(action:string,data:unknown = {}) {
   const auth = await queryClient.fetchQuery({...authOptions,staleTime:0});
   return request<T>('/api/providers/lamoda/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':auth.csrf_token},body:JSON.stringify(data)});
 }
-export const invalidateLamoda = () => queryClient.invalidateQueries({queryKey:['lamoda']});
+export async function invalidateLamoda() {
+  const before = queryClient.getQueryData<LamodaStatus>(['lamoda','status']);
+  await queryClient.invalidateQueries({queryKey:['lamoda','status']});
+  const status = queryClient.getQueryData<LamodaStatus>(['lamoda','status']);
+  await Promise.all(['dashboard','detail'].flatMap(part => [
+    queryClient.invalidateQueries({queryKey:['lamoda',part],refetchType:mutationRefetch(status?.running,settledRevision(before),settledRevision(status))}),
+    queryClient.invalidateQueries({queryKey:['lamoda','desktop',part],refetchType:mutationRefetch(!!status?.desktop?.job,desktopRevision(before?.desktop),desktopRevision(status?.desktop))}),
+  ]));
+}
 export function selectLamoda(items:LamodaItem[],search:string,filter:Filter,sort:Sort,changeDays:ChangePeriod,now:number) {
   const recent = (item:LamodaItem) => hasRecentChange(item,changeDays,now);
   return items.filter(item => `${item.title} ${item.color} ${item.sku}`.toLocaleLowerCase('ru').includes(search.toLocaleLowerCase('ru'))).filter(item => {
