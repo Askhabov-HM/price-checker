@@ -1,4 +1,4 @@
 @echo off
 setlocal
 node "%~dp0collect-once.js"
-pause
+if errorlevel 1 pause

@@ -1,15 +1,14 @@
 import {useState} from 'react';
 import {Link,useNavigate,useSearch} from '@tanstack/react-router';
-import {useMutation,useQuery} from '@tanstack/react-query';
+import {useQuery} from '@tanstack/react-query';
 import {useCollectionData} from '@/hooks/use-collection-data';
-import {Monitor} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
 import {PriceChart} from '@/components/price-chart';
 import {PriceChange,ProductFilters} from '@/components/product-table';
 import {date,rub} from '@/lib/format';
 import {useNow} from '@/hooks/use-now';
-import {desktopDashboardOptions,desktopDetailOptions,invalidateLamoda,lamodaMutate,lamodaStatusOptions,selectLamoda} from '@/lib/lamoda';
+import {desktopDashboardOptions,desktopDetailOptions,lamodaStatusOptions,selectLamoda} from '@/lib/lamoda';
 
 const stock:Record<string,string> = {available:'В наличии',unavailable:'Нет в наличии',unknown:'Наличие не подтверждено'};
 
@@ -19,30 +18,16 @@ export function LamodaDesktopPage() {
   const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery({...desktopDashboardOptions,enabled:ready}),desktop = statusQuery.data?.desktop;
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30);
   const detail = useQuery({...desktopDetailOptions(selected,days),enabled:query => selected !== null && ready(query)});
-  const pairing = useMutation({mutationFn:() => lamodaMutate<{code:string;expires_at:string}>('desktop/pairing')});
-  const schedule = useMutation({mutationFn:(enabled:boolean) => lamodaMutate('desktop/schedule',{enabled}),onSuccess:invalidateLamoda});
-  const revoke = useMutation({mutationFn:() => lamodaMutate('desktop/revoke'),onSuccess:invalidateLamoda});
-  const error = statusQuery.error || dashboard.error || pairing.error || schedule.error || revoke.error;
+  const error = statusQuery.error || dashboard.error;
   const items = dashboard.data?.items || [];
   const visible = selectLamoda(items,search.q,search.filter,search.sort,search.changeDays,now);
-  const waiting = !!desktop?.not_before && Date.parse(desktop.not_before)>now;
-  return <div><section className="page-heading"><div><div className="eyebrow">LAMODA · СБОР С ПК</div><h1>Lamoda<span className="title-dot">.</span> ПК</h1><p>Пробные снимки ноутбука · отдельная история</p></div>
-    <div className="heading-actions"><div className="next-check"><span>Следующий сбор ПК</span><strong>{desktop?.schedule.enabled ? date(desktop.schedule.next_check) : 'Не запланирован'}</strong></div>
-      <Button variant="outline" disabled={!desktop?.enabled || schedule.isPending} onClick={() => schedule.mutate(desktop?.schedule.action_required || !desktop?.schedule.enabled)}>
-        <Monitor size={15}/>{desktop?.schedule.action_required ? 'Повторить после входа' : desktop?.schedule.enabled ? 'Выключить каждые 3 минуты' : 'Включить каждые 3 минуты'}</Button></div></section>
+  return <div><section className="page-heading"><div><div className="eyebrow">LAMODA · АРХИВ ПК</div><h1>Lamoda<span className="title-dot">.</span> ПК</h1><p>Ранее сохранённые снимки ноутбука · отдельная история</p></div></section>
     {error && <p role="alert" className="notice">{error.message}</p>}
     <p className="small-muted"><Link to="/lamoda" search={search}>← Основной сбор Lamoda</Link></p>
-    <section className="overview-card"><div className="card-heading"><div><h2>Сборщик на ноутбуке</h2><p>ПК сохраняет снимки отдельно. Основная история цен и расписание Android не меняются.</p></div></div>
-      <p>{desktop?.enabled ? `ПК подключён · последний контакт ${date(desktop.device?.last_seen)}` : 'ПК ещё не подключён.'}</p>
-      <Button variant="outline" disabled={pairing.isPending} onClick={() => pairing.mutate()}>Получить код подключения ПК</Button>
-      {pairing.data && <p role="status">Код для <code>pair-desktop.cmd</code>: <code>{pairing.data.code}</code>. Действует до {date(pairing.data.expires_at)}.</p>}
-      {desktop?.job && <p role="status">Сбор ПК: {desktop.job.status === 'queued' ? 'ожидает общей очереди' : 'читает избранное'}.</p>}
-      {desktop?.schedule.action_required && <p role="alert" className="notice">Нужен вход в нужный аккаунт Lamoda на ноутбуке. После входа нажмите «Повторить после входа».</p>}
-      {waiting && <p>Пауза источника до {date(desktop?.not_before)}.</p>}
+    <section className="overview-card"><div className="card-heading"><div><h2>История ПК</h2><p>Windows-программа теперь только открывает избранное Lamoda в Chrome и не создаёт новых снимков.</p></div></div>
       {desktop?.latest && <p>Последний снимок: {date(desktop.latest.received_at)} · {desktop.latest.item_count} товаров.</p>}
-      {desktop?.enabled && <Button variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate()}>Отключить ПК</Button>}
     </section>
-    <section className="overview-card"><div className="card-heading"><div><h2>Стоимость доступного избранного · ПК</h2><p>{desktop?.schedule.enabled ? 'Пробное расписание: каждые 3 минуты.' : 'Пробное расписание выключено.'}</p></div></div>
+    <section className="overview-card"><div className="card-heading"><div><h2>Стоимость доступного избранного · ПК</h2><p>Ранее сохранённые снимки.</p></div></div>
       <PriceChart.Root points={dashboard.data?.history || []} total><PriceChart.ScaleControls/><div className="overview-chart"><PriceChart.Plot id="lamoda-desktop-overview-chart"/></div></PriceChart.Root>
       <p className="chart-caption">До 1000 последних снимков за 30 дней. В сумму входят известные цены доступных товаров; при изменении состава линия прерывается.</p></section>
     <section className="products-card"><div className="products-title"><div><h2>Все товары <span>{visible.length}</span></h2><p>Нажмите на товар для просмотра истории снимков ПК</p></div></div>
@@ -57,7 +42,7 @@ export function LamodaDesktopPage() {
             <td>{date(item.checked_at)}{item.status==='error' && <small className="ozon-error">Ошибка сбора: {item.message}. Цена от {date(item.price_at)}</small>}</td></tr>;})}
         {!visible.length && <tr><td colSpan={6} className="empty-state">{items.length ? 'Товары не найдены.' : 'Пока нет снимков ПК.'}</td></tr>}</tbody></table></div>}
       <div className="table-footer"><span>Показано {visible.length} из {items.length}</span><span>Рубли · время по Москве</span></div></section>
-    <section className="activity-card"><div className="card-heading"><h2>Пробные проверки ПК</h2></div>{dashboard.data?.activity.map((entry,index) => <div className="activity-row" key={entry.run_id || `${entry.at}:${index}`}>
+    <section className="activity-card"><div className="card-heading"><h2>Ранее выполненные проверки ПК</h2></div>{dashboard.data?.activity.map((entry,index) => <div className="activity-row" key={entry.run_id || `${entry.at}:${index}`}>
       <span className={`activity-dot ${entry.status}`}/><span className="activity-time">{date(entry.at,{second:'2-digit'})}</span>
       <span className="activity-message">{entry.status === 'success' ? `Снимок сохранён · ${entry.count} товаров` : `Ошибка сбора: ${entry.message}`}</span></div>)}</section>
     <Dialog open={selected!==null} onOpenChange={open => {if (!open) setSelected(null);}}><DialogContent className="max-h-[90vh] overflow-y-auto p-0 sm:max-w-[950px]"><DialogHeader className="dialog-top"><DialogTitle>{detail.data?.product.title || 'История цены · ПК'}</DialogTitle><DialogDescription>Только цены из пробных снимков ноутбука.</DialogDescription></DialogHeader>

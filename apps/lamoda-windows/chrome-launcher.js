@@ -36,7 +36,7 @@ export async function launchLamodaChrome({environment = process.env,platform = p
   if (platform !== 'win32') throw new Error('Lamoda Chrome launcher requires Windows');
   const chrome = chromePath(environment,fs);
   const profile = profilePath(environment,fs);
-  const args = ['--user-data-dir='+profile,'--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--new-window',lamodaUrl];
+  const args = ['--user-data-dir='+profile,'--new-tab',lamodaUrl];
   const child = spawnProcess(chrome,args,{cwd:dirname(chrome),detached:true,stdio:'ignore',windowsHide:false});
   await new Promise((resolve,reject) => {
     child.once('spawn',resolve);

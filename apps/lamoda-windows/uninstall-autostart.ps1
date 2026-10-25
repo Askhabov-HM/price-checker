@@ -9,4 +9,4 @@ Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object { $_.CommandLine -like "*$agent*" } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
-Write-Output "Removed $taskName. The server schedule can be disabled on the PC page."
+Write-Output "Removed $taskName."
