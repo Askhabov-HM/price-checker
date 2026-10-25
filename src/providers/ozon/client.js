@@ -6,7 +6,7 @@ import {OzonSession} from './session.js';
 import {importOzonConnection} from './connection.js';
 import {validateCapturedRequest} from './network-capture.js';
 import {accountMatches, bankConditionsRequest} from './account-context.js';
-import {latestFavorites, parseProductPage} from './parser.js';
+import {createFavoritesAccumulator, parseProductPage} from './parser.js';
 import {browserCollection} from './recovery.js';
 import {ozonProduct} from './url.js';
 
@@ -80,13 +80,15 @@ export class OzonClient {
   }
   async close() {const browser = this.browser;this.browser = null;await browser?.close();}
   async lists({limit = null} = {}) {
-    const pages = [], visited = new Set();
+    const visited = new Set();
+    let append;
+    try {append = createFavoritesAccumulator(limit);} catch {throw new OzonReadError('invalid_data');}
     let path = '/my/favorites?sorting=last_added', favorites;
     while (true) {
       if (visited.has(path)) throw new OzonReadError('incomplete_data');
       visited.add(path);
-      pages.push(await this.read(this.request(path),{loginFlag:true}));
-      try {favorites = latestFavorites(pages,limit);} catch {throw new OzonReadError('invalid_data');}
+      const data = await this.read(this.request(path),{loginFlag:true});
+      try {favorites = append(data);} catch {throw new OzonReadError('invalid_data');}
       if (favorites.complete) break;
       if (!favorites.next_page) throw new OzonReadError('incomplete_data');
       path = favorites.next_page;
