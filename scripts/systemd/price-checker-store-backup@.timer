@@ -1,0 +1,10 @@
+[Unit]
+Description=Check %i database for independent backups
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

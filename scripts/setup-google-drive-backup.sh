@@ -6,13 +6,16 @@ if [[ $EUID != 0 || $# -gt 1 || ${1:-} != '' && ${1:-} != '--enable' ]]; then
   exit 1
 fi
 directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ ${1:-} == '--enable' && -f /etc/price-checker-backup.json ]]; then
+  exec bash "$directory/setup-independent-backups.sh" --enable
+fi
 test -d /var/lib/price-checker/data
 if ! command -v rclone >/dev/null || ! command -v restic >/dev/null; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
     apt-get install --no-install-recommends --yes rclone restic
 fi
-install -d -m 700 /var/lib/price-checker-backup /var/lib/price-checker/secrets/google-drive-backup
+install -d -m 700 /var/lib/price-checker-backup /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
 install -d -m 755 /usr/local/lib/price-checker
 install -m 644 "$directory/google-drive-backup.py" /usr/local/lib/price-checker/google-drive-backup.py
 python3 - <<'PY'
@@ -41,9 +44,7 @@ install -m 644 "$directory/systemd/price-checker-backup.service" /etc/systemd/sy
 install -m 644 "$directory/systemd/price-checker-backup.timer" /etc/systemd/system/
 systemctl daemon-reload
 if [[ ${1:-} == '--enable' ]]; then
-  python3 /usr/local/lib/price-checker/google-drive-backup.py run --force --verify
-  systemctl enable --now price-checker-backup.timer
-  echo 'Encrypted Drive backups enabled; first upload and isolated recovery succeeded.'
+  exec bash "$directory/setup-independent-backups.sh" --enable
 else
   echo 'Backup tools installed. Authorize Drive, initialize storage, save the recovery password off-server, then rerun with --enable.'
 fi

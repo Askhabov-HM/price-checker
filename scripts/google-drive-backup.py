@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sqlite3
 import subprocess
 import tempfile
@@ -96,10 +97,10 @@ def describe(path, provider):
                 'signature': signature(connection)}
 
 
-def source_paths(data_dir):
+def source_paths(data_dir, stores=None):
     root = Path(data_dir).resolve(strict=True)
     paths = {}
-    for provider, relative in STORES.items():
+    for provider, relative in (STORES if stores is None else stores).items():
         path = root / relative
         if path.is_symlink() or not path.is_file() or path.resolve() != path:
             raise BackupError(f'Missing or redirected {provider} database')
@@ -107,26 +108,27 @@ def source_paths(data_dir):
     return paths
 
 
-def current_signatures(data_dir):
+def current_signatures(data_dir, stores=None):
     result = {}
-    for provider, path in source_paths(data_dir).items():
+    for provider, path in source_paths(data_dir, stores).items():
         with closing(open_readonly(path)) as connection:
             validate_provider(connection, provider)
             result[provider] = signature(connection)
     return result
 
 
-def create_snapshots(data_dir, staging):
+def create_snapshots(data_dir, staging, stores=None, manifest_format=FORMAT):
+    stores = STORES if stores is None else stores
     staging = Path(staging)
     if staging.is_symlink():
         raise BackupError('Staging directory must not be a symlink')
     staging.mkdir(mode=0o700, parents=True, exist_ok=True)
     # Never include arbitrary files or secrets from a reused staging directory.
-    allowed = {'manifest.json', 'randewoo.sqlite3', 'ozon.sqlite3'}
+    allowed = {'manifest.json', *(f'{provider}.sqlite3' for provider in stores)}
     if any(path.name not in allowed or path.is_symlink() for path in staging.iterdir()):
         raise BackupError('Unexpected file in backup staging directory')
     metadata = []
-    for provider, source in source_paths(data_dir).items():
+    for provider, source in source_paths(data_dir, stores).items():
         target = staging / f'{provider}.sqlite3'
         with tempfile.TemporaryDirectory(prefix='sqlite-', dir=staging.parent) as directory:
             temporary = Path(directory) / target.name
@@ -144,22 +146,23 @@ def create_snapshots(data_dir, staging):
             entry = describe(temporary, provider)
             os.replace(temporary, target)
             metadata.append(entry)
-    manifest = {'format': FORMAT, 'created_at': utc_now(), 'databases': metadata}
+    manifest = {'format': manifest_format, 'created_at': utc_now(), 'databases': metadata}
     atomic_json(staging / 'manifest.json', manifest)
     return manifest
 
 
-def validate_recovery(target):
+def validate_recovery(target, stores=None, manifest_format=FORMAT):
+    stores = STORES if stores is None else stores
     staging = Path(target) / 'staging'
     manifest_path = staging / 'manifest.json'
-    if manifest_path.is_symlink() or not manifest_path.is_file():
+    if staging.is_symlink() or manifest_path.is_symlink() or not manifest_path.is_file():
         raise BackupError('Recovery manifest is missing')
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-    if manifest.get('format') != FORMAT:
+    if manifest.get('format') != manifest_format:
         raise BackupError('Unsupported recovery manifest')
     entries = manifest.get('databases', [])
-    if len(entries) != len(STORES) or {entry.get('provider') for entry in entries} != set(STORES):
-        raise BackupError('Recovery must contain both independent store databases')
+    if len(entries) != len(stores) or {entry.get('provider') for entry in entries} != set(stores):
+        raise BackupError('Recovery must contain exactly the requested store databases')
     for entry in entries:
         provider = entry['provider']
         if entry.get('filename') != f'{provider}.sqlite3':
@@ -188,29 +191,53 @@ def load_config(path):
 
 
 class Backup:
+    stores = STORES
+    manifest_format = FORMAT
+    tag = TAG
+
     def __init__(self, config):
         self.config = config
         self.work = Path(config['work_dir'])
         self.work.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_file = self.work / 'state.json'
         self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {}
+        self.coordination = Path(config.get('coordination_dir', self.work.parent / 'price-checker-backup-coordination'))
+        self.deadline = None
 
     def restic(self, *arguments):
         environment = dict(os.environ, RESTIC_REPOSITORY=self.config['repository'],
                            RESTIC_PASSWORD_FILE=self.config['password_file'],
                            RESTIC_CACHE_DIR=str(self.work / 'cache'),
                            RCLONE_CONFIG=self.config['rclone_config'], RCLONE_FAST_LIST='true')
-        command = [self.config.get('restic', '/usr/bin/restic'), '-o',
+        command = [self.config.get('restic', '/usr/bin/restic'), '--retry-lock', '2m', '-o',
                    'rclone.program=' + self.config.get('rclone', '/usr/bin/rclone'), *arguments]
         try:
-            result = subprocess.run(command, cwd=self.work, env=environment, capture_output=True,
-                                    text=True, timeout=900, check=False)
+            timeout = min(900, self.deadline - time.monotonic()) if self.deadline is not None else 900
+            if timeout <= 0:
+                raise BackupError('Backup operation timed out')
+            with subprocess.Popen(command, cwd=self.work, env=environment, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, start_new_session=os.name != 'nt') as process:
+                try:
+                    stdout, _ = process.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    # rclone is a restic child: stop the entire group before releasing
+                    # the repository lock, including for manual invocations.
+                    if os.name == 'nt':
+                        process.kill()
+                    else:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    process.communicate()
+                    raise
+                returncode = process.returncode
         except subprocess.TimeoutExpired:
             raise BackupError(f'restic {arguments[0]} timed out') from None
         # Credentials and raw provider responses must never reach logs or chat.
-        if result.returncode:
-            raise BackupError(f'restic {arguments[0]} failed (exit {result.returncode}); check connectivity, Drive quota and authorization')
-        return result.stdout
+        if returncode:
+            raise BackupError(f'restic {arguments[0]} failed (exit {returncode}); check connectivity, Drive quota and authorization')
+        return stdout
 
     @contextmanager
     def lock(self):
@@ -220,26 +247,49 @@ class Backup:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise BackupError('Another backup operation is running') from None
-            yield
+            # A separate lock for the shared disk/repository, never the collection queue.
+            # Keep the per-store lock while waiting so repeated triggers cannot pile up.
+            self.coordination.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with (self.coordination / 'repository.lock').open('a') as shared:
+                deadline = time.monotonic() + self.config.get('queue_timeout_seconds', 2400)
+                while True:
+                    try:
+                        fcntl.flock(shared, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            message = 'Timed out waiting for the backup queue'
+                            self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {}
+                            self.state.update(last_error=message, last_failure_at=utc_now())
+                            atomic_json(self.state_file, self.state)
+                            raise BackupError(message) from None
+                        time.sleep(0.2)
+                # Refresh state after admission, including manual invocations.
+                self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {}
+                self.deadline = time.monotonic() + 1200
+                try:
+                    yield
+                finally:
+                    self.deadline = None
 
     def verify(self, snapshot):
         if not re.fullmatch('[0-9a-f]{8,64}', snapshot):
             raise BackupError('An explicit snapshot ID is required')
-        self.restic('check')
         with tempfile.TemporaryDirectory(prefix='verify-', dir=self.work) as directory:
             self.restic('restore', snapshot, '--target', directory)
-            return validate_recovery(directory)
+            return validate_recovery(directory, self.stores, self.manifest_format)
 
     def restore(self, snapshot, target):
         target = Path(target).resolve()
         data = Path(self.config['data_dir']).resolve()
-        if target.exists() or target.is_relative_to(data) or data.is_relative_to(target) or target.is_relative_to(self.work) or self.work.is_relative_to(target):
+        protected = (data, self.work, self.coordination.resolve())
+        if target.exists() or any(target.is_relative_to(path) or path.is_relative_to(target) for path in protected):
             raise BackupError('Restore target must be a new directory separate from live data and backup state')
         if not re.fullmatch('[0-9a-f]{8,64}', snapshot):
             raise BackupError('An explicit snapshot ID is required')
         target.mkdir(mode=0o700, parents=True)
         self.restic('restore', snapshot, '--target', str(target))
-        return validate_recovery(target)
+        return validate_recovery(target, self.stores, self.manifest_format)
 
     def run(self, force=False, force_verify=False):
         with self.lock():
@@ -253,12 +303,12 @@ class Backup:
                 raise BackupError(message) from None
 
     def _run(self, force, force_verify):
-        current = current_signatures(self.config['data_dir'])
+        current = current_signatures(self.config['data_dir'], self.stores)
         now = time.time()
         if not force and not force_verify and current == self.state.get('signatures') and now - self.state.get('last_success_epoch', 0) < 3600:
             return {'status': 'unchanged', 'snapshot_id': self.state.get('snapshot_id')}
-        manifest = create_snapshots(self.config['data_dir'], self.work / 'staging')
-        output = self.restic('backup', '--json', '--host', 'price-checker', '--tag', TAG, 'staging')
+        manifest = create_snapshots(self.config['data_dir'], self.work / 'staging', self.stores, self.manifest_format)
+        output = self.restic('backup', '--json', '--host', 'price-checker', '--tag', self.tag, 'staging')
         summaries = [item for line in output.splitlines() if line.strip()
                      for item in [json.loads(line)] if item.get('message_type') == 'summary']
         snapshot = summaries[-1].get('snapshot_id', '') if summaries else ''
@@ -269,9 +319,8 @@ class Backup:
             if self.verify(snapshot) != manifest:
                 raise BackupError('Downloaded snapshot manifest differs from the local snapshot')
             # Retention removes old recovery points, never rows from the live databases.
-            self.restic('forget', '--tag', TAG, '--host', 'price-checker', '--group-by', 'host,paths,tags',
-                        '--keep-within', '48h', '--keep-daily', '30', '--keep-monthly', '12', '--prune')
-            self.restic('check')
+            self.restic('forget', '--tag', self.tag, '--host', 'price-checker', '--group-by', 'host,paths,tags',
+                        '--keep-last', '1', '--keep-within', '48h', '--keep-daily', '30', '--keep-monthly', '12')
             self.state['last_verified_epoch'] = now
             self.state['last_verified_at'] = utc_now()
         self.state.update(snapshot_id=snapshot, last_success_at=utc_now(), last_success_epoch=now,

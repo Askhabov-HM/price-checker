@@ -1,6 +1,6 @@
 [Unit]
 Description=Independent encrypted Lamoda database backup
-After=network-online.target price-checker-backup.service
+After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/var/lib/price-checker/data/lamoda/prices.sqlite3
 ConditionPathExists=/etc/price-checker-backup.json
@@ -13,10 +13,10 @@ Nice=10
 IOSchedulingClass=idle
 MemoryMax=256M
 CPUQuota=50%
-TimeoutStartSec=30min
+TimeoutStartSec=65min
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/price-checker-lamoda-backup
+ReadWritePaths=/var/lib/price-checker-lamoda-backup /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
 ReadOnlyPaths=/var/lib/price-checker/data /var/lib/price-checker/secrets

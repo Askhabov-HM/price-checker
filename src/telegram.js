@@ -228,9 +228,6 @@ export class TelegramBot {
     const checks = this.db.all("SELECT * FROM checks WHERE id>? AND finished_at IS NOT NULL AND status!='running' ORDER BY id",
       this.db.setting(this.cursorKey, 0));
     for (const check of checks) {
-      // The collector can still be saving its backup after setting finished_at.
-      // Wait for its final outcome, including a possible backup error.
-      if (check.id === this.tracker.client.checkId) break;
       this.db.transaction(() => {
         this.enqueueReport('randewoo', check);
         this.db.setSetting(this.cursorKey, check.id);
