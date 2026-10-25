@@ -45,6 +45,43 @@ class LamodaProxyTests(unittest.TestCase):
             with self.subTest(alias=alias), self.assertRaises(proxy.ProxyError):
                 proxy.build_config(document, alias)
 
+    def test_wasp_node_uses_only_its_own_profile_and_pins_dns_without_changing_tls_identity(self):
+        alias = 'wasp-000000000001'
+        profile = {**self.node, 'name': 'Synthetic WASP', 'server': 'node.example.com', 'tls': True}
+        catalog = {'version': 1, 'nodes': [
+            {'id': alias, 'provider': 'wasp', 'profile': profile},
+            {'id': 'un1-000000000001', 'provider': 'un1', 'profile': self.node},
+        ]}
+        previous = copy.deepcopy(catalog)
+        with patch.object(proxy.socket, 'getaddrinfo', return_value=[(2, 1, 6, '', ('1.1.1.1', 443))]):
+            config = proxy.build_wasp_config(catalog, alias)
+        self.assertEqual(config['proxies'], [{**profile, 'name': alias, 'server': '1.1.1.1', 'servername': 'node.example.com'}])
+        self.assertEqual(config['rules'], ['MATCH,' + alias])
+        self.assertEqual(config['mixed-port'], 17892)
+        self.assertEqual(catalog, previous)
+
+    def test_wasp_selection_rejects_wrong_provider_duplicates_and_private_endpoints(self):
+        alias = 'wasp-000000000001'
+        entry = {'id': alias, 'provider': 'wasp', 'profile': {**self.node, 'server': '1.1.1.1'}}
+        for catalog in ({'version': 1, 'nodes': [{**entry, 'provider': 'un1'}]},
+                        {'version': 1, 'nodes': [entry, entry]},
+                        {'version': 1, 'nodes': [{**entry, 'profile': {**self.node, 'server': '127.0.0.1'}}]}):
+            with self.subTest(catalog=catalog), self.assertRaises(proxy.ProxyError):
+                proxy.build_wasp_config(catalog, alias)
+
+    def test_private_wasp_catalog_is_loaded_without_exposing_credentials(self):
+        alias = 'wasp-000000000001'
+        profile = {**self.node, 'name': 'Synthetic WASP', 'server': '1.1.1.1'}
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = Path(directory) / 'catalog.json', Path(directory) / 'candidate.json'
+            source.write_text(json.dumps({'version': 1, 'nodes': [{'id': alias, 'provider': 'wasp', 'profile': profile}]}))
+            if os.name == 'posix':
+                source.chmod(0o600)
+            proxy.prepare(source, alias, destination)
+            self.assertEqual(json.loads(destination.read_text())['proxies'][0]['uuid'], 'synthetic-private-value')
+            if os.name == 'posix':
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+
     def response(self, data, returncode=0):
         return subprocess.CompletedProcess([], returncode, json.dumps(data), '')
 
