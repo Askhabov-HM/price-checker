@@ -178,12 +178,53 @@ test('full refresh reads all favorites beyond five pages and accepts the final s
   assert.equal(service.db.dashboard('favorites').items.at(-1).listed_price_kopecks, 95000);
 });
 
+test('full refresh parses each favorites page once and keeps first-seen SKU order', async t => {
+  const root = temporary(t); await connectTestOzon(root);
+  const paths = [], reads = [];
+  const client = new OzonClient(root, {browser:async () => ({
+    async read(request) {
+      const path = new URL(request.url).searchParams.get('url'); paths.push(path);
+      const data = ozonPage();
+      const count = {value:0}; reads.push(count);
+      if (paths.length === 3) {
+        data.widgetStates = {'separator-1-default-3': {get height() {
+          if (++count.value > 1) throw Error('Favorites page parsed more than once');
+          return 20;
+        }}};
+        delete data.nextPage;
+      } else {
+        data.widgetStates['tileGridDesktop-8-default-1'] = JSON.stringify({items:paths.length === 1
+          ? [favoriteTile('123'), favoriteTile('456')] : [favoriteTile('456'), favoriteTile('789')]});
+        data.widgetStates['infiniteVirtualPaginator-3-default-1'] = {get nextPage() {
+          if (++count.value > 1) throw Error('Favorites page parsed more than once');
+          return `/my/favorites?sorting=last_added&page=${paths.length + 1}`;
+        }};
+        delete data.nextPage;
+      }
+      return {version:2,request_url:request.url,user_agent:'Synthetic test browser',data,
+        outcome:'json_received',http_status:200};
+    },
+    async close() {},
+  })});
+  await client.open();
+  try {
+    const {favorites} = await client.lists();
+    assert.deepEqual(favorites.map(item => item.external_id), ['123','456','789']);
+  } finally {await client.close();}
+  assert.deepEqual(paths, ['/my/favorites?sorting=last_added',
+    '/my/favorites?sorting=last_added&page=2', '/my/favorites?sorting=last_added&page=3']);
+  assert.deepEqual(reads.map(count => count.value), [1,1,1]);
+});
+
 test('wrong account and incomplete lists cannot overwrite existing membership or save a new price', async t => {
   const root = temporary(t); await connectTestOzon(root);
   let mode = 'wrong';
-  const service = new OzonService(root,{pause:async () => {},client:new OzonClient(root,{browser:responseBrowser(async () => {
+  const service = new OzonService(root,{pause:async () => {},client:new OzonClient(root,{browser:responseBrowser(async address => {
     const page = ozonPage({account:mode === 'wrong' ? 999 : 123});
-    if (mode === 'partial') delete page.nextPage;
+    if (mode === 'partial') {
+      if (new URL(address).searchParams.get('url').includes('page=2')) delete page.nextPage;
+      else page.nextPage = '/my/favorites?sorting=last_added&page=2';
+    }
     return jsonResponse(page);
   })})});
   cleanup(t,() => service.close());

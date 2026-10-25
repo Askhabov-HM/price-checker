@@ -99,22 +99,40 @@ export function parseFavoritesPage(data) {
   return {items, sorting, next_page: favoritesNext(paginator ? paginator.nextPage : data.nextPage), pagination_known};
 }
 
-export function latestFavorites(pages, limit = 30) {
-  if (!Array.isArray(pages) || !pages.length || limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw invalid();
+export function createFavoritesAccumulator(limit = 30) {
+  if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw invalid();
   const items = [], seen = new Set();
-  let last;
-  for (const [index, data] of pages.entries()) {
+  let pageCount = 0, complete = false;
+  return data => {
+    if (complete) throw invalid();
     const page = parseFavoritesPage(data);
-    if (index === 0 && page.sorting !== 'last_added' || index > 0 && page.sorting && page.sorting !== 'last_added') throw invalid();
-    last = page;
+    if (pageCount === 0 && page.sorting !== 'last_added' || pageCount > 0 && page.sorting && page.sorting !== 'last_added') throw invalid();
+    pageCount++;
     for (const item of page.items) {
       if (seen.has(item.external_id)) continue;
       seen.add(item.external_id); items.push(item);
-      if (limit !== null && items.length === limit) return {items, limit, complete: true};
+      if (limit !== null && items.length === limit) {
+        complete = true;
+        return {items, limit, complete};
+      }
     }
-    if (page.pagination_known && !page.next_page) return {items, limit, complete: true};
+    if (page.pagination_known && !page.next_page) {
+      complete = true;
+      return {items, limit, complete};
+    }
+    return {items, limit, complete, next_page: page.next_page};
+  };
+}
+
+export function latestFavorites(pages, limit = 30) {
+  if (!Array.isArray(pages) || !pages.length) throw invalid();
+  const append = createFavoritesAccumulator(limit);
+  let result;
+  for (const data of pages) {
+    result = append(data);
+    if (result.complete) return result;
   }
-  return {items, limit, complete: false, next_page: last.next_page};
+  return result;
 }
 
 export function parseCartPage(data) {
