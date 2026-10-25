@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {randomUUID, createHash} from 'node:crypto';
 import {ValidationError} from '../../errors.js';
 import {validSku} from './parser.js';
+import {HistoryCache,RowCache,compositionKey,emptySummary,recordPrice,publicSummary,appendSparkline} from '../../dashboard-cache.js';
 
 const accountDigest = account => createHash('sha256').update('lamoda:'+account).digest('hex');
 export class LamodaDatabase {
@@ -34,7 +35,19 @@ export class LamodaDatabase {
       CREATE INDEX IF NOT EXISTS lamoda_observations_product ON observations(sku,id DESC);
       CREATE TABLE IF NOT EXISTS telegram_outbox(event_id TEXT PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id),payload TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,delivered_at TEXT,message_id INTEGER);
       CREATE TABLE IF NOT EXISTS notification_state(id INTEGER PRIMARY KEY CHECK(id=1),kind TEXT,reason TEXT);
-      INSERT OR IGNORE INTO notification_state(id) VALUES(1);`);} catch(error) {this.db.close();throw error;}
+      INSERT OR IGNORE INTO notification_state(id) VALUES(1);`);
+      this.rowCache = new RowCache(this.db,{key:'sku',initial:() => ({latest:null,good:null,summary:emptySummary(),sparkline:[]}),
+        reduce:(state,row) => {
+          state.latest = row;
+          if (row.status === 'ok') {
+            state.good = row;
+            if (row.price != null && row.availability !== 'unavailable') recordPrice(state.summary,row.price,row.price_at);
+          }
+          appendSparkline(state,row);
+        }});
+      this.historyCache = new HistoryCache(this.db,{scopes:['favorites'],order:'position',
+        sources:[{table:'observations',event:row => `'c:'||${row}.check_id`},{table:'checks',event:row => `'c:'||${row}.id`}]});
+    } catch(error) {this.db.close();throw error;}
   }
   close() {this.db.close();}
   transaction(action) {this.db.exec('BEGIN IMMEDIATE');try {const value = action();this.db.exec('COMMIT');return value;} catch(error) {this.db.exec('ROLLBACK');throw error;}}
@@ -64,6 +77,7 @@ export class LamodaDatabase {
     const payload = {store:'lamoda',kind,down,up,finishedAt:now,recovered:kind === 'success' && !!previous.kind && previous.kind !== 'success'};
     this.db.prepare('INSERT OR IGNORE INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)').run(row.event_id,check,JSON.stringify(payload));
     this.db.prepare('UPDATE notification_state SET kind=?,reason=? WHERE id=1').run(kind,message);
+    this.historyCache.refreshAll((scope,events) => this.buildListHistory(events));
   }
   record(check,items,now,source = 'browser') {
     return this.transaction(() => {
@@ -96,36 +110,36 @@ export class LamodaDatabase {
     for (const row of this.db.prepare("SELECT id FROM checks WHERE status='running'").all()) this.failure(row.id,'Проверка Lamoda прервана.',now,'interrupted');
   }
   summary(sku) {
-    const history = this.db.prepare("SELECT * FROM observations WHERE sku=? AND status='ok' AND price IS NOT NULL ORDER BY id").all(sku);
-    let previous = null,minimum = null,last_change = null,observations = 0;
-    for (const point of history) {
-      if (point.availability === 'unavailable') continue;
-      minimum = minimum === null ? point.price : Math.min(minimum,point.price); observations++;
-      if (previous !== null && previous !== point.price) last_change = {checked_at:point.price_at,previous_price:previous,price:point.price,delta:point.price-previous};
-      previous = point.price;
-    }
-    return {minimum,last_change,observations};
+    return publicSummary(this.rowCache.read([sku]).get(String(sku)).summary);
   }
-  row(product) {
-    const latest = this.latest(product.sku), good = this.latest(product.sku,true);
+  row(product, state = null) {
+    const {latest,good,summary,sparkline} = state || this.rowCache.read([product.sku]).get(String(product.sku));
     return {...product,id:'lamoda:item:'+product.sku,status:latest?.status || 'pending',checked_at:latest?.checked_at ?? null,
       price:good?.price ?? null,original_price:good?.original_price ?? null,price_at:good?.price_at ?? null,
-      availability:good?.availability ?? 'unknown',message:latest?.message || '',...this.summary(product.sku),
-      sparkline:this.db.prepare('SELECT * FROM observations WHERE sku=? ORDER BY id DESC LIMIT 24').all(product.sku).reverse().map(this.point)};
+      availability:good?.availability ?? 'unknown',message:latest?.message || '',...publicSummary(summary),sparkline:sparkline.map(this.point)};
   }
   point(point) {return {...point,in_stock:point.availability === 'unknown' ? null : point.availability === 'available'};}
   dashboard() {
-    const items = this.db.prepare('SELECT * FROM products WHERE active=1 ORDER BY position').all().map(product => this.row(product));
-    const checks = this.db.prepare("SELECT * FROM checks WHERE status<>'running' AND finished_at>=? ORDER BY id").all(new Date(Date.now()-30*86400000).toISOString());
-    const history = checks.map(check => {
-      const rows = this.db.prepare('SELECT * FROM observations WHERE check_id=? ORDER BY sku').all(check.id);
+    const products = this.db.prepare('SELECT * FROM products WHERE active=1 ORDER BY position').all();
+    const states = this.rowCache.read(products.map(product => product.sku));
+    const items = products.map(product => this.row(product,states.get(product.sku)));
+    const history = this.historyCache.read('favorites',new Date(Date.now()-30*86400000).toISOString(),events => this.buildListHistory(events));
+    return {items,history};
+  }
+  buildListHistory(events = null) {
+    const checks = this.db.prepare(`SELECT * FROM checks WHERE status<>'running' AND finished_at IS NOT NULL
+      ${events === null ? '' : 'AND id IN (SELECT substr(value,3) FROM json_each(?))'} ORDER BY id`).all(...(events === null ? [] : [JSON.stringify(events)]));
+    const grouped = new Map(checks.map(check => [check.id,[]]));
+    for (const row of this.db.prepare(`SELECT check_id,sku,status,availability,price FROM observations
+      WHERE check_id IN (SELECT value FROM json_each(?)) ORDER BY check_id,sku`).all(JSON.stringify(checks.map(check => check.id)))) grouped.get(row.check_id).push(row);
+    return checks.map(check => {
+      const rows = grouped.get(check.id);
       const known = rows.filter(row => row.status === 'ok' && row.availability === 'available' && row.price !== null);
       const complete = known.length === rows.length;
-      return {checked_at:check.finished_at,price:known.length ? known.reduce((sum,row) => sum+row.price,0) : null,
+      return {key:'c:'+check.id,stamp:check.finished_at,position:check.id,point:{checked_at:check.finished_at,price:known.length ? known.reduce((sum,row) => sum+row.price,0) : null,
         status:check.status !== 'success' ? 'error' : complete ? 'ok' : 'missing',count:rows.length,priced_count:known.length,complete,
-        composition:JSON.stringify([rows.map(row => row.sku),known.map(row => row.sku)]),message:check.message};
+        composition:compositionKey([rows.map(row => row.sku),known.map(row => row.sku)]),message:check.message}};
     });
-    return {items,history};
   }
   detail(id,days = 30) {
     const sku = typeof id === 'string' && id.startsWith('lamoda:item:') ? id.slice(12) : '';

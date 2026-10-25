@@ -6,13 +6,15 @@ import {PriceChart} from './price-chart';
 import {detailOptions} from '@/lib/api';
 import {date, rub} from '@/lib/format';
 import {isUnavailable} from '@/lib/availability';
+import {useCollectionData} from '@/hooks/use-collection-data';
 import type {DetailData, Period, PriceContext} from '@/lib/types';
 
 type DetailState = {id: number | null; context: PriceContext; days: Period; onClose: () => void; onPeriod: (days: Period) => void};
 const DetailContext = createContext<(DetailState & {data?: DetailData; pending: boolean; error: Error | null}) | null>(null);
 function useDetail() {const value = useContext(DetailContext); if (!value) throw new Error('DetailDialog parts must be inside DetailDialog.Root'); return value;}
 function Root({children, ...props}: DetailState & {children: ReactNode}) {
-  const query = useQuery(detailOptions(props.id, props.context, props.days));
+  const ready = useCollectionData('randewoo');
+  const query = useQuery({...detailOptions(props.id, props.context, props.days),enabled:ready && props.id !== null});
   const value = useMemo(() => ({...props, data: query.data, pending: query.isPending, error: query.error}), [props.id, props.context, props.days, props.onClose, props.onPeriod, query.data, query.isPending, query.error]);
   return <DetailContext.Provider value={value}><Dialog open={props.id !== null} onOpenChange={open => {if (!open) props.onClose();}}>{children}</Dialog></DetailContext.Provider>;
 }

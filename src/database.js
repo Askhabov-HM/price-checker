@@ -3,6 +3,7 @@ import {mkdirSync, renameSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {now, moscowDate} from './time.js';
 import {ValidationError} from './errors.js';
+import {HistoryCache,RowCache,compositionKey,emptySummary,recordPrice,appendSparkline} from './dashboard-cache.js';
 
 export const LISTS = Object.freeze({favorites: 'Избранное', cart: 'Корзина', 'my-cart': 'Моя корзина', watching: 'Наблюдение'});
 export const CONTEXTS = Object.freeze({public: 'Цена на сайте', cart: 'Цена в корзине'});
@@ -66,12 +67,31 @@ export class Database {
     }
     // Create after legacy table migrations, which replace observations and its indexes.
     this.connection.exec('CREATE INDEX IF NOT EXISTS observation_history ON observations(context,check_id,checked_at,id)');
+    this.connection.exec(`CREATE INDEX IF NOT EXISTS observation_check ON observations(check_id,variant_id,context,id);
+      CREATE INDEX IF NOT EXISTS observation_previous ON observations(variant_id,context,id DESC);`);
     this.transaction(() => {
       for (const [key, label] of Object.entries(LISTS)) this.run('INSERT OR IGNORE INTO lists VALUES(?,?)', key, label);
       this.run("UPDATE checks SET status='interrupted',finished_at=?,message='Приложение было закрыто во время проверки' WHERE status='running'", now());
       for (const [key, value] of Object.entries({schedule: ['00:30', '09:00', '14:00', '20:00'], schedule_enabled: true})) {
         this.run('INSERT OR IGNORE INTO settings VALUES(?,?)', key, JSON.stringify(value));
       }
+    });
+    this.rowCache = new RowCache(this.connection,{key:'variant_id',scope:'context',chronological:true,
+      initial:() => ({latest:null,last:null,previous:null,summary:emptySummary(),sparkline:[]}),
+      reduce:(state,row) => {
+        state.latest = row;
+        if (row.status === 'ok') {
+          recordPrice(state.summary,row.price,row.checked_at);
+          if (row.price != null) {state.previous = state.last?.price ?? null;state.last = row;}
+        }
+        appendSparkline(state,{checked_at:row.checked_at,price:row.price,status:row.status});
+      }});
+    this.historyCache = new HistoryCache(this.connection,{
+      scopes:Object.keys(LISTS).flatMap(list => Object.keys(CONTEXTS).map(context => list+':'+context)),
+      sources:[{table:'observations',event:row => `CASE WHEN ${row}.check_id IS NULL THEN 't:'||${row}.checked_at ELSE 'c:'||${row}.check_id END`},
+        {table:'checks',event:row => `'c:'||${row}.id`}],
+      resets:[{table:'memberships',scope:row => `scope LIKE ${row}.list_id||':%'`,
+        changed:'OLD.list_id IS NOT NEW.list_id OR OLD.variant_id IS NOT NEW.variant_id OR OLD.joined_at IS NOT NEW.joined_at OR OLD.left_at IS NOT NEW.left_at'}],
     });
   }
 
@@ -149,6 +169,7 @@ export class Database {
     const allowed = new Set(['status', 'message', 'completed', 'total', 'finished_at']);
     if (!Object.keys(fields).length || Object.keys(fields).some(key => !allowed.has(key))) throw new ValidationError('Invalid check update');
     this.run('UPDATE checks SET ' + Object.keys(fields).map(key => key + '=?').join(',') + ' WHERE id=?', ...Object.values(fields), id);
+    if (fields.status && fields.status !== 'running') this.historyCache.refreshAll((scope,events) => this.buildListHistory(...scope.split(':'),events));
   }
   checks(limit = 12) {return this.all('SELECT * FROM checks ORDER BY id DESC LIMIT ?', limit);}
   counts() {return Object.fromEntries(Object.keys(LISTS).map(key => [key, this.get('SELECT COUNT(*) AS n FROM memberships WHERE list_id=? AND left_at IS NULL', key).n]));}
@@ -172,23 +193,23 @@ export class Database {
   }
   rows(listId, context = 'public') {
     this.validate(listId, context);
-    return this.all(`SELECT v.id,v.sku,v.label,p.brand,p.name,p.url,p.image,m.quantity,m.joined_at FROM memberships m
+    const products = this.all(`SELECT v.id,v.sku,v.label,p.brand,p.name,p.url,p.image,m.quantity,m.joined_at,
+      w.id IS NOT NULL AS watching,pc.id IS NOT NULL AS in_my_cart FROM memberships m
       JOIN variants v ON v.id=m.variant_id JOIN products p ON p.id=v.product_id
-      WHERE m.list_id=? AND m.left_at IS NULL ORDER BY p.brand,p.name`, listId).map(row => {
-      const latest = this.get('SELECT * FROM observations WHERE variant_id=? AND context=? ORDER BY checked_at DESC,id DESC LIMIT 1', row.id, context);
-      const successful = this.all("SELECT * FROM observations WHERE variant_id=? AND context=? AND status='ok' AND price IS NOT NULL ORDER BY checked_at DESC,id DESC LIMIT 2", row.id, context);
-      const last = successful[0];
-      const stats = this.get("SELECT COUNT(*) AS observations,MIN(price) AS minimum FROM observations WHERE variant_id=? AND context=? AND status='ok'", row.id, context);
+      LEFT JOIN memberships w ON w.variant_id=v.id AND w.list_id='watching' AND w.left_at IS NULL
+      LEFT JOIN memberships pc ON pc.variant_id=v.id AND pc.list_id='my-cart' AND pc.left_at IS NULL
+      WHERE m.list_id=? AND m.left_at IS NULL ORDER BY p.brand,p.name`, listId);
+    const summaries = this.rowCache.read(products.map(row => row.id),context);
+    return products.map(row => {
+      const {latest,last,previous,summary,sparkline} = summaries.get(String(row.id));
       const price = last && latest?.status !== 'missing' ? last.price : null;
-      const previous = successful[1]?.price ?? null;
       return {...row, status: latest?.status || 'pending', price, previous_price: previous,
         in_stock: latest && latest.status !== 'error' ? Boolean(latest.in_stock) : last ? Boolean(last.in_stock) : null,
-        checked_at: latest?.checked_at ?? null, price_at: last?.checked_at ?? null, message: latest?.message || '', ...stats,
-        watching: Boolean(this.get("SELECT 1 FROM memberships WHERE variant_id=? AND list_id='watching' AND left_at IS NULL", row.id)),
-        in_my_cart: Boolean(this.get("SELECT 1 FROM memberships WHERE variant_id=? AND list_id='my-cart' AND left_at IS NULL", row.id)),
+        checked_at: latest?.checked_at ?? null, price_at: last?.checked_at ?? null, message: latest?.message || '',
+        observations:summary.observations,minimum:summary.minimum,
+        watching:Boolean(row.watching),in_my_cart:Boolean(row.in_my_cart),
         delta: latest?.status === 'ok' && price != null && previous != null ? price - previous : null,
-        last_change: this.lastPriceChange(row.id, context, last),
-        sparkline: this.all('SELECT checked_at,price,status FROM observations WHERE variant_id=? AND context=? ORDER BY checked_at DESC,id DESC LIMIT 24', row.id, context).reverse()};
+        last_change:summary.last_change,sparkline};
     });
   }
 
@@ -203,9 +224,17 @@ export class Database {
   listHistory(listId, context = 'public', days = 30) {
     this.validate(listId, context);
     const since = days ? now(new Date(Date.now() - days * 86400000)) : '';
-    const runs = this.all(`SELECT o.check_id,MAX(o.checked_at) AS checked_at,MIN(o.id) AS first_id FROM observations o JOIN memberships m ON m.variant_id=o.variant_id
-      WHERE m.list_id=? AND o.context=? AND o.checked_at>=? AND o.checked_at>=m.joined_at AND (m.left_at IS NULL OR o.checked_at<m.left_at)
-      GROUP BY o.check_id,CASE WHEN o.check_id IS NULL THEN o.checked_at END ORDER BY checked_at,first_id`, listId, context, since);
+    return this.historyCache.read(listId+':'+context,since,events => this.buildListHistory(listId,context,events));
+  }
+  buildListHistory(listId, context, changed = null) {
+    const runs = this.all(`SELECT o.check_id,MAX(o.checked_at) AS checked_at,MIN(o.id) AS first_id,
+      CASE WHEN o.check_id IS NULL THEN 't:'||o.checked_at ELSE 'c:'||o.check_id END AS event
+      FROM observations o JOIN memberships m ON m.variant_id=o.variant_id LEFT JOIN checks c ON c.id=o.check_id
+      WHERE m.list_id=? AND o.context=? AND o.checked_at>=m.joined_at AND (m.left_at IS NULL OR o.checked_at<m.left_at)
+      AND (o.check_id IS NULL OR c.status<>'running')
+      ${changed === null ? '' : 'AND (o.check_id IN (SELECT substr(value,3) FROM json_each(?) WHERE value LIKE \'c:%\') OR (o.check_id IS NULL AND o.checked_at IN (SELECT substr(value,3) FROM json_each(?) WHERE value LIKE \'t:%\')))'}
+      GROUP BY o.check_id,CASE WHEN o.check_id IS NULL THEN o.checked_at END ORDER BY checked_at,first_id`,
+    listId,context,...(changed === null ? [] : [JSON.stringify(changed),JSON.stringify(changed)]));
     if (!runs.length) return [];
     const memberships = this.all(`SELECT id,variant_id,joined_at,left_at FROM memberships
       WHERE list_id=? AND joined_at<=? AND (left_at IS NULL OR left_at>?)`, listId, runs.at(-1).checked_at, runs[0].checked_at);
@@ -248,10 +277,10 @@ export class Database {
       const failed = rows.filter(row => row.status === 'error');
       const complete = known.length === members.length && members.length > 0;
       const total = known.reduce((sum, row) => sum + row.price, 0);
-      return {checked_at: stamp, price: complete ? total : null, known_total: total, count: members.length,
+      return {key:run.event,stamp,position:run.first_id,point:{checked_at: stamp, price: complete ? total : null, known_total: total, count: members.length,
         priced_count: known.length, complete, status: failed.length ? 'error' : complete ? 'ok' : 'missing',
         message: [...new Set(failed.map(row => row.message).filter(Boolean))].join('; '),
-        composition: JSON.stringify([members, known.map(row => row.variant_id).sort((a, b) => a - b)])};
+        composition: compositionKey([members, known.map(row => row.variant_id).sort((a, b) => a - b)])}};
     });
   }
 

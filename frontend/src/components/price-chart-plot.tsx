@@ -1,4 +1,4 @@
-import {useMemo} from 'react';
+import {useLayoutEffect,useMemo,useRef} from 'react';
 import {CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
 import {usePreferences} from '@/lib/store';
 import {date, rub} from '@/lib/format';
@@ -10,17 +10,49 @@ export default function Plot({id, small = false}: {id?: string; small?: boolean}
   const {points, total} = useChart();
   const scale = usePreferences(state => state.chartScale);
   const {rows} = useMemo(() => chartData(points, scale, total), [points, scale, total]);
+  const viewport = useRef<HTMLDivElement>(null),pinned = useRef(true),previousView = useRef('');
+  const contentWidth = Math.max(0,points.length-1)*20+32;
+  const view = `${scale}:${points[0]?.checked_at || ''}`;
+  const hasPlot = points.some(point => point.status === 'error' || isUnavailable(point) || point.price != null && Number.isFinite(point.price));
+  useLayoutEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    if (previousView.current !== view) pinned.current = true;
+    const align = () => {if (pinned.current) element.scrollLeft = Math.max(0,element.scrollWidth-element.clientWidth);};
+    align();
+    previousView.current = view;
+    if (typeof ResizeObserver === 'undefined' || small) return;
+    const observer = new ResizeObserver(align);observer.observe(element);
+    return () => observer.disconnect();
+  },[contentWidth,view,small,hasPlot]);
+  const domain = useMemo<[number,number]>(() => {
+    const values = rows.flatMap(row => [row.chartPrice,row.errorPrice,row.unavailablePrice]).filter((value):value is number => value != null);
+    if (!values.length) return [0,1];
+    let lo = Infinity,hi = -Infinity;
+    for (const value of values) {lo = Math.min(lo,value);hi = Math.max(hi,value);}
+    const margin = Math.max((hi-lo)*.25,hi*.035,100);
+    return [Math.max(0,lo-margin),hi+margin];
+  },[rows]);
   const valid = points.filter(point => point.status !== 'error' && point.price != null && Number.isFinite(point.price));
   const errors = points.filter(point => point.status === 'error').length;
   const unavailable = points.filter(isUnavailable).length;
   const label = `${small ? `${valid.length} измерений цены` : 'История цены'}${unavailable ? ` · Нет в наличии: ${unavailable}` : ''}${errors ? ` · Ошибок проверки: ${errors}` : ''}`;
   if (!valid.length && !errors && !unavailable) return <div id={id} className={small ? 'sparkline' : 'chart-empty'} role="img" aria-label={label}>{small ? null : 'Пока нет данных для этого графика'}</div>;
   return <div id={id} className={small ? 'sparkline' : 'price-chart'} role="img" aria-label={label} data-scale={scale}>
+    {!small && !!valid.length && <div className="chart-fixed-axis" aria-hidden="true"><ResponsiveContainer width="100%" height="100%" minWidth={0}>
+      <LineChart data={rows} margin={{top:20,right:0,bottom:35,left:10}} accessibilityLayer={false}>
+        <YAxis width={68} domain={domain} allowDataOverflow tick={{fill:'var(--chart-text)',fontSize:10}} tickFormatter={value => rub(Number(value))}/>
+      </LineChart>
+    </ResponsiveContainer></div>}
+    <div className={small ? 'sparkline-viewport' : 'price-chart-scroll'} ref={viewport}
+      {...(small ? {} : {tabIndex:0,role:'region','aria-label':'Прокрутка истории цен'})}
+      onScroll={event => {const node = event.currentTarget;pinned.current = node.scrollWidth-node.clientWidth-node.scrollLeft <= 8;}}>
+    <div className={small ? 'sparkline-content' : 'price-chart-content'} style={small ? undefined : {minWidth:contentWidth}}>
     <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-      <LineChart data={rows} margin={small ? {top: 7, right: 4, bottom: 7, left: 4} : {top: 20, right: 24, bottom: 5, left: 10}} accessibilityLayer={!small}>
+      <LineChart data={rows} margin={small ? {top: 7, right: 4, bottom: 7, left: 4} : {top: 20, right: 24, bottom: 5, left: 4}} accessibilityLayer={!small}>
         {!small && <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 5" vertical={false} />}
         <XAxis dataKey="x" type="number" domain={['dataMin', 'dataMax']} hide={small} minTickGap={50} tick={{fill: 'var(--chart-text)', fontSize: 10}} tickFormatter={value => scale === 'checks' ? `№${Number(value) + 1}` : date(new Date(Number(value)).toISOString())} />
-        <YAxis hide={small || !valid.length} width={68} domain={([lo, hi]) => {const margin = Math.max((hi - lo) * .25, hi * .035, 100); return [Math.max(0, lo - margin), hi + margin];}} tick={{fill: 'var(--chart-text)', fontSize: 10}} tickFormatter={value => rub(Number(value))} />
+        <YAxis hide domain={domain} allowDataOverflow />
         <YAxis yAxisId="error-baseline" hide domain={[0, 1]} />
         {!small && <Tooltip content={({active, payload}) => {
           const point = payload?.find(item => item.value != null)?.payload as (PricePoint & {unavailablePrice: number | null}) | undefined;
@@ -36,5 +68,6 @@ export default function Plot({id, small = false}: {id?: string; small?: boolean}
         {(['unavailablePrice', 'unavailableBaseline'] as const).map(dataKey => <Line key={dataKey} dataKey={dataKey} yAxisId={dataKey === 'unavailableBaseline' ? 'error-baseline' : 0} stroke="none" isAnimationActive={false} dot={{className: 'chart-unavailable-dot', r: small ? 2.5 : 4, fill: 'var(--chart-unavailable)', stroke: 'var(--chart-point-border)', strokeWidth: small ? 0 : 2}} activeDot={small ? false : {r: 6, fill: 'var(--chart-unavailable)', stroke: 'var(--chart-point-border)'}} />)}
       </LineChart>
     </ResponsiveContainer>
+    </div></div>
   </div>;
 }

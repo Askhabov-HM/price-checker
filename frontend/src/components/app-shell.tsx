@@ -1,9 +1,10 @@
-import {useEffect, useState} from 'react';
+import {useState} from 'react';
 import {Link, Outlet, useParams, useSearch, useRouterState} from '@tanstack/react-router';
 import {useMutation, useQuery} from '@tanstack/react-query';
 import {ShoppingBag, ShoppingBasket, Heart, Eye, Plus, Settings, LogOut} from 'lucide-react';
 import {Button} from '@/components/ui/button';
-import {authOptions, dashboardOptions, logout, queryClient, statusOptions} from '@/lib/api';
+import {authOptions, dashboardOptions, logout, statusOptions} from '@/lib/api';
+import {CollectionDataBoundary,settledRevision,useCollectionDataGate} from '@/hooks/use-collection-data';
 import {labels, listIds} from '@/lib/format';
 import type {ListId} from '@/lib/types';
 import {AddDialog, SettingsDialog} from './forms';
@@ -20,13 +21,9 @@ function RandewooShell() {
   const {data: status, error} = useQuery(statusOptions);
   const {data: auth} = useQuery(authOptions);
   const signOut = useMutation({mutationFn: logout});
-  const dashboard = useQuery(dashboardOptions(list, list === 'my-cart' ? 'public' : search.context));
+  const ready = useCollectionDataGate('randewoo',!!status,!!status?.running,settledRevision(status));
+  const dashboard = useQuery({...dashboardOptions(list, list === 'my-cart' ? 'public' : search.context),enabled:ready});
   const [adding, setAdding] = useState(false), [settings, setSettings] = useState(false);
-  const check = status?.checks[0], version = check ? `${check.id}:${check.completed}:${check.status}` : 'empty';
-  useEffect(() => {
-    void queryClient.invalidateQueries({queryKey: ['dashboard']});
-    void queryClient.invalidateQueries({queryKey: ['detail']});
-  }, [version]);
   const testMode = status?.test_mode || document.querySelector('meta[name="price-checker-test-mode"]')?.getAttribute('content') === 'true';
   const icons = {cart: ShoppingBag, 'my-cart': ShoppingBasket, favorites: Heart, watching: Eye};
   return <><aside className="sidebar"><Link className="brand" to="/$listId" params={{listId: 'cart'}} search={search}><span className="brand-icon">p<span>·</span></span><span>pricechecker<small>ИСТОРИЯ ВАШИХ ЦЕН</small></span></Link><div className="sidebar-label">МОЯ КОЛЛЕКЦИЯ</div>
@@ -47,7 +44,7 @@ function RandewooShell() {
     {testMode && <div className="notice" id="test-mode-banner">ТЕСТОВЫЙ РЕЖИМ · Управляемые цены аромата Test Lab / Graph Eau</div>}
     {error && <div role="alert" className="notice">Приложение недоступно. Проверьте, что оно запущено на компьютере.</div>}
     {signOut.error && <div role="alert" className="notice">{signOut.error.message}</div>}
-    <Outlet />
+    <CollectionDataBoundary value={{randewoo:ready}}><Outlet /></CollectionDataBoundary>
     <footer className="page-footer"><span>pricechecker · Ваша история начинается с первой проверки</span><span>Проверки работают, пока приложение запущено и компьютер не спит</span></footer>
   </div></main><AddDialog open={adding} destination={list === 'my-cart' ? 'my-cart' : 'watching'} onClose={() => setAdding(false)} /><SettingsDialog status={status} open={settings} onClose={() => setSettings(false)} /></>;
 }

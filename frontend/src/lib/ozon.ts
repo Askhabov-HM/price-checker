@@ -2,6 +2,7 @@ import {queryOptions} from '@tanstack/react-query';
 import {authOptions, queryClient, request} from './api';
 import type {ChangePeriod, Check, Filter, PriceChangeEvent, PricePoint, ScheduleSettings, Sort, CollectionStatus} from './types';
 import {hasRecentChange} from './price-changes';
+import {mutationRefetch,settledRevision} from './collection-state';
 
 export type OzonList = 'watching' | 'favorites' | 'cart';
 export type OzonPrice = 'listed' | 'ozon_card' | 'regular';
@@ -84,4 +85,10 @@ export async function ozonMutate<T = {ok: boolean}>(action: string, data: unknow
   const auth = await queryClient.fetchQuery({...authOptions,staleTime:0});
   return request<T>('/api/providers/ozon/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':auth.csrf_token},body:JSON.stringify(data)});
 }
-export async function invalidateOzon() {await queryClient.invalidateQueries({queryKey:['ozon']});}
+export async function invalidateOzon() {
+  const before = settledRevision(queryClient.getQueryData<OzonStatus>(['ozon','status']));
+  await queryClient.invalidateQueries({queryKey:['ozon','status']});
+  const status = queryClient.getQueryData<OzonStatus>(['ozon','status']);
+  const refetchType = mutationRefetch(status?.running,before,settledRevision(status));
+  await Promise.all(['dashboard','detail'].map(part => queryClient.invalidateQueries({queryKey:['ozon',part],refetchType})));
+}

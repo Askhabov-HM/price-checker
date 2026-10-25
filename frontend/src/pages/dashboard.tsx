@@ -13,13 +13,15 @@ import {recentChangeCounts} from '@/lib/price-changes';
 import {usePreferences} from '@/lib/store';
 import {useNow} from '@/hooks/use-now';
 import {CollectionNotice} from '@/components/collection-notice';
+import {useCollectionData} from '@/hooks/use-collection-data';
 import type {ListId, PriceContext} from '@/lib/types';
 
 export function Dashboard() {
   const {listId} = useParams({from: '/$listId'}), list = listId as ListId;
   const search = useSearch({from: '__root__'}), navigate = useNavigate({from: '/$listId'});
   const context = list === 'my-cart' ? 'public' : search.context;
-  const dashboard = useQuery(dashboardOptions(list, context)), statusQuery = useQuery(statusOptions);
+  const ready = useCollectionData('randewoo');
+  const dashboard = useQuery({...dashboardOptions(list, context),enabled:ready}), statusQuery = useQuery(statusOptions);
   const data = dashboard.data, status = statusQuery.data || data?.status;
   const nowMs = useNow(), changes = recentChangeCounts(data?.items || [], search.changeDays, nowMs);
   const [detailId, setDetailId] = useState<number | null>(null);

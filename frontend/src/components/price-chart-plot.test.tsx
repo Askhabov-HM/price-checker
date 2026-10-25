@@ -1,6 +1,6 @@
 import {cloneElement, type ReactElement} from 'react';
 import {fireEvent, render, screen, waitFor} from '@testing-library/react';
-import {describe, expect, it, vi} from 'vitest';
+import {afterEach,describe, expect, it, vi} from 'vitest';
 import {PriceChart} from './price-chart';
 import Plot from './price-chart-plot';
 import {usePreferences} from '@/lib/store';
@@ -13,6 +13,26 @@ vi.mock('recharts', async importOriginal => ({
 }));
 
 describe('compact chart rendering in jsdom', () => {
+  afterEach(() => vi.restoreAllMocks());
+  it('opens wide charts at the latest checks, keeps the price axis visible and preserves a manually selected position', () => {
+    let width = 5000;
+    vi.spyOn(HTMLElement.prototype,'scrollWidth','get').mockImplementation(() => width);
+    vi.spyOn(HTMLElement.prototype,'clientWidth','get').mockReturnValue(800);
+    const points:PricePoint[] = Array.from({length:245},(_,i) => ({checked_at:new Date(1760000000000+i*60000).toISOString(),price:10000+i}));
+    const {container,rerender} = render(<PriceChart.Root points={points} total><Plot/></PriceChart.Root>);
+    const scroll = screen.getByRole('region',{name:'Прокрутка истории цен'});
+    expect(scroll.scrollLeft).toBe(4200);
+    expect(container.querySelector('.price-chart-content')).toHaveStyle({minWidth:'4912px'});
+    expect(container.querySelector('.chart-fixed-axis')).not.toBeNull();
+    expect(container.querySelector('.chart-fixed-axis .recharts-yAxis')).not.toBeNull();
+    scroll.scrollLeft = 1000;fireEvent.scroll(scroll);
+    width = 5020;
+    rerender(<PriceChart.Root points={[...points,{checked_at:new Date(1760000000000+245*60000).toISOString(),price:11000}]} total><Plot/></PriceChart.Root>);
+    expect(scroll.scrollLeft).toBe(1000);
+    scroll.scrollLeft = 4220;fireEvent.scroll(scroll);width = 5040;
+    rerender(<PriceChart.Root points={[...points,...points.slice(-2)]} total><Plot/></PriceChart.Root>);
+    expect(scroll.scrollLeft).toBe(4240);
+  });
   it.each(['time', 'checks'] as const)('preserves paths and singleton dots on the %s scale', scale => {
     usePreferences.setState({chartScale: scale});
     const points = ['a', 'a', 'b', 'c', 'c'].map((composition, i) => ({composition, price: 10000 + i * 100, checked_at: '2026-10-11T00:00:00Z'}));
