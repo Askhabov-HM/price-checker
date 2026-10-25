@@ -18,7 +18,7 @@ export function LamodaDesktopPage() {
   const ready = useCollectionData('desktop');
   const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery({...desktopDashboardOptions,enabled:ready}),desktop = statusQuery.data?.desktop;
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30);
-  const detail = useQuery({...desktopDetailOptions(selected,days),enabled:ready && selected !== null});
+  const detail = useQuery({...desktopDetailOptions(selected,days),enabled:query => selected !== null && ready(query)});
   const pairing = useMutation({mutationFn:() => lamodaMutate<{code:string;expires_at:string}>('desktop/pairing')});
   const schedule = useMutation({mutationFn:(enabled:boolean) => lamodaMutate('desktop/schedule',{enabled}),onSuccess:invalidateLamoda});
   const revoke = useMutation({mutationFn:() => lamodaMutate('desktop/revoke'),onSuccess:invalidateLamoda});

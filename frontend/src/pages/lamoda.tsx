@@ -28,7 +28,7 @@ export function LamodaDashboard() {
   const ready = useCollectionData('lamoda');
   const statusQuery = useQuery(lamodaStatusOptions),dashboard = useQuery({...lamodaDashboardOptions,enabled:ready}),status = statusQuery.data;
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30),[settings,setSettings] = useState(false);
-  const detail = useQuery({...lamodaDetailOptions(selected,days),enabled:ready && selected !== null});
+  const detail = useQuery({...lamodaDetailOptions(selected,days),enabled:query => selected !== null && ready(query)});
   const refresh = useMutation({mutationFn:() => lamodaMutate('refresh'),onSuccess:invalidateLamoda});
   const waiting = !!status?.not_before && Date.parse(status.not_before)>now;
   const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || !status?.available || status.running || !!status?.desktop?.job || waiting || refresh.isPending;

@@ -207,12 +207,12 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
             if (!path.startsWith(directory+sep)) return send(response,404,{error:'Файл не найден'});
             return send(response,200,readFileSync(path),'text/javascript; charset=utf-8');
           }
-          if (url.pathname === '/api/providers/lamoda/dashboard') return send(response,200,{...lamoda.db.dashboard(),status:lamoda.status()});
+          if (url.pathname === '/api/providers/lamoda/dashboard') return send(response,200,{...lamoda.db.publishedDashboard(),status:lamoda.status()});
           const product = /^\/api\/providers\/lamoda\/product\/(lamoda:item:[A-Z0-9]{6,32})\/history$/.exec(decodeURIComponent(url.pathname));
           if (product) {
             const days = url.searchParams.get('days') ?? '30';
             if (!['0','7','30','90','365'].includes(days)) throw new ValidationError('Некорректный период Lamoda.');
-            return send(response,200,lamoda.db.detail(product[1],Number(days)));
+            return send(response,200,lamoda.db.publishedDetail(product[1],Number(days)));
           }
           return send(response,404,{error:'Страница Lamoda не найдена'});
         }
@@ -232,22 +232,21 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
             if (!auth || !session) return send(response,403,{error:'Для просмотра браузера войдите в Price Checker.'});
             return send(response,200,await ozon.browserStatus());
           }
-          if (url.pathname === '/api/providers/ozon/dashboard') return send(response,200,{...ozon.db.dashboard(url.searchParams.get('list') || 'favorites'),status:ozon.status()});
+          if (url.pathname === '/api/providers/ozon/dashboard') return send(response,200,{...ozon.db.publishedDashboard(url.searchParams.get('list') || 'favorites'),status:ozon.status()});
           const product = /^\/api\/providers\/ozon\/product\/(ozon:item:[1-9]\d{0,19})\/history$/.exec(decodeURIComponent(url.pathname));
           if (product) {
             const days = url.searchParams.get('days') ?? '30';
             if (!['0','7','30','90','365'].includes(days)) throw new ValidationError('Некорректный период Ozon.');
-            return send(response,200,ozon.db.detail(product[1],Number(days)));
+            return send(response,200,ozon.db.publishedDetail(product[1],Number(days)));
           }
           return send(response,404,{error:'Страница Ozon не найдена'});
         }
         if (url.pathname === '/api/status') return send(response, 200, {...tracker.status(), csrf_token: token});
-        if (url.pathname === '/api/dashboard') return send(response, 200, {items: tracker.db.rows(section, context), counts: tracker.db.counts(), list: section, context,
-          history: tracker.db.listHistory(section, context), status: tracker.status()});
+        if (url.pathname === '/api/dashboard') return send(response, 200, {...tracker.db.publishedDashboard(section, context), status: tracker.status()});
         if (url.pathname.startsWith('/api/product/')) {
           const idText = url.pathname.slice('/api/product/'.length), days = url.searchParams.get('days') ?? '30';
           if (!/^\d+$/.test(idText) || !Number.isSafeInteger(Number(idText)) || !['0', '7', '30', '90', '365'].includes(days)) throw new ValidationError('Некорректный товар или период');
-          return send(response, 200, tracker.db.detail(Number(idText), context, Number(days)));
+          return send(response, 200, tracker.db.publishedDetail(Number(idText), context, Number(days)));
         }
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});

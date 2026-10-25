@@ -25,7 +25,7 @@ export function OzonDashboard() {
   const latestCheck = status?.checks?.[0];
   const [url,setUrl] = useState(''), [selected,setSelected] = useState<string | null>(null), [days,setDays] = useState(30);
   const [settingsOpen,setSettingsOpen] = useState(false);
-  const detail = useQuery({...ozonDetailOptions(selected,days),enabled:ready && selected !== null});
+  const detail = useQuery({...ozonDetailOptions(selected,days),enabled:query => selected !== null && ready(query)});
   const refresh = useMutation({mutationFn:(id: string | null) => ozonMutate('refresh',id ? {id} : {}),onSuccess:invalidateOzon});
   const schedule = useMutation({mutationFn:(enabled: boolean) => ozonMutate('settings',{schedule_enabled:enabled}),onSuccess:invalidateOzon});
   const add = useMutation({mutationFn:() => ozonMutate<{id:string}>('watch/add',{url}),onSuccess:() => {setUrl(''); void navigate({search:previous => ({...previous,ozonList:'watching'})}); return invalidateOzon();}});

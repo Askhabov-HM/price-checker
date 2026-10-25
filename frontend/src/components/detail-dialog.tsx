@@ -14,7 +14,7 @@ const DetailContext = createContext<(DetailState & {data?: DetailData; pending: 
 function useDetail() {const value = useContext(DetailContext); if (!value) throw new Error('DetailDialog parts must be inside DetailDialog.Root'); return value;}
 function Root({children, ...props}: DetailState & {children: ReactNode}) {
   const ready = useCollectionData('randewoo');
-  const query = useQuery({...detailOptions(props.id, props.context, props.days),enabled:ready && props.id !== null});
+  const query = useQuery({...detailOptions(props.id, props.context, props.days),enabled:query => props.id !== null && ready(query)});
   const value = useMemo(() => ({...props, data: query.data, pending: query.isPending, error: query.error}), [props.id, props.context, props.days, props.onClose, props.onPeriod, query.data, query.isPending, query.error]);
   return <DetailContext.Provider value={value}><Dialog open={props.id !== null} onOpenChange={open => {if (!open) props.onClose();}}>{children}</Dialog></DetailContext.Provider>;
 }

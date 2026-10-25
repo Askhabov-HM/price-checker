@@ -292,7 +292,7 @@ test('history batches queries and retains readings before the period for checks 
   assert.equal(history.length, 1);
   assert.equal(history[0].price, 35000);
   assert.equal(queries.length, 3);
-  const [sql, args] = queries.find(([sql]) => sql.includes('json_each'));
+  const [sql, args] = queries.find(([sql]) => sql.includes('WITH selected AS MATERIALIZED'));
   const plan = all('EXPLAIN QUERY PLAN ' + sql, ...args).map(row => row.detail).join('\n');
   assert.match(plan, /SEARCH o USING INDEX observation_history/);
   for (let i = 0; i < 20; i++) db.observation(id, item(), 'public', db.startCheck('manual'), '2026-10-03T01:00:00+00:00');

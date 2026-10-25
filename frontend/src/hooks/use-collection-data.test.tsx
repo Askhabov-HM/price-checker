@@ -64,23 +64,48 @@ describe('collection data stays frozen until a terminal result',() => {
     }
   });
 
-  it('does not load incomplete data when the page opens during a collection',async () => {
+  it.each(['randewoo','ozon','lamoda','desktop'] as const)('loads the previous %s result on first open and new query keys during collection',async store => {
     const cache = client(),fetch = vi.fn(async () => 'Finished data');
-    function Harness({known,running}:{known:boolean;running:boolean}) {
-      const enabled = useCollectionDataGate('randewoo',known,running,running?'1:running':'1:success');
-      const data = useQuery({queryKey:['dashboard','favorites'],queryFn:fetch,enabled});return <div>{data.data}</div>;
+    function Harness({known,running,selection='favorites'}:{known:boolean;running:boolean;selection?:string}) {
+      const enabled = useCollectionDataGate(store,known,running,running?'1:running':'1:success');
+      const data = useQuery({queryKey:[...collectionDataKeys[store][0],selection],queryFn:fetch,enabled});return <div>{data.data}</div>;
     }
     const {rerender} = render(<QueryClientProvider client={cache}><Harness known={false} running={false}/></QueryClientProvider>);
+    expect(fetch).not.toHaveBeenCalled();
     rerender(<QueryClientProvider client={cache}><Harness known running/></QueryClientProvider>);
-    await act(async () => {});expect(fetch).not.toHaveBeenCalled();
-    rerender(<QueryClientProvider client={cache}><Harness known running={false}/></QueryClientProvider>);
     await screen.findByText('Finished data');expect(fetch).toHaveBeenCalledTimes(1);
+    await act(async () => {await cache.invalidateQueries();focusManager.setFocused(false);focusManager.setFocused(true);});
+    expect(fetch).toHaveBeenCalledTimes(1);
+    rerender(<QueryClientProvider client={cache}><Harness known running selection="another-list"/></QueryClientProvider>);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    rerender(<QueryClientProvider client={cache}><Harness known running/></QueryClientProvider>);
+    await act(async () => {});expect(fetch).toHaveBeenCalledTimes(2);
+    rerender(<QueryClientProvider client={cache}><Harness known running={false}/></QueryClientProvider>);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  });
+
+  it('opens a previously closed detail and changes its period during collection without live refetch',async () => {
+    const cache = client(),fetch = vi.fn(async () => 'Previous history');
+    function Harness({selected,days}:{selected:string|null;days:number}) {
+      const ready = useCollectionDataGate('ozon',true,true,'2:running');
+      const data = useQuery({queryKey:['ozon','detail',selected,days],queryFn:fetch,enabled:query => selected !== null && ready(query)});
+      return <div>{data.data}</div>;
+    }
+    const {rerender} = render(<QueryClientProvider client={cache}><Harness selected={null} days={30}/></QueryClientProvider>);
+    await act(async () => {});expect(fetch).not.toHaveBeenCalled();
+    rerender(<QueryClientProvider client={cache}><Harness selected="123" days={30}/></QueryClientProvider>);
+    await screen.findByText('Previous history');expect(fetch).toHaveBeenCalledTimes(1);
+    rerender(<QueryClientProvider client={cache}><Harness selected="123" days={0}/></QueryClientProvider>);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await act(async () => {await cache.invalidateQueries();focusManager.setFocused(false);focusManager.setFocused(true);});
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('cancels an in-flight response on collection start and does not publish it later',async () => {
     const cache = client();let resolve:((value:string)=>void)|undefined,signal:AbortSignal|undefined;
     const fetch = vi.fn(({signal:input}:{signal:AbortSignal}) => {
-      signal = input;return fetch.mock.calls.length === 1 ? new Promise<string>(done => {resolve = done;}) : Promise.resolve('Final data');
+      if (fetch.mock.calls.length === 1) {signal = input;return new Promise<string>(done => {resolve = done;});}
+      return Promise.resolve(fetch.mock.calls.length === 2 ? 'Previous data' : 'Final data');
     });
     function Harness({running}:{running:boolean}) {
       const enabled = useCollectionDataGate('ozon',true,running,running?'2:running':'2:success');
@@ -90,8 +115,9 @@ describe('collection data stays frozen until a terminal result',() => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     rerender(<QueryClientProvider client={cache}><Harness running/></QueryClientProvider>);
     await waitFor(() => expect(signal?.aborted).toBe(true));
+    await screen.findByText('Previous data');
     await act(async () => {resolve?.('Partial data');});expect(screen.queryByText('Partial data')).toBeNull();
     rerender(<QueryClientProvider client={cache}><Harness running={false}/></QueryClientProvider>);
-    await screen.findByText('Final data');expect(fetch).toHaveBeenCalledTimes(2);
+    await screen.findByText('Final data');expect(fetch).toHaveBeenCalledTimes(3);
   });
 });

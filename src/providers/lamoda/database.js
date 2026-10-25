@@ -1,6 +1,7 @@
 import {mkdirSync, existsSync, realpathSync, chmodSync} from 'node:fs';
 import {join, resolve, dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {CollectionSnapshot} from '../../collection-snapshot.js';
 import {randomUUID, createHash} from 'node:crypto';
 import {ValidationError} from '../../errors.js';
 import {validSku} from './parser.js';
@@ -47,6 +48,7 @@ export class LamodaDatabase {
         }});
       this.historyCache = new HistoryCache(this.db,{scopes:['favorites'],order:'position',
         sources:[{table:'observations',event:row => `'c:'||${row}.check_id`},{table:'checks',event:row => `'c:'||${row}.id`}]});
+      this.published = new CollectionSnapshot(this.db,{scopes:['favorites'],build:() => this.dashboard()});
     } catch(error) {this.db.close();throw error;}
   }
   close() {this.db.close();}
@@ -65,7 +67,7 @@ export class LamodaDatabase {
     const allowed = new Set(['schedule_enabled','schedule_mode','schedule','interval_minutes','schedule_anchor','next_check','not_before','action_required','message']);
     for (const [name,value] of Object.entries(fields)) if (allowed.has(name) && value !== undefined) this.db.prepare(`UPDATE collector_state SET ${name}=? WHERE id=1`).run(value);
   }
-  begin(trigger,now) {return Number(this.db.prepare("INSERT INTO checks(event_id,trigger,status,started_at) VALUES(?,?,'running',?)").run(randomUUID(),trigger,now).lastInsertRowid);}
+  begin(trigger,now) {return this.published.start(() => Number(this.db.prepare("INSERT INTO checks(event_id,trigger,status,started_at) VALUES(?,?,'running',?)").run(randomUUID(),trigger,now).lastInsertRowid));}
   checks() {return this.db.prepare('SELECT * FROM checks ORDER BY id DESC LIMIT 20').all();}
   latest(sku,status = false) {return this.db.prepare('SELECT * FROM observations WHERE sku=?'+(status ? " AND status='ok'" : '')+' ORDER BY id DESC LIMIT 1').get(sku);}
   lastKnown(sku) {return this.db.prepare("SELECT * FROM observations WHERE sku=? AND status='ok' AND price IS NOT NULL ORDER BY id DESC LIMIT 1").get(sku);}
@@ -141,13 +143,15 @@ export class LamodaDatabase {
         composition:compositionKey([rows.map(row => row.sku),known.map(row => row.sku)]),message:check.message}};
     });
   }
-  detail(id,days = 30) {
+  publishedDashboard() {return this.published.dashboard('favorites');}
+  publishedDetail(id,days) {return this.published.detail(id,boundary => this.detail(id,days,boundary));}
+  detail(id,days = 30,{maxId,product:savedProduct} = {}) {
     const sku = typeof id === 'string' && id.startsWith('lamoda:item:') ? id.slice(12) : '';
     if (!validSku(sku) || ![0,7,30,90,365].includes(days)) throw new ValidationError('Некорректный товар или период Lamoda.');
     const product = this.db.prepare('SELECT * FROM products WHERE sku=?').get(sku);
     if (!product) throw new ValidationError('Товар Lamoda не найден.');
-    return {product:this.row(product),points:this.db.prepare('SELECT * FROM observations WHERE sku=? AND checked_at>=? ORDER BY id DESC LIMIT 5000')
-      .all(sku,days ? new Date(Date.now()-days*86400000).toISOString() : '').reverse().map(this.point)};
+    return {product:savedProduct || this.row(product),points:this.db.prepare('SELECT * FROM observations WHERE sku=? AND checked_at>=?'+(maxId === undefined ? '' : ' AND id<=?')+' ORDER BY id DESC LIMIT 5000')
+      .all(sku,days ? new Date(Date.now()-days*86400000).toISOString() : '',...(maxId === undefined ? [] : [maxId])).reverse().map(this.point)};
   }
   pending(now = Date.now()) {return this.db.prepare('SELECT * FROM telegram_outbox WHERE delivered_at IS NULL AND next_attempt_ms<=? ORDER BY check_id LIMIT 20').all(now);}
   delivered(event,messageId,now) {this.db.prepare('UPDATE telegram_outbox SET delivered_at=?,message_id=? WHERE event_id=?').run(now,messageId ?? null,event);}
