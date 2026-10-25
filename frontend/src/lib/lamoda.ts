@@ -5,7 +5,7 @@ import {hasRecentChange} from './price-changes';
 import {desktopRevision,mutationRefetch,settledRevision} from './collection-state';
 
 export interface LamodaStatus extends ScheduleSettings, CollectionStatus {
-  available:boolean; configured:boolean; running:boolean; next_check:string|null; not_before:string|null;
+  available:boolean; browser_available:boolean; configured:boolean; running:boolean; next_check:string|null; not_before:string|null;
   action_required:boolean; message:string; checks:Check[];
   login:{available:boolean;active:boolean;required:boolean;expires_at:string|null};
   desktop?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;not_before:string|null;

@@ -38,6 +38,23 @@ test('Android pairing expires, is single-use, rotates the scoped token, and stor
   mobile.revoke();assert.equal(mobile.authenticate('Bearer '+replacement),false);
 });
 
+test('Manual VPS failures preserve Android pairing and schedule except an explicit source pause',async t => {
+  let failure = new LamodaError('login_required');
+  const {lamoda,mobile} = service(t,{channel:() => ({available:() => true,request:async () => {throw failure;}})});
+  pair(mobile);await assert.rejects(lamoda.start({browserOnly:true}),/вход/i);
+  lamoda.db.bindAccount('42');lamoda.settings({schedule_enabled:true});
+  const nextCheck = lamoda.status().next_check;
+  await assert.rejects(lamoda.start({trigger:'schedule',browserOnly:true}),/источник/i);
+  await lamoda.start({browserOnly:true});await lamoda.running;
+  assert.equal(lamoda.db.checks()[0].trigger,'vps');assert.equal(lamoda.db.checks()[0].status,'error');
+  assert.equal(lamoda.status().action_required,false);assert.equal(lamoda.status().next_check,nextCheck);
+  assert.equal(mobile.enabled(),true);assert.equal(mobile.next(),null);
+  failure = new LamodaError('rate_limited',60000,429);
+  await lamoda.start({browserOnly:true});await lamoda.running;
+  assert.ok(Date.parse(lamoda.status().not_before)>Date.now());
+  assert.equal(lamoda.status().schedule_enabled,true);
+});
+
 test('Only the owner in a private Telegram chat can create a one-use Android connection button',async t => {
   const {root,lamoda,mobile} = service(t),tracker = new Tracker(root),sent = [];
   const bot = new TelegramBot(tracker,{lamoda,ownerId:123,publicOrigin:'https://prices.example',logger:() => {},api:{async call(method,data){sent.push(data);return {message_id:1};},close(){}}});

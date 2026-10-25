@@ -304,9 +304,9 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
           if (url.pathname === '/api/providers/lamoda/login/finish') return send(response,200,await lamoda.login.finish(token));
           if (url.pathname === '/api/providers/lamoda/login/cancel') {await lamoda.login.cancel(token);return send(response,200,{ok:true});}
         }
-        if (url.pathname === '/api/providers/lamoda/refresh') {
+        if (url.pathname === '/api/providers/lamoda/refresh' || url.pathname === '/api/providers/lamoda/refresh/browser') {
           if (data.id != null) throw new ValidationError('Lamoda обновляется целиком из избранного.');
-          return send(response,202,await lamoda.start());
+          return send(response,202,await lamoda.start({browserOnly:url.pathname.endsWith('/browser')}));
         }
         if (url.pathname === '/api/providers/lamoda/settings') {lamoda.settings(data);return send(response,200,{ok:true});}
         return send(response,404,{error:'Действие Lamoda не найдено'});
