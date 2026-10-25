@@ -3,6 +3,7 @@ import {dirname, join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {ValidationError} from '../../errors.js';
 import {ozonProduct} from './url.js';
+import {HistoryCache,RowCache,compositionKey,emptySummary,recordPrice,publicSummary,appendSparkline} from '../../dashboard-cache.js';
 
 export const itemId = sku => 'ozon:item:' + sku;
 export function itemSku(value) {
@@ -49,6 +50,26 @@ export class OzonDatabase {
       for (const [name,definition] of Object.entries({schedule_mode:"TEXT NOT NULL DEFAULT 'interval'",schedule:"TEXT NOT NULL DEFAULT '[\"00:00\"]'",interval_minutes:'INTEGER NOT NULL DEFAULT 30',schedule_anchor:'TEXT'})) {
         if (!stateColumns.has(name)) this.db.exec(`ALTER TABLE collector_state ADD COLUMN ${name} ${definition}`);
       }
+      this.db.exec(`CREATE INDEX IF NOT EXISTS seller_events_product ON seller_events(sku,id DESC);
+        CREATE INDEX IF NOT EXISTS checks_finished ON checks(finished_at,id);`);
+      this.rowCache = new RowCache(this.db,{key:'sku',initial:() => ({latest:null,price:null,seller:null,
+        prices:{listed:emptySummary(),regular:emptySummary(),ozon_card:emptySummary()},sparkline:[]}),
+      reduce:(state,row) => {
+        state.latest = row;
+        if (row.status === 'ok') {
+          state.price = row;
+          if (row.seller_id != null) state.seller = row;
+          for (const [type,column] of [['listed','listed_price_kopecks'],['regular','regular_kopecks'],['ozon_card','ozon_card_kopecks']]) {
+            if (row[column] != null) recordPrice(state.prices[type],row[column],row.checked_at,
+              {change:!['out_of_stock','unavailable'].includes(row.availability)});
+          }
+        }
+        const {checked_at,status,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,message} = row;
+        appendSparkline(state,{checked_at,status,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,message});
+      }});
+      this.historyCache = new HistoryCache(this.db,{scopes:lists,
+        sources:[{table:'observations',event:row => `'c:'||${row}.check_id`},
+          {table:'list_snapshots',event:row => `'c:'||${row}.check_id`},{table:'checks',event:row => `'c:'||${row}.id`}]});
     } catch (error) {this.db.close(); throw error;}
   }
   close() {this.db.close();}
@@ -156,7 +177,10 @@ export class OzonDatabase {
   }
   begin(trigger, now) {return Number(this.db.prepare("INSERT INTO checks(trigger,status,started_at) VALUES(?,'running',?)").run(trigger,now).lastInsertRowid);}
   progress(check, total) {this.db.prepare('UPDATE checks SET total=? WHERE id=?').run(total,check);}
-  finish(check, status, message, now) {this.db.prepare('UPDATE checks SET status=?,message=?,finished_at=? WHERE id=?').run(status,message,now,check);}
+  finish(check, status, message, now) {
+    this.db.prepare('UPDATE checks SET status=?,message=?,finished_at=? WHERE id=?').run(status,message,now,check);
+    if (status !== 'running') this.historyCache.refreshAll((list,events) => this.buildListHistory(list,events));
+  }
   observe(check, product, now, source = 'http') {
     if (!['http','browser'].includes(source)) throw invalid();
     this.transaction(() => {
@@ -178,52 +202,45 @@ export class OzonDatabase {
     });
   }
   priceSummary(sku) {
-    const history = this.db.prepare(`SELECT checked_at,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks
-      FROM observations WHERE sku=? AND status='ok' ORDER BY id`).all(sku);
-    return Object.fromEntries([['listed','listed_price_kopecks'],['regular','regular_kopecks'],['ozon_card','ozon_card_kopecks']].map(([type,column]) => {
-      let minimum = null, observations = 0, previous = null, last_change = null;
-      for (const row of history) {
-        const price = row[column];
-        if (price === null) continue;
-        observations++;
-        minimum = minimum === null ? price : Math.min(minimum,price);
-        // Keep known prices as the baseline across an absence, as Telegram does.
-        // Retaining a price while unavailable must not create a fresh change.
-        if (previous !== null && previous !== price && !['out_of_stock','unavailable'].includes(row.availability)) {
-          last_change = {checked_at:row.checked_at,previous_price:previous,price,delta:price-previous};
-        }
-        previous = price;
-      }
-      return [type,{minimum,observations,last_change}];
-    }));
+    return Object.fromEntries(Object.entries(this.rowCache.read([sku]).get(String(sku)).prices).map(([type,summary]) => [type,publicSummary(summary)]));
   }
-  row(product) {
-    const latest = this.db.prepare('SELECT * FROM observations WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);
-    const price = this.db.prepare("SELECT * FROM observations WHERE sku=? AND status='ok' ORDER BY id DESC LIMIT 1").get(product.sku);
-    const seller = this.db.prepare("SELECT seller_id,seller_name FROM observations WHERE sku=? AND status='ok' AND seller_id IS NOT NULL ORDER BY id DESC LIMIT 1").get(product.sku);
-    const event = this.db.prepare('SELECT checked_at,old_name,new_name FROM seller_events WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);
+  row(product, state = null, membership = null, event = undefined) {
+    const {latest,price,seller,prices,sparkline} = state || this.rowCache.read([product.sku]).get(String(product.sku));
+    if (event === undefined) event = this.db.prepare('SELECT checked_at,old_name,new_name FROM seller_events WHERE sku=? ORDER BY id DESC LIMIT 1').get(product.sku);
     return {...product,id:itemId(product.sku),status:latest?.status || 'pending',checked_at:latest?.checked_at || null,
       price_at:price?.checked_at || null,listed_price_kopecks:price?.listed_price_kopecks ?? null,original_price_kopecks:price?.original_price_kopecks ?? null,
       regular_kopecks:price?.regular_kopecks ?? null,ozon_card_kopecks:price?.ozon_card_kopecks ?? null,
       availability:price?.availability || 'unknown',seller_id:seller?.seller_id || null,seller_name:seller?.seller_name || null,
-      seller_change:event || null,message:latest?.message || '',lists:this.db.prepare('SELECT list,quantity FROM membership WHERE sku=?').all(product.sku),
-      price_summary:this.priceSummary(product.sku),
-      sparkline:this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,message FROM observations WHERE sku=? ORDER BY id DESC LIMIT 24').all(product.sku).reverse()};
+      seller_change:event || null,message:latest?.message || '',lists:membership || this.db.prepare('SELECT list,quantity FROM membership WHERE sku=?').all(product.sku),
+      price_summary:Object.fromEntries(Object.entries(prices).map(([type,summary]) => [type,publicSummary(summary)])),sparkline};
   }
   dashboard(list = 'favorites') {
     if (!lists.includes(list)) throw new ValidationError('Неизвестный список Ozon.');
-    const items = this.db.prepare('SELECT p.* FROM products p JOIN membership m ON m.sku=p.sku WHERE m.list=? ORDER BY m.position,p.created_at DESC').all(list).map(product => this.row(product));
+    const products = this.db.prepare('SELECT p.* FROM products p JOIN membership m ON m.sku=p.sku WHERE m.list=? ORDER BY m.position,p.created_at DESC').all(list);
+    const states = this.rowCache.read(products.map(product => product.sku)),memberships = new Map(),events = new Map();
+    const selected = JSON.stringify(products.map(product => product.sku));
+    for (const {sku,list,quantity} of this.db.prepare('SELECT sku,list,quantity FROM membership WHERE sku IN (SELECT value FROM json_each(?)) ORDER BY sku,list').all(selected)) {
+      if (!memberships.has(sku)) memberships.set(sku,[]);memberships.get(sku).push({list,quantity});
+    }
+    for (const {sku,checked_at,old_name,new_name} of this.db.prepare(`SELECT sku,checked_at,old_name,new_name FROM seller_events e
+      WHERE sku IN (SELECT value FROM json_each(?)) AND id=(SELECT MAX(id) FROM seller_events WHERE sku=e.sku)`).all(selected)) events.set(sku,{checked_at,old_name,new_name});
+    const items = products.map(product => this.row(product,states.get(product.sku),memberships.get(product.sku) || [],events.get(product.sku) || null));
     const counts = Object.fromEntries(lists.map(name => [name,Number(this.db.prepare('SELECT COUNT(*) AS n FROM membership WHERE list=?').get(name).n)]));
     return {items,counts,list,history:this.listHistory(list)};
   }
   listHistory(list, days = 30, now = Date.now()) {
     if (!lists.includes(list)) throw new ValidationError('Неизвестный список Ozon.');
     const since = days ? new Date(now-days*86400000).toISOString() : '';
+    return this.historyCache.read(list,since,events => this.buildListHistory(list,events));
+  }
+  buildListHistory(list, events = null) {
     const rows = this.db.prepare(`SELECT s.check_id,s.sku,s.quantity,c.finished_at,o.checked_at,o.status,o.availability,
       o.listed_price_kopecks,o.regular_kopecks,o.ozon_card_kopecks,o.seller_id,o.message
       FROM list_snapshots s JOIN checks c ON c.id=s.check_id
       LEFT JOIN observations o ON o.check_id=s.check_id AND o.sku=s.sku
-      WHERE s.list=? AND c.status<>'running' AND c.finished_at>=? ORDER BY c.finished_at,c.id,s.sku`).all(list,since);
+      WHERE s.list=? AND c.status<>'running' AND c.finished_at IS NOT NULL
+      ${events === null ? '' : 'AND s.check_id IN (SELECT substr(value,3) FROM json_each(?))'} ORDER BY c.finished_at,c.id,s.sku`)
+      .all(list,...(events === null ? [] : [JSON.stringify(events)]));
     const runs = new Map();
     for (const row of rows) {
       if (!runs.has(row.check_id)) runs.set(row.check_id,[]);
@@ -240,9 +257,9 @@ export class OzonDatabase {
         const complete = known.length === members.length;
         point[price] = {known_total:known.reduce((sum,row) => sum+row[column]*row.quantity,0),priced_count:known.length,complete,
           status:failed.length ? 'error' : complete ? 'ok' : 'missing',
-          composition:JSON.stringify([members.map(row => [row.sku,row.quantity]),known.map(row => [row.sku,row.seller_id])])};
+          composition:compositionKey([members.map(row => [row.sku,row.quantity]),known.map(row => [row.sku,row.seller_id])])};
       }
-      return point;
+      return {key:'c:'+members[0].check_id,stamp:point.checked_at,position:members[0].check_id,point};
     });
   }
   detail(id, days = 30, now = Date.now()) {

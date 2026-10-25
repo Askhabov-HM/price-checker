@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Database} from '../src/database.js';
+import {compositionKey} from '../src/dashboard-cache.js';
 import {cleanup, item, temporary} from './helpers.js';
 
 function setup(t) {
@@ -11,6 +12,10 @@ function setup(t) {
   const id = db.variant(item());
   const joinList = (list = 'cart', ids = [id], stamp = '2026-10-01T00:00:00+00:00') => db.syncList(list, ids.map(id => [id, 1]), stamp);
   return {root, db, id, joinList};
+}
+function finishChecks(db) {
+  // These fixtures describe finished historical checks, not an in-flight UI.
+  db.run("UPDATE checks SET status='success',finished_at=COALESCE((SELECT MAX(checked_at) FROM observations WHERE check_id=checks.id),started_at) WHERE status='running'");
 }
 
 test('lists share product variants and observations', t => {
@@ -71,12 +76,14 @@ test('overview exposes partial failures without treating missing variants as err
   const check = db.startCheck('manual');
   db.observation(id, item(), 'public', check, '2026-10-02T10:00:00+00:00');
   db.observation(other, {status: 'error', message: 'Timeout'}, 'public', check, '2026-10-02T10:00:00+00:00');
+  finishChecks(db);
   const failed = db.listHistory('cart', 'public', 0)[0];
   assert.equal(failed.status, 'error'); assert.equal(failed.message, 'Timeout');
   assert.equal(failed.price, null); assert.equal(failed.known_total, 15000); assert.equal(failed.priced_count, 1);
   const next = db.startCheck('manual');
   db.observation(id, item(), 'public', next, '2026-10-02T11:00:00+00:00');
   db.observation(other, {status: 'missing'}, 'public', next, '2026-10-02T11:00:00+00:00');
+  finishChecks(db);
   assert.equal(db.listHistory('cart', 'public', 0)[1].status, 'missing');
 });
 test('prices from the account cart and public site remain separate', t => {
@@ -95,6 +102,7 @@ test('missing and unavailable variants never create a complete false total', t =
   const {db, id, joinList} = setup(t); joinList();
   const check = db.startCheck('manual');
   db.observation(id, item({in_stock: false}), 'public', check, '2026-10-02T10:00:00+00:00');
+  finishChecks(db);
   assert.equal(db.listHistory('cart', 'public', 0)[0].price, null);
   db.observation(id, {status: 'missing', in_stock: false}, 'public', null, '2026-10-03T10:00:00+00:00');
   assert.equal(db.rows('cart')[0].price, null);
@@ -105,6 +113,7 @@ test('replacing a product breaks the overview line even if the count stays equal
   const other = db.variant(item({url: 'https://randewoo.ru/product/another', sku: '456'}));
   db.syncList('cart', [[other, 1]], '2026-10-03T00:00:00+00:00');
   db.observation(other, item(), 'public', db.startCheck('manual'), '2026-10-03T10:00:00+00:00');
+  finishChecks(db);
   const history = db.listHistory('cart', 'public', 0);
   assert.deepEqual(history.map(point => point.count), [1, 1]); assert.notEqual(history[0].composition, history[1].composition);
 });
@@ -120,6 +129,7 @@ test('checks in the same second retain both measurements and the latest price', 
   const stamp = '2026-10-02T10:00:00+00:00';
   db.observation(id, item(), 'public', db.startCheck('manual', stamp), stamp);
   db.observation(id, item({price_kopecks: 10000}), 'public', db.startCheck('manual', stamp), stamp);
+  finishChecks(db);
   const row = db.rows('cart')[0];
   assert.equal(row.price, 10000); assert.equal(row.delta, -5000);
   assert.equal(db.detail(id, 'public', 0).points.length, 2);
@@ -144,6 +154,7 @@ test('removing a member during a check excludes its price from that snapshot', t
   db.observation(id, item(), 'public', check, '2026-10-02T10:00:00+00:00');
   db.syncList('watching', [[second, 1]], '2026-10-02T10:01:00+00:00');
   db.observation(second, item({price_kopecks: 20000}), 'public', check, '2026-10-02T10:02:00+00:00');
+  finishChecks(db);
   const point = db.listHistory('watching', 'public', 0)[0];
   assert.equal(point.price, 20000); assert.equal(point.known_total, 20000);
   assert.equal(point.count, 1); assert.equal(point.priced_count, 1); assert.equal(point.complete, true);
@@ -158,6 +169,7 @@ test('rejoining during a check cannot reuse a price from the previous membership
   db.syncList('watching', [[second, 1]], '2026-10-02T10:01:00+00:00');
   db.syncList('watching', [[id, 1], [second, 1]], '2026-10-02T10:02:00+00:00');
   db.observation(second, item({price_kopecks: 20000}), 'public', check, '2026-10-02T10:03:00+00:00');
+  finishChecks(db);
   const point = db.listHistory('watching', 'public', 0)[0];
   assert.equal(point.price, null); assert.equal(point.known_total, 20000); assert.equal(point.priced_count, 1);
 });
@@ -272,6 +284,7 @@ test('history batches queries and retains readings before the period for checks 
   db.observation(id, item(), 'public', check, '2026-10-02T23:59:00+00:00');
   db.observation(other, item({price_kopecks: 20000}), 'public', check, '2026-10-03T00:01:00+00:00');
   db.observation(id, item({price_kopecks: 99999}), 'cart', check, '2026-10-03T00:01:00+00:00');
+  finishChecks(db);
   const queries = [];
   const all = db.all.bind(db);
   t.mock.method(db, 'all', (sql, ...args) => {queries.push([sql, args]); return all(sql, ...args);});
@@ -283,9 +296,13 @@ test('history batches queries and retains readings before the period for checks 
   const plan = all('EXPLAIN QUERY PLAN ' + sql, ...args).map(row => row.detail).join('\n');
   assert.match(plan, /SEARCH o USING INDEX observation_history/);
   for (let i = 0; i < 20; i++) db.observation(id, item(), 'public', db.startCheck('manual'), '2026-10-03T01:00:00+00:00');
+  finishChecks(db);
   queries.length = 0;
   assert.equal(db.listHistory('cart', 'public', 1).length, 21);
   assert.equal(queries.length, 3);
+  queries.length = 0;
+  assert.equal(db.listHistory('cart','public',1).length,21);
+  assert.equal(queries.length,0,'unchanged graphs read the stored points without rebuilding source history');
 });
 
 test('batched history keeps message order, latest duplicate readings and quantity semantics', t => {
@@ -299,11 +316,12 @@ test('batched history keeps message order, latest duplicate readings and quantit
   db.observation(other, {status: 'error', message: 'Replacement'}, 'public', check, stamp);
   db.observation(id, item(), 'public', null, stamp);
   db.observation(other, item({price_kopecks: 20000}), 'public', null, stamp);
+  finishChecks(db);
   const [failed, manual] = db.listHistory('cart', 'public', 0);
   assert.equal(failed.message, 'Replacement; Second');
   assert.equal(failed.known_total, 0);
   assert.equal(manual.price, 35000);
-  assert.equal(manual.composition, JSON.stringify([[id, other], [id, other]]));
+  assert.equal(manual.composition, compositionKey([[id, other], [id, other]]));
 });
 
 test('history index is installed on existing databases and survives reopening', t => {
