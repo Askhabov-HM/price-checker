@@ -6,7 +6,15 @@ if [[ $EUID != 0 || $# -gt 1 ]]; then
   exit 1
 fi
 directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-node=${1:-eos-dd691bfb0441}
+node=${1:-wasp-c8fd05c9561f}
+if [[ $node =~ ^wasp-[a-f0-9]{12}$ ]]; then
+  provider=/etc/price-checker-ozon-proxy/catalog.json
+elif [[ $node =~ ^eos-[a-f0-9]{12}$ ]]; then
+  provider=/var/lib/price-checker-proxy/providers/eos.yaml
+else
+  echo 'Expected a stable WASP or EOS node ID.' >&2
+  exit 1
+fi
 helper=$directory/lamoda-proxy-config.py
 service=price-checker-lamoda-proxy.service
 configdir=/etc/price-checker-lamoda-proxy
@@ -16,7 +24,7 @@ test -f /etc/systemd/system/price-checker-lamoda-browser.service
 test -x /usr/local/bin/mihomo
 test -x /usr/bin/curl
 getent passwd priceproxy >/dev/null
-python3 -c 'import yaml' >/dev/null
+if [[ $node == eos-* ]]; then python3 -c 'import yaml' >/dev/null; fi
 for path in "$configdir" "$config" /etc/price-checker-lamoda-proxy.env \
   /var/lib/price-checker-lamoda-proxy \
   /etc/systemd/system/price-checker-lamoda-browser.service.d \
@@ -46,7 +54,7 @@ cleanup() {
   rm -rf -- "$workdir"
 }
 trap cleanup EXIT
-python3 "$helper" prepare /var/lib/price-checker-proxy/providers/eos.yaml "$node" "$workdir/candidate.json"
+python3 "$helper" prepare "$provider" "$node" "$workdir/candidate.json"
 if ! /usr/local/bin/mihomo -t -d "$workdir" -f "$workdir/candidate.json" >"$workdir/validation.log" 2>&1; then
   echo 'Private Lamoda proxy configuration failed validation; no route changed.' >&2
   exit 1

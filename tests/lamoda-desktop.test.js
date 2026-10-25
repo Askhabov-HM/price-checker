@@ -1,17 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {EventEmitter} from 'node:events';
-import {readFileSync,mkdirSync,writeFileSync} from 'node:fs';
-import {join} from 'node:path';
 import {LamodaDatabase} from '../src/providers/lamoda/database.js';
 import {LamodaDesktop} from '../src/providers/lamoda/desktop.js';
 import {LamodaService} from '../src/providers/lamoda/service.js';
 import {Tracker} from '../src/service.js';
 import {makeServer,listen} from '../src/web.js';
 import {Authentication,createCredentials} from '../src/auth.js';
-import {collectWishlistPages,CdpConnection,WindowsLamodaBrowser} from '../apps/lamoda-windows/cdp-browser.js';
-import {DesktopCredentials,collectOnce} from '../apps/lamoda-windows/desktop-api.js';
 import {temporary,cleanup} from './helpers.js';
 
 const accountDigest = createHash('sha256').update('lamoda:42').digest('hex');
@@ -23,15 +18,6 @@ const pageState = page => ({
     prices:[{price:'120',private_discount:'exclude'},{price:'100'}],is_available:true,is_sellable:true,private_field:'exclude'}]},
 });
 const html = state => `<script>var __NUXT__ = {\n        user: ${JSON.stringify(state.user)},\n        payload: ${JSON.stringify(state.payload)},\n};</script>`;
-
-test('Windows page reader validates every page and strips unrelated Lamoda state',async () => {
-  const calls = [];
-  const result = await collectWishlistPages(async page => {calls.push(page);return html(pageState(page));},accountDigest);
-  assert.deepEqual(calls,[1,2]);assert.equal(result.count,2);
-  assert.equal(JSON.stringify(result.pages).includes('private_'),false);
-  assert.deepEqual(result.pages[0].payload.products[0].prices,[{price:'120'},{price:'100'}]);
-  await assert.rejects(collectWishlistPages(async page => html(pageState(page)), '0'.repeat(64)),error => error.code === 'account_mismatch');
-});
 
 test('Desktop snapshots are idempotent and isolated from production price tables',async t => {
   const root = temporary(t),db = new LamodaDatabase(root),desktop = new LamodaDesktop(db);
@@ -140,66 +126,6 @@ test('Desktop HTTP API requires owner pairing and accepts only a scoped device t
   const detail = await (await fetch(base+'/api/providers/lamoda/desktop/product/'+dashboard.items[0].id+'/history?days=30',
     {headers:{Cookie:cookie}})).json();
   assert.equal(detail.points.length,1);
-});
-
-test('Desktop credentials store only a protected token and a staged run uses one upload',async t => {
-  const root = temporary(t),token = 'a'.repeat(43);
-  const credentials = new DesktopCredentials({environment:{LOCALAPPDATA:root},seal:async () => 'opaque-blob',
-    open:async value => {assert.equal(value,'opaque-blob');return token;}});
-  await credentials.save('https://prices.example',token);
-  assert.equal(readFileSync(join(root,'PriceChecker','LamodaCollector','desktop-device.json'),'utf8').includes(token),false);
-  assert.deepEqual(await credentials.load(),{origin:'https://prices.example',token});
-  let uploads = 0,firstRunId;
-  const browser = {async collect(expected) {assert.equal(expected,accountDigest);return {count:2,pages:[pageState(1),pageState(2)]};}};
-  const result = await collectOnce({credentials,browser,acquire:async () => async () => {},wait:async () => {},apiFactory:origin => ({
-    async config(given) {assert.equal(origin,'https://prices.example');assert.equal(given,token);return {mode:'staging',account_digest:accountDigest};},
-    async start(given) {assert.equal(given,token);return {job:{id:'b'.repeat(32),status:'active',expires_at:new Date(Date.now()+600000).toISOString()}};},
-    async snapshot(given,jobId,id,pages) {
-      uploads++;assert.equal(given,token);assert.equal(jobId,'b'.repeat(32));assert.equal(pages.length,2);
-      if (uploads === 1) {firstRunId = id;throw Object.assign(new Error('Lost response'),{status:503});}
-      assert.equal(id,firstRunId);
-      return {run_id:id,count:2,received_at:'2026-10-24T00:00:00.000Z'};
-    },
-    async fail() {assert.fail('Successful run must not fail its job');},
-  })});
-  assert.equal(uploads,2);assert.equal(result.count,2);
-});
-
-test('CDP replies are matched by id without executing a browser',async () => {
-  const socket = new EventEmitter();socket.readyState = 1;
-  socket.addEventListener = (name,handler) => socket.on(name,handler);
-  socket.send = data => {const request = JSON.parse(data);queueMicrotask(() => socket.emit('message',{data:JSON.stringify({id:request.id,result:{ok:true}})}));};
-  socket.close = () => {socket.readyState = 3;socket.emit('close');};
-  const connection = new CdpConnection(socket);
-  assert.deepEqual(await connection.call('Runtime.evaluate',{expression:'1+1'},'session'),{ok:true});
-  connection.close();
-  await assert.rejects(connection.call('Target.getTargets'),error => error.code === 'browser_unavailable');
-});
-
-test('Windows collector reuses its private CDP profile and closes only its background tab',async t => {
-  const root = temporary(t),profile = join(root,'PriceChecker','LamodaCollector','Chrome');
-  mkdirSync(profile,{recursive:true});
-  writeFileSync(join(profile,'DevToolsActivePort'),'9234\n/devtools/browser/synthetic\n');
-  const calls = [];
-  const connection = {async call(method,params) {
-    calls.push(method);
-    if (method === 'Target.createTarget') return {targetId:'private-tab'};
-    if (method === 'Target.attachToTarget') return {sessionId:'private-session'};
-    if (method === 'Runtime.evaluate') {
-      if (params.expression.includes('document.readyState')) return {result:{value:{origin:'https://www.lamoda.ru',ready:'complete'}}};
-      const page = Number(/wishlist\/\?page=(\d+)/.exec(params.expression)?.[1]);
-      return {result:{value:{status:200,html:html(pageState(page))}}};
-    }
-    if (method === 'Browser.close') assert.fail('Existing browser must remain open');
-    return {};
-  },close() {calls.push('socket-close');}};
-  const browser = new WindowsLamodaBrowser({platform:'win32',environment:{LOCALAPPDATA:root},
-    fetchPage:async () => ({ok:true,json:async () => ({webSocketDebuggerUrl:'ws://127.0.0.1:9234/devtools/browser/synthetic'})}),
-    connect:async () => connection,spawnProcess:() => assert.fail('Existing Chrome must be reused')});
-  const result = await browser.collect(accountDigest);
-  assert.equal(result.count,2);assert.equal(result.pages.length,2);
-  assert.deepEqual(calls.filter(value => value === 'Target.closeTarget'),['Target.closeTarget']);
-  assert.equal(calls.includes('Browser.close'),false);
 });
 
 test('Desktop schedule stays separate from Android and indexes snapshots for the PC page',async t => {

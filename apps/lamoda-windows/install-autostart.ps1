@@ -20,6 +20,6 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
   -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
-  -Principal $principal -Description 'Lamoda desktop collector; server controls the collection schedule.' -Force | Out-Null
+  -Principal $principal -Description 'Open the Lamoda wishlist once at Windows logon.' -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
 Write-Output "Installed and started $taskName for $user"
