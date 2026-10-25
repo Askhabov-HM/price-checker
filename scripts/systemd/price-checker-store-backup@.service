@@ -1,0 +1,22 @@
+[Unit]
+Description=Independent encrypted %i database backup
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/price-checker-backup.json
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/price-checker/store-backup.py --store %i run
+TimeoutStartSec=65min
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=768M
+CPUQuota=50%
+TasksMax=64
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/price-checker-%i-backup /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
+ReadOnlyPaths=/var/lib/price-checker/data /var/lib/price-checker/secrets

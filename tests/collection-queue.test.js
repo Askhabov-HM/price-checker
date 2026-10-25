@@ -79,6 +79,8 @@ test('all three services share FIFO admission, bound duplicates and wait for Ozo
   const root = temporary(t),events = [],entered = Promise.withResolvers(),finish = Promise.withResolvers(),closing = Promise.withResolvers(),closed = Promise.withResolvers();
   const tracker = new Tracker(root,{client:{authorizedUser:async () => {events.push('randewoo');entered.resolve();await finish.promise;},
     cart:async () => [],favorites:async () => [],close() {finish.resolve();}}});
+  let backupCalls = 0;
+  tracker.db.backup = () => {backupCalls++;throw Error('Backups must not occupy the collection queue');};
   const ozon = new OzonService(root,{client:{configured:() => true,open:async () => {events.push('ozon');return 'synthetic-account';},
     lists:async () => ({favorites:[]}),close:async () => {closing.resolve();await closed.promise;events.push('ozon closed');}}});
   const lamoda = new LamodaService(root,{logger:() => {},pushSender:{configured:() => false},channel:() => ({available:() => true,request:async () => {
@@ -94,6 +96,7 @@ test('all three services share FIFO admission, bound duplicates and wait for Ozo
   assert.deepEqual(events,['randewoo','ozon']);assert.equal(lamoda.status().queued,true);
   closed.resolve();await Promise.all([ozon.running,lamoda.running]);
   assert.deepEqual(events,['randewoo','ozon','ozon closed','lamoda']);
+  assert.equal(backupCalls,0);assert.equal(tracker.db.checks()[0].status,'success');
   assert.equal(ozon.status().checks[0].status,'success');assert.equal(lamoda.status().checks[0].status,'success');
 });
 

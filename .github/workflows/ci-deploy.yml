@@ -32,10 +32,11 @@ jobs:
       - run: node --check src/providers/lamoda/mobile.js
       - run: node --check src/providers/lamoda/push.js
       - run: |
-          for script in scripts/setup-lamoda.sh scripts/setup-lamoda-backup.sh scripts/setup-lamoda-proxy.sh scripts/setup-lamoda-browser-preview.sh; do
+          for script in scripts/setup-lamoda.sh scripts/setup-lamoda-backup.sh scripts/setup-google-drive-backup.sh scripts/setup-independent-backups.sh scripts/setup-lamoda-proxy.sh scripts/setup-lamoda-browser-preview.sh; do
             bash -n "$script"
           done
       - run: python3 -m py_compile scripts/lamoda-backup.py scripts/lamoda-resource-report.py scripts/lamoda-proxy-config.py scripts/setup-lamoda-mobile.py scripts/setup-lamoda-push.py
+      - run: python3 -m py_compile scripts/google-drive-backup.py scripts/store-backup.py scripts/backup-maintenance.py
       - run: npm test
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Package the tested version

@@ -196,7 +196,6 @@ export class Tracker {
       if (errors.length) message += '. ' + errors.slice(0, 5).join('; ') + (errors.length > 5 ? '. Ещё ошибок: ' + (errors.length - 5) : '');
       this.db.updateCheck(checkId, {status: errors.length ? 'partial' : 'success', message, finished_at: now()});
       this.db.setSetting('last_completed_slot', scheduledSlot(this.scheduleConfig()));
-      await this.db.backup(join(this.root, '.data/backups'));
       return {check_id: checkId, count: products.length, errors: errors.length};
     } catch {
       this.db.updateCheck(checkId, {status: this.closing ? 'interrupted' : 'error', message: 'Проверка прервана. Предыдущие данные сохранены', finished_at: now()});

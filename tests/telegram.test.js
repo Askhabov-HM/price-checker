@@ -98,21 +98,16 @@ test('update offset is stored before dispatch and prevents replay after restart'
   assert.equal(starts, 1);
 });
 
-test('notifications wait for backup completion and report its final failure', async t => {
+test('successful collections notify without invoking or waiting for local backups', async t => {
   const {tracker, bot, api} = setup(t, {client: {authorizedUser: async () => ({}), cart: async () => [], favorites: async () => []}});
-  let enteredBackup, failBackup;
-  const entered = new Promise(resolve => {enteredBackup = resolve;});
-  const backup = new Promise((_, reject) => {failBackup = reject;});
-  tracker.db.backup = () => {enteredBackup(); return backup;};
-  cleanup(t, () => failBackup(new Error('Synthetic backup failure')));
-  const refresh = tracker.refreshNow('manual');
-  await entered;
+  let backupCalls = 0;
+  tracker.db.backup = () => {backupCalls++;throw new Error('Synthetic backup failure');};
+  await tracker.refreshNow('manual');
   assert.equal(tracker.db.checks()[0].status, 'success');
-  await bot.flush(); assert.equal(api.calls.length, 0);
-  failBackup(new Error('Synthetic backup failure'));
-  await refresh; await bot.flush();
-  assert.match(api.calls[0].data.text, /Не удалось выполнить проверку/);
-  assert.doesNotMatch(api.calls[0].data.text, /^✅/);
+  await bot.flush(); await bot.flush();
+  assert.equal(backupCalls, 0);
+  assert.equal(api.calls.length, 1);
+  assert.match(api.calls[0].data.text, /^✅.*Randewoo/);
 });
 
 test('scheduled, website, CLI and Telegram checks each generate one durable notification', async t => {

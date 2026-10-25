@@ -162,7 +162,8 @@ class DriveBackupTests(unittest.TestCase):
         self.assertTrue(result['recovery_verified'])
         self.assertEqual(runner.state['snapshot_id'], 'c' * 64)
         self.assertIsNone(runner.state['last_error'])
-        self.assertEqual(runner.restic.call_args_list[-1].args, ('check',))
+        self.assertEqual(runner.restic.call_args_list[-1].args[0], 'forget')
+        self.assertNotIn('--prune', runner.restic.call_args_list[-1].args)
 
     def test_unchanged_data_is_skipped_but_hourly_backup_is_kept(self):
         runner = backup.Backup(self.config)
@@ -196,7 +197,10 @@ class DriveBackupTests(unittest.TestCase):
 
     def test_raw_command_error_does_not_leak_credentials(self):
         runner = backup.Backup(self.config)
-        with patch('subprocess.run', return_value=Mock(returncode=1, stderr='token=private-fixture', stdout='')):
+        process = Mock(returncode=1)
+        process.communicate.return_value = ('', 'token=private-fixture')
+        with patch('subprocess.Popen') as popen:
+            popen.return_value.__enter__.return_value = process
             with self.assertRaises(backup.BackupError) as caught:
                 runner.restic('backup', 'staging')
         self.assertNotIn('private-fixture', str(caught.exception))

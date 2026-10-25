@@ -1,0 +1,22 @@
+[Unit]
+Description=Check and prune the shared encrypted backup repository
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/price-checker-backup.json
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/price-checker/backup-maintenance.py run
+TimeoutStartSec=65min
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=768M
+CPUQuota=50%
+TasksMax=64
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/price-checker-backup-maintenance /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
+ReadOnlyPaths=/var/lib/price-checker/secrets

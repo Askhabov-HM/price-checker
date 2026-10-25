@@ -120,8 +120,8 @@ class LamodaBackup(base.Backup):
         if maintenance:
             if self.verify(snapshot) != manifest:
                 raise base.BackupError('Downloaded Lamoda manifest differs from its snapshot')
-            # Only this tag's recovery points are expired. The existing shared
-            # maintenance already checks/prunes the repository, including chunks.
+            # Only this tag's recovery points are expired. The separate shared
+            # maintenance service checks/prunes under the same backup lock.
             self.restic('forget', '--tag', TAG, '--host', 'price-checker', '--group-by', 'host,paths,tags',
                         '--keep-last', '1', '--keep-within', '48h', '--keep-daily', '30', '--keep-monthly', '12')
             self.state.update(last_verified_epoch=now, last_verified_at=base.utc_now())
@@ -145,6 +145,7 @@ def main():
     restore.add_argument('snapshot')
     restore.add_argument('--target', required=True)
     args = parser.parse_args()
+    os.umask(0o077)
     try:
         config = base.load_config(args.config)
         config['work_dir'] = str(Path(config['work_dir']).with_name('price-checker-lamoda-backup'))
