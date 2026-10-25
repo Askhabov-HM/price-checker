@@ -38,6 +38,18 @@ test('local UI, dashboard, history, assets, and Excel CSV are served', async t =
   assert.equal(csv.toString('utf8').trim().split('\n').length, 2);
 });
 
+test('HTTP dashboard and a newly opened detail expose the previous result until collection finishes', async t => {
+  const {base,tracker,id} = await setup(t);
+  const check = tracker.db.startCheck('manual');
+  tracker.db.observation(id,item({price_kopecks:19000}),'public',check);
+  const read = async path => {const response = await fetch(base+path);assert.equal(response.status,200);return response.json();};
+  assert.equal((await read('/api/dashboard?list=cart')).items[0].price,15000);
+  assert.equal((await read('/api/product/'+id+'?days=0')).points.length,1);
+  tracker.db.updateCheck(check,{status:'error',finished_at:new Date().toISOString()});
+  assert.equal((await read('/api/dashboard?list=cart')).items[0].price,19000);
+  assert.equal((await read('/api/product/'+id+'?days=0')).points.length,2);
+});
+
 test('CSV distinguishes a failed attempt from the date of the last known price', async t => {
   const {base, tracker, id} = await setup(t);
   const priceAt = tracker.db.rows('cart')[0].price_at;

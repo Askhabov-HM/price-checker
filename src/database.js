@@ -4,6 +4,7 @@ import {dirname, join} from 'node:path';
 import {now, moscowDate} from './time.js';
 import {ValidationError} from './errors.js';
 import {HistoryCache,RowCache,compositionKey,emptySummary,recordPrice,appendSparkline} from './dashboard-cache.js';
+import {CollectionSnapshot} from './collection-snapshot.js';
 
 export const LISTS = Object.freeze({favorites: 'Избранное', cart: 'Корзина', 'my-cart': 'Моя корзина', watching: 'Наблюдение'});
 export const CONTEXTS = Object.freeze({public: 'Цена на сайте', cart: 'Цена в корзине'});
@@ -93,6 +94,10 @@ export class Database {
       resets:[{table:'memberships',scope:row => `scope LIKE ${row}.list_id||':%'`,
         changed:'OLD.list_id IS NOT NEW.list_id OR OLD.variant_id IS NOT NEW.variant_id OR OLD.joined_at IS NOT NEW.joined_at OR OLD.left_at IS NOT NEW.left_at'}],
     });
+    this.published = new CollectionSnapshot(this.connection,{
+      scopes:Object.keys(LISTS).flatMap(list => Object.keys(CONTEXTS).map(context => list+':'+context)),
+      build:scope => {const [list,context] = scope.split(':');return this.dashboard(list,context);},
+    });
   }
 
   statement(sql) {
@@ -164,7 +169,7 @@ export class Database {
       VALUES(?,?,?,?,?,?,?,?,?,?)`, id, checkId, timestamp, context, status === 'ok' ? item.price_kopecks : null,
       item.original_price_kopecks, status === 'error' ? null : item.in_stock, status, item.message || '', source);
   }
-  startCheck(trigger, timestamp = now()) {return Number(this.run('INSERT INTO checks(started_at,trigger) VALUES(?,?)', timestamp, trigger).lastInsertRowid);}
+  startCheck(trigger, timestamp = now()) {return this.published.start(() => Number(this.run('INSERT INTO checks(started_at,trigger) VALUES(?,?)', timestamp, trigger).lastInsertRowid));}
   updateCheck(id, fields) {
     const allowed = new Set(['status', 'message', 'completed', 'total', 'finished_at']);
     if (!Object.keys(fields).length || Object.keys(fields).some(key => !allowed.has(key))) throw new ValidationError('Invalid check update');
@@ -213,12 +218,16 @@ export class Database {
     });
   }
 
-  detail(id, context = 'public', days = 30) {
+  dashboard(list,context) {return {items:this.rows(list,context),counts:this.counts(),list,context,history:this.listHistory(list,context)};}
+  publishedDashboard(list,context) {this.validate(list,context);return this.published.dashboard(list+':'+context);}
+  publishedDetail(id,context,days) {return this.published.detail(id,boundary => this.detail(id,context,days,boundary));}
+  detail(id, context = 'public', days = 30, {maxId,product:savedProduct} = {}) {
     this.validate('cart', context);
     const product = this.get('SELECT v.id,v.sku,v.label,p.brand,p.name,p.url FROM variants v JOIN products p ON p.id=v.product_id WHERE v.id=?', id);
     if (!product) throw new ValidationError('Товар не найден');
     const since = days ? now(new Date(Date.now() - days * 86400000)) : '';
-    return {product, context, points: this.all('SELECT checked_at,price,in_stock,status,message,source FROM observations WHERE variant_id=? AND context=? AND checked_at>=? ORDER BY checked_at,id', id, context, since)};
+    const publishedProduct = savedProduct ? Object.fromEntries(Object.keys(product).map(key => [key,savedProduct[key]])) : product;
+    return {product:publishedProduct, context, points: this.all('SELECT checked_at,price,in_stock,status,message,source FROM observations WHERE variant_id=? AND context=? AND checked_at>=?'+(maxId === undefined ? '' : ' AND id<=?')+' ORDER BY checked_at,id', id, context, since, ...(maxId === undefined ? [] : [maxId]))};
   }
 
   listHistory(listId, context = 'public', days = 30) {

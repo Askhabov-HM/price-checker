@@ -1,6 +1,7 @@
 import {existsSync, mkdirSync, realpathSync, chmodSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {CollectionSnapshot} from '../../collection-snapshot.js';
 import {ValidationError} from '../../errors.js';
 import {ozonProduct} from './url.js';
 import {HistoryCache,RowCache,compositionKey,emptySummary,recordPrice,publicSummary,appendSparkline} from '../../dashboard-cache.js';
@@ -70,6 +71,7 @@ export class OzonDatabase {
       this.historyCache = new HistoryCache(this.db,{scopes:lists,
         sources:[{table:'observations',event:row => `'c:'||${row}.check_id`},
           {table:'list_snapshots',event:row => `'c:'||${row}.check_id`},{table:'checks',event:row => `'c:'||${row}.id`}]});
+      this.published = new CollectionSnapshot(this.db,{scopes:lists,build:list => this.dashboard(list),sellers:true});
     } catch (error) {this.db.close(); throw error;}
   }
   close() {this.db.close();}
@@ -175,7 +177,7 @@ export class OzonDatabase {
     const count = this.db.prepare("UPDATE checks SET status='interrupted',finished_at=?,message='Проверка прервана. Требуется проверить подключение.' WHERE status='running'").run(now).changes;
     if (count) this.updateState({action_required:1,message:'Предыдущая проверка Ozon прервана.'});
   }
-  begin(trigger, now) {return Number(this.db.prepare("INSERT INTO checks(trigger,status,started_at) VALUES(?,'running',?)").run(trigger,now).lastInsertRowid);}
+  begin(trigger, now) {return this.published.start(() => Number(this.db.prepare("INSERT INTO checks(trigger,status,started_at) VALUES(?,'running',?)").run(trigger,now).lastInsertRowid));}
   progress(check, total) {this.db.prepare('UPDATE checks SET total=? WHERE id=?').run(total,check);}
   finish(check, status, message, now) {
     this.db.prepare('UPDATE checks SET status=?,message=?,finished_at=? WHERE id=?').run(status,message,now,check);
@@ -262,12 +264,17 @@ export class OzonDatabase {
       return {key:'c:'+members[0].check_id,stamp:point.checked_at,position:members[0].check_id,point};
     });
   }
-  detail(id, days = 30, now = Date.now()) {
+  publishedDashboard(list = 'favorites') {
+    if (!lists.includes(list)) throw invalid();
+    return this.published.dashboard(list);
+  }
+  publishedDetail(id,days) {return this.published.detail(id,boundary => this.detail(id,days,Date.now(),boundary));}
+  detail(id, days = 30, now = Date.now(), {maxId,maxSellerId,product:savedProduct} = {}) {
     const sku = itemSku(id), product = this.product(sku);
     if (!product || ![0,7,30,90,365].includes(days)) throw new ValidationError('Товар или период Ozon не найден.');
     const since = days ? new Date(now-days*86400000).toISOString() : '';
-    const points = this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,original_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,seller_name,message,source FROM observations WHERE sku=? AND checked_at>=? ORDER BY id DESC LIMIT 2000').all(sku,since).reverse();
-    const seller_events = this.db.prepare('SELECT checked_at,old_name,new_name FROM seller_events WHERE sku=? AND checked_at>=? ORDER BY id DESC LIMIT 2000').all(sku,since).reverse();
-    return {product:this.row(product),points,seller_events};
+    const points = this.db.prepare('SELECT checked_at,status,availability,listed_price_kopecks,original_price_kopecks,regular_kopecks,ozon_card_kopecks,seller_id,seller_name,message,source FROM observations WHERE sku=? AND checked_at>=?'+(maxId === undefined ? '' : ' AND id<=?')+' ORDER BY id DESC LIMIT 2000').all(sku,since,...(maxId === undefined ? [] : [maxId])).reverse();
+    const seller_events = this.db.prepare('SELECT checked_at,old_name,new_name FROM seller_events WHERE sku=? AND checked_at>=?'+(maxSellerId === undefined ? '' : ' AND id<=?')+' ORDER BY id DESC LIMIT 2000').all(sku,since,...(maxSellerId === undefined ? [] : [maxSellerId])).reverse();
+    return {product:savedProduct || this.row(product),points,seller_events};
   }
 }
