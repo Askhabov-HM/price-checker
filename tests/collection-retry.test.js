@@ -22,6 +22,14 @@ test('four failed reads keep the queue leased through all retries, then admit th
   assert.deepEqual(events,[1,2,3,4,'lamoda']);
 });
 
+test('a controlled collection can stop after one failed read',async () => {
+  let calls = 0;
+  await assert.rejects(retryCollectionRead(async () => {calls++;throw new LamodaError('browser_unavailable');},
+    {attempts:1,retryable:() => true,pause:async () => assert.fail('no retry pause expected')}),
+  error => error.code === 'browser_unavailable');
+  assert.equal(calls,1);
+});
+
 test('Ozon succeeds on its fourth attempt with one check and one saved price',async t => {
   const root = temporary(t);await connectTestOzon(root);let calls = 0;const retries = [];
   const client = new OzonClient(root,{browser:responseBrowser(async () => {

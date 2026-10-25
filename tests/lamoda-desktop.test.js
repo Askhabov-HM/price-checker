@@ -12,6 +12,7 @@ import {makeServer,listen} from '../src/web.js';
 import {Authentication,createCredentials} from '../src/auth.js';
 import {collectWishlistPages,CdpConnection,WindowsLamodaBrowser} from '../apps/lamoda-windows/cdp-browser.js';
 import {DesktopCredentials,collectOnce} from '../apps/lamoda-windows/desktop-api.js';
+import {LamodaError} from '../src/providers/lamoda/parser.js';
 import {temporary,cleanup} from './helpers.js';
 
 const accountDigest = createHash('sha256').update('lamoda:42').digest('hex');
@@ -165,6 +166,22 @@ test('Desktop credentials store only a protected token and a staged run uses one
   assert.equal(uploads,2);assert.equal(result.count,2);
 });
 
+test('An unverified wishlist page ends a desktop job without reopening Chrome',async t => {
+  const root = temporary(t),token = 'a'.repeat(43);
+  const credentials = new DesktopCredentials({environment:{LOCALAPPDATA:root},open:async () => token});
+  mkdirSync(credentials.directory,{recursive:true});
+  writeFileSync(credentials.path,JSON.stringify({version:1,origin:'https://prices.example',protected_token:'opaque'}));
+  let reads = 0,failed = null;
+  await assert.rejects(collectOnce({credentials,acquire:async () => async () => {},
+    browser:{async collect() {reads++;throw new LamodaError('account_unverified');}},
+    apiFactory:() => ({
+      async config() {return {mode:'staging',account_digest:accountDigest};},
+      async start() {return {job:{id:'b'.repeat(32),status:'active',expires_at:new Date(Date.now()+600000).toISOString()}};},
+      async fail(_token,_jobId,error) {failed=error.code;},
+    })}),error => error.code === 'account_unverified');
+  assert.equal(reads,1);assert.equal(failed,'account_unverified');
+});
+
 test('CDP replies are matched by id without executing a browser',async () => {
   const socket = new EventEmitter();socket.readyState = 1;
   socket.addEventListener = (name,handler) => socket.on(name,handler);
@@ -180,15 +197,23 @@ test('Windows collector reuses its private CDP profile and closes only its backg
   const root = temporary(t),profile = join(root,'PriceChecker','LamodaCollector','Chrome');
   mkdirSync(profile,{recursive:true});
   writeFileSync(join(profile,'DevToolsActivePort'),'9234\n/devtools/browser/synthetic\n');
-  const calls = [];
+  const calls = [];let page = 1,polls = 0;
   const connection = {async call(method,params) {
     calls.push(method);
     if (method === 'Target.createTarget') return {targetId:'private-tab'};
     if (method === 'Target.attachToTarget') return {sessionId:'private-session'};
+    if (method === 'Page.navigate') {page=Number(new URL(params.url).searchParams.get('page'));polls=0;return {};}
     if (method === 'Runtime.evaluate') {
-      if (params.expression.includes('document.readyState')) return {result:{value:{origin:'https://www.lamoda.ru',ready:'complete'}}};
-      const page = Number(/wishlist\/\?page=(\d+)/.exec(params.expression)?.[1]);
-      return {result:{value:{status:200,html:html(pageState(page))}}};
+      if (params.expression.startsWith('({origin:location.origin'))
+        return {result:{value:{origin:'https://www.lamoda.ru',ready:'complete'}}};
+      if (params.expression.includes('state_count')) {
+        polls++;
+        const location = {href:'https://www.lamoda.ru/wishlist/?page='+page,origin:'https://www.lamoda.ru'};
+        const document = {readyState:'complete',scripts:polls === 1 ? [] : [{textContent:'var __NUXT__ = {}'}]};
+        return {result:{value:Function('location','document','URL','return '+params.expression)(location,document,URL)}};
+      }
+      if (params.expression === 'document.documentElement.outerHTML') return {result:{value:html(pageState(page))}};
+      assert.fail('Unexpected page evaluation');
     }
     if (method === 'Browser.close') assert.fail('Existing browser must remain open');
     return {};
@@ -198,6 +223,7 @@ test('Windows collector reuses its private CDP profile and closes only its backg
     connect:async () => connection,spawnProcess:() => assert.fail('Existing Chrome must be reused')});
   const result = await browser.collect(accountDigest);
   assert.equal(result.count,2);assert.equal(result.pages.length,2);
+  assert.equal(calls.filter(value => value === 'Page.navigate').length,1);
   assert.deepEqual(calls.filter(value => value === 'Target.closeTarget'),['Target.closeTarget']);
   assert.equal(calls.includes('Browser.close'),false);
 });

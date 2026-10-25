@@ -96,7 +96,8 @@ export class DesktopCredentials {
 }
 
 export async function collectOnce({credentials = new DesktopCredentials(),browser = new WindowsLamodaBrowser(),
-  apiFactory = origin => new DesktopApi(origin),acquire = acquireInstance,wait = delay,current = Date.now,scheduled = false} = {}) {
+  apiFactory = origin => new DesktopApi(origin),acquire = acquireInstance,wait = delay,current = Date.now,
+  scheduled = false,readAttempts = 4} = {}) {
   const release = await acquire(join(credentials.directory,'desktop-collector.lock'));
   try {
     const {origin,token} = await credentials.load();
@@ -121,8 +122,8 @@ export async function collectOnce({credentials = new DesktopCredentials(),browse
       if (!Number.isFinite(deadline) || deadline <= serverNow()) throw new Error('Desktop job has no active deadline');
       const signal = AbortSignal.timeout(Math.max(1,deadline-serverNow()));
       const {pages,count} = await retryCollectionRead(() => browser.collect(config.account_digest,{signal}),{
-        signal,wait,retryable:error => error instanceof LamodaError
-          && !['login_required','account_mismatch','interrupted'].includes(error.code),pause:wait});
+        signal,wait,attempts:readAttempts,retryable:error => error instanceof LamodaError
+          && !['login_required','account_mismatch','account_unverified','interrupted'].includes(error.code),pause:wait});
       const runId = randomBytes(16).toString('hex');
       let result;
       for (let attempt = 1; attempt <= 4; attempt++) {

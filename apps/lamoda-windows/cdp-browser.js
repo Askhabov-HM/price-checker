@@ -4,10 +4,12 @@ import {existsSync,readFileSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {chromePath,profilePath} from './chrome-launcher.js';
-import {wishlistExpression,retryAfter} from '../../src/providers/lamoda/browser.js';
 import {LamodaError,minimalWishlistState,parseWishlistState,readAllFavorites,wishlistStateHtml} from '../../src/providers/lamoda/parser.js';
 
 const wishlistUrl = 'https://www.lamoda.ru/wishlist/';
+const wishlistPageState = `(()=>{const url=new URL(location.href);
+  return {origin:location.origin,page:url.pathname==='/wishlist/'?Number(url.searchParams.get('page')||1):null,
+    ready:document.readyState,state_count:Array.from(document.scripts).filter(script=>/^\\s*var\\s+__NUXT__\\s*=/.test(script.textContent||'')).length};})()`;
 
 export async function collectWishlistPages(readPage,expectedDigest,{signal} = {}) {
   const pages = [];
@@ -114,16 +116,27 @@ export class WindowsLamodaBrowser {
     }
     throw new LamodaError('browser_unavailable');
   }
-  async readPage(page) {
-    const response = await this.cdp.call('Runtime.evaluate',{
-      expression:wishlistExpression(page),awaitPromise:true,returnByValue:true},this.session);
-    const value = response.result?.value;
-    if (response.exceptionDetails || !value || value.unverified) throw new LamodaError('account_unverified');
-    if (value.status !== 200) throw new LamodaError(value.status === 429 ? 'rate_limited' : 'access_limited',retryAfter(value.retry),value.status);
-    return value.html;
+  async readPage(page,{signal} = {}) {
+    if (page > 1) await this.cdp.call('Page.navigate',{url:wishlistUrl+'?page='+page},this.session);
+    for (let attempt = 0; attempt < 150; attempt++) {
+      if (signal?.aborted) throw new LamodaError('interrupted');
+      const response = await this.cdp.call('Runtime.evaluate',{
+        expression:wishlistPageState,returnByValue:true},this.session);
+      const state = response.result?.value;
+      if (response.exceptionDetails || !state) throw new LamodaError('account_unverified');
+      if (['https://www.lamoda.ru','https://lamoda.ru'].includes(state.origin)
+        && state.page === page && state.ready === 'complete' && state.state_count === 1) {
+        const html = await this.cdp.call('Runtime.evaluate',{
+          expression:'document.documentElement.outerHTML',returnByValue:true},this.session);
+        if (html.exceptionDetails || typeof html.result?.value !== 'string') throw new LamodaError('account_unverified');
+        return html.result.value;
+      }
+      await this.wait(200);
+    }
+    throw new LamodaError('account_unverified');
   }
   async collect(expectedDigest,{signal} = {}) {
-    try {await this.open();return await collectWishlistPages(page => this.readPage(page),expectedDigest,{signal});}
+    try {await this.open();return await collectWishlistPages(page => this.readPage(page,{signal}),expectedDigest,{signal});}
     finally {await this.close();}
   }
   async close() {
