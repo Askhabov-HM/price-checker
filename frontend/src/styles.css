@@ -243,7 +243,7 @@ select{background:var(--surface);border:1px solid var(--line);padding:9px 27px 9
 .period-tabs{display:flex;background:var(--surface-inset);padding:3px;border-radius:7px;gap:2px}
 .period-tabs button{padding:7px 11px;font-size:10px;color:var(--muted);border-radius:5px}
 .period-tabs button.active{background:var(--surface-raised);box-shadow:0 1px 3px var(--shadow);color:var(--green)}
-.detail-chart-wrap{height:260px;margin:14px 20px 0}
+.detail-chart-wrap{min-width:0;height:260px;margin:14px 20px 0}
 .detail-note{padding:0 30px 18px;font-size:11px;color:var(--muted);line-height:1.6}
 .detail-table-wrap{max-height:260px;overflow:auto;border-top:1px solid var(--line);padding:0 30px}
 .history-table{width:100%;border-collapse:collapse;text-align:left;font-size:11px}
