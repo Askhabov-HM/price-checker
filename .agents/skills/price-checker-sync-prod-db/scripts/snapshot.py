@@ -7,7 +7,15 @@ import sqlite3
 import sys
 import tempfile
 
-source = Path('/var/lib/price-checker/data/prices.sqlite3')
+sources = {
+    'randewoo': 'prices.sqlite3',
+    'ozon': 'ozon/prices.sqlite3',
+    'lamoda': 'lamoda/prices.sqlite3',
+}
+store = sys.argv[1] if len(sys.argv) == 2 else 'randewoo'
+if store not in sources:
+    raise SystemExit('Unknown store')
+source = Path('/var/lib/price-checker/data') / sources[store]
 with tempfile.TemporaryDirectory(prefix='price-checker-snapshot-') as directory:
     snapshot = Path(directory) / 'prices.sqlite3'
     with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True, timeout=10)) as database:

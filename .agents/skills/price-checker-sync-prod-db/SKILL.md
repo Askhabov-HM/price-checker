@@ -42,6 +42,21 @@ node .agents/skills/price-checker-sync-prod-db/scripts/sync-prod-db.mjs
 node .agents/skills/price-checker-sync-prod-db/scripts/sync-prod-db.mjs --snapshot-only
 ```
 
+Для независимого скачивания согласованной копии одного магазина без замены
+локальных рабочих баз:
+
+```powershell
+node scripts/download-prod-db.mjs randewoo
+node scripts/download-prod-db.mjs ozon
+node scripts/download-prod-db.mjs lamoda
+```
+
+Каждая команда читает только выбранную серверную SQLite-базу через Backup API,
+проверяет целостность и схему магазина, затем сохраняет копию и метаданные в
+`.data/prod-snapshots/<магазин>/`. Неудачная загрузка оставляет ранее полученные
+копии и локальные рабочие базы без изменений. Для нового просмотра запусти
+нужную команду ещё раз; предыдущие копии не перезаписываются.
+
 Для подключения нужен обычный административный SSH-доступ, уже настроенный
 на этом компьютере. Ключ `.secrets/github-actions-deploy` ограничен деплоем
 и для чтения базы не подходит. Скрипт требует проверенный ключ хоста и
