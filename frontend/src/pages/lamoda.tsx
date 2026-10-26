@@ -30,15 +30,20 @@ export function LamodaDashboard() {
   const [selected,setSelected] = useState<string|null>(null),[days,setDays] = useState(30),[settings,setSettings] = useState(false);
   const detail = useQuery({...lamodaDetailOptions(selected,days),enabled:query => selected !== null && ready(query)});
   const refresh = useMutation({mutationFn:() => lamodaMutate('refresh'),onSuccess:invalidateLamoda});
+  const vpsRefresh = useMutation({mutationFn:() => lamodaMutate('refresh/browser'),onSuccess:invalidateLamoda});
   const waiting = !!status?.not_before && Date.parse(status.not_before)>now;
-  const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || !status?.available || status.running || !!status?.desktop?.job || waiting || refresh.isPending;
-  const error = statusQuery.error || dashboard.error || refresh.error;
+  const busy = !status?.available || status.running || !!status?.desktop?.job || waiting || refresh.isPending || vpsRefresh.isPending;
+  const blocked = (!status?.configured || status.action_required) && !status?.mobile?.enabled || busy;
+  const vpsBlocked = !status?.configured || status.action_required || !status.browser_available || busy;
+  const error = statusQuery.error || dashboard.error || refresh.error || vpsRefresh.error;
   const items = dashboard.data?.items || [],visible = selectLamoda(items,search.q,search.filter,search.sort,search.changeDays,now);
   return <div><CollectionNotice status={status}/><section className="page-heading"><div><div className="eyebrow">LAMODA · ИЗБРАННОЕ</div><h1>Lamoda<span className="title-dot">.</span></h1><p>История цен ваших товаров</p></div>
     <div className="heading-actions"><div className="next-check"><span>Следующая проверка</span><strong>{status?.schedule_enabled ? date(status.next_check) : 'Не запланирована'}</strong></div>
-      <Button disabled={blocked} onClick={() => refresh.mutate()}><RefreshCw size={15} className={status?.running && !status.queued ? 'rotating' : ''}/>{status?.queued ? 'В очереди…' : status?.running ? 'Проверяем…' : 'Обновить избранное и цены'}</Button></div></section>
+      <div className="flex flex-wrap gap-2 max-sm:w-full"><Button disabled={blocked} onClick={() => refresh.mutate()}><RefreshCw size={15} className={status?.running && !status.queued ? 'rotating' : ''}/>{status?.queued ? 'В очереди…' : status?.running ? 'Проверяем…' : 'Обновить избранное и цены'}</Button>
+        <Button variant="outline" disabled={vpsBlocked} onClick={() => vpsRefresh.mutate()}><RefreshCw size={15}/>Обновить на VPS</Button></div></div></section>
     {error && <p role="alert" className="notice">{error.message}</p>}{status?.message && <p role="status" className="notice">{status.message}</p>}
     <p className="small-muted"><Link to="/lamoda/android" search={search}>{status?.mobile?.enabled ? '📱 Сбор через Android · управление телефоном' : 'Подключить Android для сбора избранного'}</Link></p>
+    <p className="small-muted">«Обновить на VPS» запускает один сбор через серверный Chrome. Подключение Android и его расписание сохраняются.</p>
     <p className="small-muted"><Link to="/lamoda/desktop" search={search}>💻 Пробный сбор с ПК · отдельная история</Link></p>
     {(!status?.configured || status.action_required) && !status?.mobile?.enabled && <p className="notice">Подключите нужный аккаунт для получения избранного. <Link to="/lamoda/login" search={search}>Войти в Lamoda</Link></p>}
     <section className="overview-card"><div className="card-heading"><div><h2>Ваше избранное</h2><p>Все категории · одна строка на товар и цвет</p></div><Button variant="outline" disabled={!status?.available} onClick={() => setSettings(true)}><Settings size={15}/>Расписание</Button></div>
@@ -58,7 +63,7 @@ export function LamodaDashboard() {
             <td>{date(item.checked_at)}{item.status==='error' && <small className="ozon-error">{item.message} Цена от {date(item.price_at)}</small>}</td></tr>;})}
         {!visible.length && <tr><td colSpan={6} className="empty-state">{items.length ? 'Товары не найдены.' : 'Подключите аккаунт и обновите избранное.'}</td></tr>}</tbody></table></div>}
       <div className="table-footer"><span>Показано {visible.length} из {items.length}</span><span>Рубли · время по Москве</span></div></section>
-    <section className="activity-card"><div className="card-heading"><h2>Проверки Lamoda</h2></div>{status?.checks?.map(check => <div className="activity-row" key={check.id}><span className={`activity-dot ${check.status}`}/><span className="activity-time">{date(check.finished_at || check.started_at)}</span><span className="activity-message">{check.message || 'Собираем избранное…'}</span><span>{check.completed}/{check.total}</span></div>)}</section>
+    <section className="activity-card"><div className="card-heading"><h2>Проверки Lamoda</h2></div>{status?.checks?.map(check => <div className="activity-row" key={check.id}><span className={`activity-dot ${check.status}`}/><span className="activity-time">{date(check.finished_at || check.started_at)}</span><span className="activity-message">{check.trigger === 'vps' ? 'VPS · ' : ''}{check.message || 'Собираем избранное…'}</span><span>{check.completed}/{check.total}</span></div>)}</section>
     <Dialog open={settings} onOpenChange={setSettings}>{settings && status && <LamodaSettings status={status} onClose={() => setSettings(false)}/>}</Dialog>
     <Dialog open={selected!==null} onOpenChange={open => {if (!open) setSelected(null);}}><DialogContent className="max-h-[90vh] overflow-y-auto p-0 sm:max-w-[950px]"><DialogHeader className="dialog-top"><DialogTitle>{detail.data?.product.title || 'История цены'}</DialogTitle><DialogDescription>Текущая и зачёркнутая цены из избранного Lamoda.</DialogDescription></DialogHeader>
       <div className="detail-toolbar"><div className="period-tabs">{[7,30,90,0].map(period => <Button key={period} variant="ghost" aria-pressed={days===period} onClick={() => setDays(period)}>{period ? `${period} дней` : 'Всё время'}</Button>)}</div>{detail.data && <a href={detail.data.product.url} target="_blank" rel="noopener noreferrer">На Lamoda ↗</a>}</div>

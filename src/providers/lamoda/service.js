@@ -33,7 +33,7 @@ export class LamodaService {
   }
   status() {const state = this.config(),desktop = this.desktop.status();
     const pause = Math.max(Date.parse(state.not_before)||0,Date.parse(desktop.not_before)||0);
-    return {...state,available:true,configured:this.db.configured(),running:!!this.running,
+    return {...state,available:true,browser_available:!!this.channel().available?.(),configured:this.db.configured(),running:!!this.running,
     ...this.collectionQueue.status('lamoda'),
     queued:!!this.running && this.collectionQueue.status('lamoda').queued,
     next_check:state.schedule_enabled ? state.next_check : null,not_before:pause ? new Date(pause).toISOString() : null,
@@ -46,16 +46,18 @@ export class LamodaService {
     const next = config.schedule_enabled ? nextScheduledCheck({...config,schedule_anchor:anchor},new Date(Math.max(this.current(),Date.parse(old.not_before)||0))) : null;
     this.db.transaction(() => this.db.updateState({...config,schedule:JSON.stringify(config.schedule),schedule_enabled:Number(config.schedule_enabled),schedule_anchor:anchor,next_check:next}));
   }
-  allowed(checkRunning = true) {
+  allowed(checkRunning = true,{browserOnly = false} = {}) {
     if (this.closing || checkRunning && this.running) throw new ValidationError('Проверка Lamoda уже выполняется.');
     if (this.desktop.status().job) throw new ValidationError('Пробный сбор Lamoda на ПК уже выполняется.');
     const state = this.db.state();
-    if ((!this.db.configured() || state.action_required) && !this.mobile.enabled()) throw new ValidationError('Нужно подтвердить вход в Lamoda.');
+    if ((!this.db.configured() || state.action_required) && (browserOnly || !this.mobile.enabled())) throw new ValidationError('Нужно подтвердить вход в Lamoda.');
+    if (browserOnly && !this.channel().available?.()) throw new ValidationError('Браузер Lamoda на сервере недоступен.');
     if (Date.parse(state.not_before) > this.current()) throw new ValidationError('Сохраняется пауза источника Lamoda.');
     if (Date.parse(this.desktop.notBefore()) > this.current()) throw new ValidationError('Сохраняется пауза источника Lamoda.');
   }
-  async start({trigger = 'manual'} = {}) {
-    this.allowed();
+  async start({trigger = 'manual',browserOnly = false} = {}) {
+    if (typeof browserOnly !== 'boolean' || browserOnly && trigger !== 'manual') throw new ValidationError('Некорректный источник сбора Lamoda.');
+    this.allowed(true,{browserOnly});
     let release;
     try {release = await acquireInstance(join(this.root,'.data/lamoda/collector.lock'));} catch {throw new ValidationError('Lamoda занята сбором или входом.');}
     if (this.closing || this.running) {await release();throw new ValidationError('Приложение останавливается или проверка уже выполняется.');}
@@ -64,19 +66,21 @@ export class LamodaService {
     let queued = false;
     const ticket = this.collectionQueue.enqueue('lamoda',() => {
       if (trigger === 'schedule' && !this.db.state().schedule_enabled) return;
-      this.allowed(false);
-      return this.execute(trigger,signal,{remind:trigger !== 'android' || queued});
+      this.allowed(false,{browserOnly});
+      return this.execute(browserOnly ? 'vps' : trigger,signal,{remind:trigger !== 'android' || queued,browserOnly});
     },{signal});
     this.running = ticket.done.finally(async () => {await release();this.running = null;this.activeCheck = null;});
     this.running.catch(() => {});await ticket.ready;
     queued = this.collectionQueue.status('lamoda').queued;
     return {started:true,queued};
   }
-  async execute(trigger,signal,{remind = trigger !== 'android'} = {}) {
+  async execute(trigger,signal,{remind = trigger !== 'android',browserOnly = false} = {}) {
     const check = this.db.begin(trigger,this.stamp());
     this.activeCheck = check;
+    let preserveAndroidSchedule = false;
     try {
-      const mobile = this.mobile.enabled(),expires = this.current()+10*60000;
+      preserveAndroidSchedule = browserOnly && this.mobile.enabled();
+      const mobile = !browserOnly && this.mobile.enabled(),expires = this.current()+10*60000;
       const result = await retryCollectionRead(async () => {
         if (mobile && this.current() >= expires) throw new LamodaError('interrupted');
         const result = mobile ? await this.mobile.collect(check,signal,{remind,expires}) : await this.channel({signal}).request('collect',{account_digest:this.db.accountDigest()});
@@ -91,7 +95,7 @@ export class LamodaService {
           this.logger({time:this.stamp(),store:'lamoda',event:'collection_retry',check_id:check,...retry});
         }});
       this.db.record(check,result.items,this.stamp(),mobile ? 'android' : 'browser');
-      this.db.updateState({action_required:0,message:'',not_before:null,next_check:this.nextAttempt()});
+      this.db.updateState(preserveAndroidSchedule ? {message:''} : {action_required:0,message:'',not_before:null,next_check:this.nextAttempt()});
       this.logger({time:this.stamp(),store:'lamoda',event:'collection_success',check_id:check,count:result.items.length});
     } catch (error) {
       const code = signal.aborted ? 'interrupted' : error instanceof LamodaError ? error.code : 'invalid_data';
@@ -100,8 +104,8 @@ export class LamodaService {
       const wait = error instanceof LamodaError && Number.isFinite(error.retry_after_ms) ? Math.min(Math.max(0,error.retry_after_ms),365*86400000) : 0;
       const notBefore = wait ? new Date(this.current()+wait).toISOString() : null;
       this.db.failure(check,message,this.stamp(),code === 'interrupted' ? 'interrupted' : 'error');
-      const next = required ? null : this.nextAttempt(notBefore);
-      this.db.updateState({action_required:Number(required),message,not_before:notBefore,next_check:next});
+      const next = preserveAndroidSchedule && !wait ? this.db.state().next_check : required ? null : this.nextAttempt(notBefore);
+      this.db.updateState(preserveAndroidSchedule && !wait ? {message} : {action_required:Number(required),message,not_before:notBefore,next_check:next});
       this.logger({time:this.stamp(),store:'lamoda',event:'collection_error',check_id:check,reason:code,http_status:error?.http_status ?? null,next_check:next});
     }
   }

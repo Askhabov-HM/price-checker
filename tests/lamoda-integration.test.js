@@ -33,6 +33,17 @@ test('Lamoda HTTP API protects account operations, rejects card refreshes, and i
   assert.doesNotMatch(JSON.stringify(dashboard),/account_id|account_digest|session\.json/);
   const history = await fetch(base+'/api/providers/lamoda/product/lamoda%3Aitem%3ASYNTHETIC001/history?days=0',{headers:{Cookie:cookie}});
   assert.equal(history.status,200);assert.equal((await history.json()).points.length,1);
+  lamoda.mobile.pair(lamoda.mobile.pairing().code,'Synthetic Android');
+  const nextCheck = lamoda.status().next_check;
+  assert.equal(lamoda.status().browser_available,true);
+  assert.equal((await post('refresh/browser',{}, {'X-CSRF-Token':'wrong'})).status,403);
+  assert.equal((await post('refresh/browser',{id:'lamoda:item:SYNTHETIC001'})).status,400);
+  assert.equal((await post('refresh/browser')).status,202);await lamoda.running;
+  assert.equal(lamoda.mobile.enabled(),true);assert.equal(lamoda.mobile.next(),null);
+  assert.equal(lamoda.status().next_check,nextCheck);
+  assert.equal(lamoda.db.checks()[0].trigger,'vps');
+  assert.equal(lamoda.db.db.prepare('SELECT source FROM observations ORDER BY id DESC LIMIT 1').get().source,'browser');
+  assert.equal(lamoda.db.db.prepare("SELECT COUNT(*) AS n FROM telegram_outbox WHERE event_id LIKE 'android:%'").get().n,0);
 });
 test('Lamoda Telegram queue survives transport failure and never creates its tables in Randewoo',async t => {
   const root = temporary(t),tracker = new Tracker(root),lamoda = new LamodaService(root,{channel,logger:() => {}});
