@@ -9,15 +9,27 @@ import {acquireInstance, AlreadyRunning} from '../../../../src/instance.js';
 const projectRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 const defaultHost = 'root@153.76.171.172';
 const requiredTables = ['products', 'variants', 'lists', 'memberships', 'observations', 'checks', 'settings'];
+const stores = Object.freeze({
+  randewoo: {tables: requiredTables},
+  ozon: {tables: ['ozon_meta', 'products', 'membership', 'checks', 'observations', 'list_snapshots', 'collector_state'], meta: 'ozon_meta', provider: 'ozon-prices'},
+  lamoda: {tables: ['lamoda_meta', 'products', 'checks', 'observations', 'collector_state'], meta: 'lamoda_meta', provider: 'lamoda-prices'},
+});
 
-export function describeDatabase(path) {
+export function describeDatabase(path, store = 'randewoo') {
+  const schema = stores[store];
+  if (!schema) throw new Error('Unknown store');
   const database = new DatabaseSync(path, {readOnly: true});
   try {
     const integrity = database.prepare('PRAGMA integrity_check').all();
     if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') throw new Error('SQLite integrity check failed');
     const tables = new Set(database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
-    if (requiredTables.some(table => !tables.has(table))) throw new Error('The database is missing Price Checker tables');
-    const counts = Object.fromEntries(['products', 'variants', 'observations', 'checks'].map(table => [table, database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count]));
+    if (schema.tables.some(table => !tables.has(table))) throw new Error(`The database is missing ${store} tables`);
+    if (schema.meta) {
+      const meta = database.prepare(`SELECT provider, version FROM ${schema.meta} WHERE id=1`).get();
+      if (meta?.provider !== schema.provider || meta.version !== 1) throw new Error(`The database is not a ${store} price database`);
+    }
+    const countTables = store === 'randewoo' ? ['products', 'variants', 'observations', 'checks'] : ['products', 'observations', 'checks'];
+    const counts = Object.fromEntries(countTables.map(table => [table, database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count]));
     return {...counts, last_observation: database.prepare('SELECT MAX(checked_at) AS checked_at FROM observations').get().checked_at};
   } finally {database.close();}
 }
@@ -28,13 +40,14 @@ async function copyDatabase(source, destination) {
   chmodSync(destination, 0o600);
 }
 
-export async function downloadSnapshot(destination, {host = defaultHost, port = 22, identity} = {}) {
+export async function downloadSnapshot(destination, {host = defaultHost, port = 22, identity, store = 'randewoo'} = {}) {
+  if (!stores[store]) throw new Error('Unknown store');
   if (!/^[a-zA-Z_][a-zA-Z0-9_-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(host)) throw new Error('Expected SSH host in user@host form');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid SSH port');
   const args = ['-T', '-p', String(port), '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
     '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4'];
   if (identity) args.push('-i', resolve(identity), '-o', 'IdentitiesOnly=yes');
-  args.push(host, 'python3 -');
+  args.push(host, `python3 - ${store}`);
   const output = openSync(destination, 'wx', 0o600);
   try {
     // Keep the event loop free so the local application's lock heartbeat runs

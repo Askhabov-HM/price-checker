@@ -43,7 +43,7 @@ config=$configdir/config.json
 environment=/etc/price-checker-ozon-proxy.env
 service=price-checker-ozon-proxy.service
 helper=$directory/ozon-proxy-config.py
-consumers=(price-checker.service price-checker-ozon-recovery@.service price-checker-ozon-browser.service)
+consumers=(price-checker.service price-checker-ozon-recovery@.service)
 managed_paths=("$config" "/etc/systemd/system/$service" "$environment"
   /etc/systemd/system/price-checker-ozon-recovery.service.d/ozon-proxy.conf)
 for consumer in "${consumers[@]}"; do

@@ -1,4 +1,4 @@
 interface:
-  display_name: "Обновить базу из продакшена"
-  short_description: "Свежая прод-база локально с резервной копией"
-  default_prompt: "Используй $price-checker-sync-prod-db, чтобы обновить локальную базу Price Checker актуальной копией с продакшена."
+  display_name: "Скачать базы трёх магазинов"
+  short_description: "Проверенные копии баз Randewoo, Ozon и Lamoda на ПК"
+  default_prompt: "Используй $price-checker-sync-prod-db, чтобы скачать проверенные снимки всех трёх баз — Randewoo, Ozon и Lamoda — без замены локальных рабочих баз."
