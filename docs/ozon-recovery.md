@@ -68,7 +68,13 @@ sudo bash scripts/setup-ozon-proxy.sh /private/wasp.yaml
 
 Отдельная служба `scripts/systemd/price-checker-ozon-proxy.service` слушает только `127.0.0.1:17891`, использует один выбранный узел и правило `MATCH` без автоматического выбора и DIRECT fallback. Прокси Telegram на порту 17890, Lamoda на порту 17892 и маршруты Randewoo настраиваются отдельно.
 
-Служба прокси включена в автозагрузку. Для `price-checker.service`, `price-checker-ozon-recovery@.service` и отдельного `price-checker-ozon-browser.service` установлены drop-in `ozon-proxy.conf` с `Wants=price-checker-ozon-proxy.service`, `After=price-checker-ozon-proxy.service` и `EnvironmentFile=/etc/price-checker-ozon-proxy.env`. Изменение самого `OZON_PROXY_URL` требует перезапуска приложения и службы браузера. При замене профиля на прежнем порту 17891 достаточно перезапуска прокси и службы браузера, который выполняет установщик. Повторный вход владельца и возобновление сбора при подтверждённой потере аккаунта выполняются отдельно.
+Служба прокси включена в автозагрузку. Для `price-checker.service` и `price-checker-ozon-recovery@.service` установлены drop-in `ozon-proxy.conf` с `Wants=price-checker-ozon-proxy.service`, `After=price-checker-ozon-proxy.service` и `EnvironmentFile=/etc/price-checker-ozon-proxy.env`. Изменение самого `OZON_PROXY_URL` требует перезапуска приложения и службы браузера. При замене профиля на прежнем порту 17891 достаточно перезапуска прокси и службы браузера, который выполняет установщик. Повторный вход владельца и возобновление сбора при подтверждённой потере аккаунта выполняются отдельно.
+
+Отдельная архивная служба `price-checker-ozon-browser.service` удалена
+28 октября 2026 вместе с её drop-in, старым runtime и релизом 15.
+Установщик больше не создаёт для неё конфигурацию. Постоянная служба
+`price-checker-ozon-recovery.service` сохраняет собственный drop-in
+`ozon-proxy.conf`, устанавливаемый отдельно от перечисленных потребителей.
 
 Рабочая конфигурация и приватный профиль находятся вне каталога релиза, поэтому обычный деплой приложения не меняет выбранный VPN и не возвращает старый узел. Базы, cookies, номер телефона и ключи VPN остаются приватными данными сервера; в Git сохраняются код, шаблоны и способ их применения.
 
