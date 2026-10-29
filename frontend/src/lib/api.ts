@@ -24,7 +24,7 @@ export const authOptions = queryOptions({
 });
 
 async function clearPrivateQueries() {
-  for (const key of ['status', 'dashboard', 'detail', 'ozon','lamoda']) {
+  for (const key of ['status', 'dashboard', 'detail', 'ozon','lamoda','storage']) {
     await queryClient.cancelQueries({queryKey: [key]});
     queryClient.removeQueries({queryKey: [key]});
   }

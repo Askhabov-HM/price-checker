@@ -1,3 +1,4 @@
+import {storageBrowser} from './storage-browser-http.js';
 import {createServer} from 'node:http';
 import {readFileSync, realpathSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
@@ -204,6 +205,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         return send(response, 401, {error: 'Войдите в Price Checker'});
       }
       if (request.method === 'GET') {
+        if (url.pathname.startsWith('/api/storage/')) return storageBrowser(request,response,tracker.root,url);
         if (url.pathname.startsWith('/api/providers/lamoda/')) {
           if (url.pathname === '/api/providers/lamoda/status') return send(response,200,{...(lamoda ? lamoda.status() : {available:false,configured:false,message:'Раздел Lamoda временно недоступен.'}),csrf_token:token});
           if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
@@ -269,7 +271,7 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (url.pathname === '/api/export') return send(response, 200, exportCsv(tracker.db.rows(section, context), context), 'text/csv; charset=utf-8',
           {'Content-Disposition': `attachment; filename="prices-${section}-${context}.csv"`});
         if (url.pathname === '/favicon.ico') return send(response, 204, Buffer.alloc(0), 'image/x-icon');
-        const page = ['/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser','/lamoda','/lamoda/login','/lamoda/android'].includes(url.pathname.replace(/\/$/, '') || '/');
+        const page = ['/storage','/', '/cart', '/my-cart', '/favorites', '/watching', '/ozon', '/ozon/login','/ozon/browser','/lamoda','/lamoda/login','/lamoda/android'].includes(url.pathname.replace(/\/$/, '') || '/');
         const asset = /^\/assets\/[A-Za-z0-9_.-]+\.(js|css|woff2?|svg)$/.exec(url.pathname);
         if (page || asset) {
           const filename = page ? 'index.html' : url.pathname.slice(1);

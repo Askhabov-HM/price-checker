@@ -25,6 +25,9 @@ python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read()
 if [[ -f /usr/local/lib/price-checker/deploy.py ]]; then
   cp -p /usr/local/lib/price-checker/deploy.py /usr/local/lib/price-checker/deploy.previous.py
 fi
+install -d -m 750 -o root -g pricechecker /var/lib/price-checker/data/backup-journal
+install -m 644 "$script_directory/backup-journal.py" /usr/local/lib/price-checker/backup-journal.py
+python3 /usr/local/lib/price-checker/backup-journal.py /var/lib/price-checker/data
 install -m 644 "$script_directory/deploy.py" /usr/local/lib/price-checker/deploy.new.py
 mv -T /usr/local/lib/price-checker/deploy.new.py /usr/local/lib/price-checker/deploy.py
 if [[ $1 == --update ]]; then

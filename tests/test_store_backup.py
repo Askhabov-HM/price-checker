@@ -111,10 +111,25 @@ class IndependentBackupTests(unittest.TestCase):
 
     def test_maintenance_never_forgets_any_store_or_reads_live_databases(self):
         runner = maintenance.Maintenance(self.config)
-        with patch.object(runner, 'lock'), patch.object(runner, 'restic') as remote:
+        def remote_call(*args):
+            if args[0]=='backup': return json.dumps({'message_type':'summary','snapshot_id':'a'*64})
+            if args[0]=='snapshots': return json.dumps([{'id':'a'*64,'tags':['price-checker-journal']}])
+            if args[0]=='restore':
+                import shutil
+                target=Path(args[3])/'journal/backup-journal.sqlite3'
+                target.parent.mkdir(parents=True)
+                shutil.copyfile(runner.work/'journal/backup-journal.sqlite3',target)
+            return ''
+        with patch.object(runner, 'lock'), patch.object(runner, 'restic', side_effect=remote_call) as remote:
             self.assertEqual(runner.run()['status'], 'verified')
-        self.assertEqual([call.args for call in remote.call_args_list], [('check',), ('prune',), ('check',)])
-        self.assertFalse(Path(self.config['data_dir']).exists())
+        calls=[call.args for call in remote.call_args_list]
+        self.assertEqual(calls[:3], [('check',), ('prune',), ('check',)])
+        self.assertEqual(calls[3],('backup','--json','--host','price-checker','--tag','price-checker-journal','journal'))
+        forget=[call for call in calls if call[0]=='forget']
+        self.assertEqual(len(forget),1)
+        self.assertEqual(forget[0][2],'price-checker-journal')
+        self.assertEqual(calls[-1],('snapshots','--json'))
+        self.assertEqual([path.name for path in Path(self.config['data_dir']).iterdir()],['backup-journal'])
 
     @unittest.skipIf(os.name == 'nt', 'Production locking uses Linux flock')
     def test_processes_serialize_and_release_the_queue_after_owner_termination(self):

@@ -20,3 +20,5 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/price-checker-lamoda-backup /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
 ReadOnlyPaths=/var/lib/price-checker/data /var/lib/price-checker/secrets
+
+ReadWritePaths=/var/lib/price-checker/data/backup-journal

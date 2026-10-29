@@ -18,7 +18,7 @@ export function LamodaShell() {
       <Link className="nav-link" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}><ShoppingBag size={19}/><span>Ozon</span></Link>
       <Link className={`nav-link ${path === '/lamoda' ? 'active' : ''}`} to="/lamoda" search={search}><ShoppingBag size={19}/><span>Lamoda</span></Link>
       <Link className={`nav-link ${path === '/lamoda/desktop' ? 'active' : ''}`} to="/lamoda/desktop" search={search}><Monitor size={19}/><span>Lamoda · ПК</span></Link>
-    </nav><div className="sidebar-note"><strong>Всё избранное</strong><p>Цены товаров и цветов без выбора размеров.</p></div>
+    </nav><a className="ozon-provider-link" href="/storage">Базы и резервные копии ↗</a><div className="sidebar-note"><strong>Всё избранное</strong><p>Цены товаров и цветов без выбора размеров.</p></div>
     <div className="sidebar-bottom"><Link className="nav-link" to="/lamoda/login" search={search}><KeyRound size={19}/><span>Вход в Lamoda</span></Link></div></aside>
     <main className="main"><header className="topbar"><div className="breadcrumb">Моя коллекция <span>/</span> <b>{path === '/lamoda/desktop' ? 'Lamoda · ПК' : 'Lamoda'}</b></div>
       {auth.data?.required && <Button variant="ghost" size="sm" disabled={signOut.isPending} onClick={() => signOut.mutate()}><LogOut size={16}/>Выйти</Button>}</header>

@@ -16,6 +16,11 @@ import tempfile
 import time
 
 
+import importlib.util
+_journal_spec = importlib.util.spec_from_file_location('backup_journal', Path(__file__).with_name('backup-journal.py'))
+journal_module = importlib.util.module_from_spec(_journal_spec)
+_journal_spec.loader.exec_module(journal_module)
+
 FORMAT = 'price-checker-database-backup-v1'
 TAG = 'price-checker-databases'
 STORES = {'randewoo': 'prices.sqlite3', 'ozon': 'ozon/prices.sqlite3'}
@@ -292,15 +297,57 @@ class Backup:
         return validate_recovery(target, self.stores, self.manifest_format)
 
     def run(self, force=False, force_verify=False):
-        with self.lock():
-            try:
-                return self._run(force, force_verify)
-            except (BackupError, OSError, sqlite3.Error, ValueError) as error:
-                # Only our own messages are safe to persist; sqlite/JSON errors can contain data.
-                message = str(error) if isinstance(error, BackupError) else type(error).__name__
-                self.state.update(last_error=message, last_failure_at=utc_now())
-                atomic_json(self.state_file, self.state)
-                raise BackupError(message) from None
+        self.journal = journal_module.Journal(self.config['data_dir'])
+        stores = ','.join(self.stores)
+        if self.__class__.__name__ == 'LamodaBackup': stores = 'lamoda'
+        if self.__class__.__name__ == 'Maintenance': stores = 'journal'
+        reason = 'maintenance' if stores == 'journal' else ('schedule' if os.environ.get('INVOCATION_ID') else 'manual')
+        self.journal_run = self.journal.start(stores, reason)
+        try:
+            with self.lock():
+                try:
+                    self.journal.stage(self.journal_run,'creating')
+                    result = self._run(force, force_verify)
+                    self.journal.finish(self.journal_run, 'skipped' if result.get('status') == 'unchanged' else 'success')
+                    return result
+                except (BackupError, OSError, sqlite3.Error, ValueError) as error:
+                    # Persist state before releasing the store lock; another run may start immediately.
+                    message = str(error) if isinstance(error, BackupError) else type(error).__name__
+                    self.state.update(last_error=message, last_failure_at=utc_now())
+                    atomic_json(self.state_file, self.state)
+                    raise
+        except (BackupError, OSError, sqlite3.Error, ValueError) as error:
+            message = str(error) if isinstance(error, BackupError) else type(error).__name__
+            self.journal.finish(self.journal_run,'error',message)
+            raise BackupError(message) from None
+
+    def audit_verify(self, snapshot):
+        journal = journal_module.Journal(self.config['data_dir'])
+        stores = 'lamoda' if self.__class__.__name__ == 'LamodaBackup' else ','.join(self.stores)
+        run = journal.start(stores,'manual_verify')
+        try:
+            journal.stage(run,'verifying')
+            result = self.verify(snapshot)
+            for entry in result['databases']:
+                journal.artifact(entry['provider'],'cloud',snapshot,run,result.get('created_at'),entry.get('bytes'))
+            # Existing artifacts may point to the original creation run.
+            with closing(journal.connect()) as db, db:
+                db.execute("UPDATE artifacts SET verification='restore_ok',verified_at=? WHERE location='cloud' AND locator=?",(utc_now(),snapshot))
+            journal.finish(run,'success')
+            return result
+        except (BackupError,OSError,sqlite3.Error,ValueError) as error:
+            journal.finish(run,'error',str(error) if isinstance(error,BackupError) else type(error).__name__)
+            raise
+
+    def record_snapshot(self, snapshot, manifest):
+        if not getattr(self,'journal',None): return
+        self.journal.stage(self.journal_run,'uploaded')
+        for entry in manifest['databases']:
+            self.journal.artifact(entry['provider'],'cloud',snapshot,self.journal_run,
+                                  manifest.get('created_at'),entry.get('bytes'),verification='sqlite_ok')
+
+    def record_verified(self):
+        if getattr(self,'journal',None): self.journal.verified(self.journal_run)
 
     def _run(self, force, force_verify):
         current = current_signatures(self.config['data_dir'], self.stores)
@@ -308,16 +355,20 @@ class Backup:
         if not force and not force_verify and current == self.state.get('signatures') and now - self.state.get('last_success_epoch', 0) < 3600:
             return {'status': 'unchanged', 'snapshot_id': self.state.get('snapshot_id')}
         manifest = create_snapshots(self.config['data_dir'], self.work / 'staging', self.stores, self.manifest_format)
+        if getattr(self,'journal',None): self.journal.stage(self.journal_run,'uploading')
         output = self.restic('backup', '--json', '--host', 'price-checker', '--tag', self.tag, 'staging')
         summaries = [item for line in output.splitlines() if line.strip()
                      for item in [json.loads(line)] if item.get('message_type') == 'summary']
         snapshot = summaries[-1].get('snapshot_id', '') if summaries else ''
         if not re.fullmatch('[0-9a-f]{8,64}', snapshot):
             raise BackupError('restic did not confirm a completed snapshot')
+        self.record_snapshot(snapshot,manifest)
         maintenance = force_verify or now - self.state.get('last_verified_epoch', 0) >= 86400
         if maintenance:
+            if getattr(self,'journal',None): self.journal.stage(self.journal_run,'verifying')
             if self.verify(snapshot) != manifest:
                 raise BackupError('Downloaded snapshot manifest differs from the local snapshot')
+            self.record_verified()
             # Retention removes old recovery points, never rows from the live databases.
             self.restic('forget', '--tag', self.tag, '--host', 'price-checker', '--group-by', 'host,paths,tags',
                         '--keep-last', '1', '--keep-within', '48h', '--keep-daily', '30', '--keep-monthly', '12')
@@ -359,7 +410,7 @@ def main():
                     backup.restic('init', '--repository-version', '2')
                     result = {'status': 'initialized'}
                 elif args.command == 'verify':
-                    result = backup.verify(args.snapshot)
+                    result = backup.audit_verify(args.snapshot)
                 else:
                     result = backup.restore(args.snapshot, args.target)
         print(json.dumps(result, ensure_ascii=False))

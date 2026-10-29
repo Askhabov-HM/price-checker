@@ -1,3 +1,5 @@
+import {StoragePage} from '@/pages/storage';
+import {validateStorageSearch} from '@/lib/storage';
 import {createRootRoute, createRoute, createRouter, Link, notFound, redirect} from '@tanstack/react-router';
 import {AppShell} from '@/components/app-shell';
 import {AuthGate} from '@/components/auth-gate';
@@ -35,5 +37,6 @@ const lamoda = createRoute({getParentRoute:() => root,path:'/lamoda',component:L
 const lamodaLogin = createRoute({getParentRoute:() => root,path:'/lamoda/login',component:LamodaLoginPage});
 const lamodaAndroid = createRoute({getParentRoute:() => root,path:'/lamoda/android',component:LamodaAndroidPage});
 const lamodaDesktop = createRoute({getParentRoute:() => root,path:'/lamoda/desktop',component:LamodaDesktopPage});
-export const router = createRouter({routeTree: root.addChildren([index, list, ozon, ozonLogin, ozonBrowser,lamoda,lamodaLogin,lamodaAndroid,lamodaDesktop])});
+const storage = createRoute({getParentRoute:()=>root,path:'/storage',component:StoragePage,validateSearch:validateStorageSearch});
+export const router = createRouter({routeTree: root.addChildren([storage,index, list, ozon, ozonLogin, ozonBrowser,lamoda,lamodaLogin,lamodaAndroid,lamodaDesktop])});
 declare module '@tanstack/react-router' {interface Register {router: typeof router;}}

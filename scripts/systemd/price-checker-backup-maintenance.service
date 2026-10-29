@@ -20,3 +20,5 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/price-checker-backup-maintenance /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
 ReadOnlyPaths=/var/lib/price-checker/secrets
+
+ReadWritePaths=/var/lib/price-checker/data/backup-journal

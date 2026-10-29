@@ -22,10 +22,30 @@ class Maintenance(base.Backup):
 
     def _run(self, force, force_verify):
         # Each store expires only its own snapshots after successful recovery.
-        # This task never forgets snapshots, including the legacy combined tag.
+        # Price snapshots (including the legacy combined tag) are never forgotten here.
         self.restic('check')
         self.restic('prune')
         self.restic('check')
+        if getattr(self,'journal',None):
+            self.journal.import_local()
+            self.journal.snapshot(self.work / 'journal' / 'backup-journal.sqlite3')
+            output = self.restic('backup','--json','--host','price-checker','--tag','price-checker-journal','journal')
+            summaries = [json.loads(line) for line in output.splitlines() if line.strip()]
+            snapshot = next((entry.get('snapshot_id') for entry in reversed(summaries) if entry.get('message_type') == 'summary'),None)
+            if not snapshot or not base.re.fullmatch('[0-9a-f]{64}',snapshot): raise base.BackupError('Journal snapshot was not confirmed')
+            self.journal.artifact('journal','cloud',snapshot,self.journal_run,base.utc_now(),verification='sqlite_ok')
+            self.journal.stage(self.journal_run,'verifying')
+            with base.tempfile.TemporaryDirectory(prefix='journal-verify-',dir=self.work) as recovery:
+                self.restic('restore',snapshot,'--target',recovery)
+                recovered = Path(recovery)/'journal/backup-journal.sqlite3'
+                with base.closing(sqlite3.connect(recovered.resolve().as_uri()+'?mode=ro',uri=True)) as sql:
+                    if sql.execute('PRAGMA quick_check').fetchone()[0]!='ok' or sql.execute('SELECT count(*) FROM journal_migrations').fetchone()[0]!=1:
+                        raise base.BackupError('Journal recovery check failed')
+                if base.sha256(recovered) != base.sha256(self.work / 'journal' / 'backup-journal.sqlite3'):
+                    raise base.BackupError('Journal recovery differs from saved snapshot')
+                self.journal.verified(self.journal_run)
+            self.restic('forget','--tag','price-checker-journal','--host','price-checker','--group-by','host,paths,tags','--keep-last','7','--keep-daily','30','--keep-monthly','12')
+            self.journal.cloud_inventory(json.loads(self.restic('snapshots','--json')))
         self.state.update(last_success_at=base.utc_now(), last_error=None)
         base.atomic_json(self.state_file, self.state)
         return {'status': 'verified', 'last_success_at': self.state['last_success_at']}

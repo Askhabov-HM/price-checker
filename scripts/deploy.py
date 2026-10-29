@@ -18,6 +18,11 @@ from urllib.request import urlopen, Request
 import select
 import signal
 
+import importlib.util
+_journal_spec = importlib.util.spec_from_file_location('backup_journal', Path(__file__).with_name('backup-journal.py'))
+journal_module = importlib.util.module_from_spec(_journal_spec)
+_journal_spec.loader.exec_module(journal_module)
+
 BASE = Path('/opt/price-checker')
 DATA = Path('/var/lib/price-checker/data')
 SECRETS = Path('/var/lib/price-checker/secrets')
@@ -100,6 +105,8 @@ def backup_databases(data, commit, account=None):
     """Back up each existing store independently; never restore one as another."""
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     copies = []
+    journal = journal_module.Journal(data)
+    journal.import_local()
     for provider, relative in [('randewoo', 'prices.sqlite3'), ('ozon', 'ozon/prices.sqlite3'), ('lamoda', 'lamoda/prices.sqlite3')]:
         source = data / relative
         if not source.exists():
@@ -115,18 +122,25 @@ def backup_databases(data, commit, account=None):
         target = directory / f'pre-deploy-{stamp}-{commit[:12]}.sqlite3'
         if target.exists():
             raise ValueError('Deployment backup already exists')
-        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as database:
-            if provider == 'ozon' and database.execute('SELECT provider,version FROM ozon_meta WHERE id=1').fetchone() != ('ozon-prices', 1):
-                raise ValueError('Unsupported Ozon database')
-            if provider == 'lamoda' and database.execute('SELECT provider,version FROM lamoda_meta WHERE id=1').fetchone() != ('lamoda-prices', 1):
-                raise ValueError('Unsupported Lamoda database')
-            with closing(sqlite3.connect(target)) as copy:
-                database.backup(copy)
-                if copy.execute('PRAGMA quick_check').fetchone() != ('ok',):
-                    raise ValueError('Invalid database backup')
-        target.chmod(0o600)
-        if account:
-            shutil.chown(target, account.pw_uid, account.pw_gid)
+        run_id = journal.start(provider,'deploy')
+        try:
+            with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as database:
+                if provider == 'ozon' and database.execute('SELECT provider,version FROM ozon_meta WHERE id=1').fetchone() != ('ozon-prices', 1):
+                    raise ValueError('Unsupported Ozon database')
+                if provider == 'lamoda' and database.execute('SELECT provider,version FROM lamoda_meta WHERE id=1').fetchone() != ('lamoda-prices', 1):
+                    raise ValueError('Unsupported Lamoda database')
+                with closing(sqlite3.connect(target)) as copy:
+                    database.backup(copy)
+                    if copy.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                        raise ValueError('Invalid database backup')
+            target.chmod(0o600)
+            if account:
+                shutil.chown(target, account.pw_uid, account.pw_gid)
+            journal.artifact(provider,'vps',str(target.relative_to(data)),run_id,journal_module.now(),target.stat().st_size,'sqlite_ok')
+            journal.finish(run_id,'success')
+        except BaseException:
+            journal.finish(run_id,'error','deployment_backup_failed')
+            raise
         copies.append({'provider': provider, 'source': relative, 'backup': str(target.relative_to(data))})
         print(f'Database backup ({provider}): {target.name}', flush=True)
     if copies:

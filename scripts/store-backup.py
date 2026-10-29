@@ -51,7 +51,7 @@ def main():
             result = backup.state
         else:
             with backup.lock():
-                result = backup.verify(args.snapshot) if args.command == 'verify' else backup.restore(args.snapshot, args.target)
+                result = backup.audit_verify(args.snapshot) if args.command == 'verify' else backup.restore(args.snapshot, args.target)
         print(json.dumps(result))
     except (base.BackupError, OSError, sqlite3.Error, ValueError) as error:
         message = str(error) if isinstance(error, base.BackupError) else type(error).__name__

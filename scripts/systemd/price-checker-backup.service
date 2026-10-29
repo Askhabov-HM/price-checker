@@ -19,3 +19,5 @@ ReadWritePaths=/var/lib/price-checker-backup /var/lib/price-checker-backup-coord
 MemoryMax=768M
 CPUQuota=50%
 TasksMax=64
+
+ReadWritePaths=/var/lib/price-checker/data/backup-journal
