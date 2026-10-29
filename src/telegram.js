@@ -1,3 +1,4 @@
+import {migrateTelegram,migrateOzonTelegram} from './storage-schema.js';
 import {readFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -172,10 +173,7 @@ export class TelegramBot {
     this.publicOrigin = publicSite(publicOrigin);
     this.cursorKey = `telegram_check_cursor:${ownerId}`;
     this.offsetKey = `telegram_offset:${ownerId}`;
-    this.db.run(`CREATE TABLE IF NOT EXISTS telegram_outbox(
-      check_id INTEGER NOT NULL REFERENCES checks(id),owner_id INTEGER NOT NULL,text TEXT NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,delivered_at TEXT,
-      PRIMARY KEY(check_id,owner_id))`);
+    migrateTelegram(this.db.connection);
     if (this.db.setting(this.cursorKey) == null) {
       const latest = this.db.checks(1)[0];
       this.db.setSetting(this.cursorKey, latest ? latest.id - (latest.status === 'running' ? 1 : 0) : 0);
@@ -183,10 +181,7 @@ export class TelegramBot {
     if (ozon) {
       this.ozonCursorKey = `telegram_ozon_check_cursor:${ownerId}`;
       // Ozon check IDs belong to a separate database and cannot reference Randewoo checks.
-      this.db.run(`CREATE TABLE IF NOT EXISTS telegram_ozon_outbox(
-        check_id INTEGER NOT NULL,owner_id INTEGER NOT NULL,text TEXT NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,delivered_at TEXT,
-        PRIMARY KEY(check_id,owner_id))`);
+      migrateOzonTelegram(this.db.connection);
       if (this.db.setting(this.ozonCursorKey) == null) {
         const latest = ozon.db.checks()[0];
         this.db.setSetting(this.ozonCursorKey, latest ? latest.id - (latest.status === 'running' ? 1 : 0) : 0);

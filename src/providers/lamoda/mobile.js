@@ -1,3 +1,4 @@
+import {migrateMobile} from '../../storage-schema.js';
 import {randomBytes,createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {ValidationError} from '../../errors.js';
@@ -9,14 +10,7 @@ const jobError = () => new ValidationError('Проверка истекла ил
 export class LamodaMobile {
   constructor(db,{current = Date.now} = {}) {
     this.db = db;this.sql = db.db;this.current = current;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS mobile_device(id INTEGER PRIMARY KEY CHECK(id=1),token_hash TEXT NOT NULL,name TEXT NOT NULL,last_seen TEXT);
-      CREATE TABLE IF NOT EXISTS mobile_pairing(id INTEGER PRIMARY KEY CHECK(id=1),code_hash TEXT NOT NULL,expires INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS mobile_jobs(id TEXT PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id),status TEXT NOT NULL,expires INTEGER NOT NULL,
-        next_page INTEGER NOT NULL DEFAULT 1,result TEXT,error TEXT,bytes INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS mobile_pages(job_id TEXT NOT NULL REFERENCES mobile_jobs(id) ON DELETE CASCADE,page INTEGER NOT NULL,digest TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(job_id,page));
-      CREATE TABLE IF NOT EXISTS mobile_diagnostics(id INTEGER PRIMARY KEY,job_id TEXT NOT NULL,event TEXT NOT NULL,at TEXT NOT NULL,
-        page INTEGER,reason TEXT,screen_locked INTEGER,screen_off INTEGER);
-      CREATE INDEX IF NOT EXISTS mobile_diagnostics_job ON mobile_diagnostics(job_id,id);`);
+    migrateMobile(this.sql);
   }
   diagnostic(jobId,event,{page = null,reason = null,screenLocked = null,screenOff = null} = {}) {
     this.sql.prepare('INSERT INTO mobile_diagnostics(job_id,event,at,page,reason,screen_locked,screen_off) VALUES(?,?,?,?,?,?,?)')

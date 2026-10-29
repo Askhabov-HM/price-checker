@@ -1,3 +1,4 @@
+import {migrateLamoda} from '../../storage-schema.js';
 import {mkdirSync, existsSync, realpathSync, chmodSync} from 'node:fs';
 import {join, resolve, dirname} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -20,23 +21,7 @@ export class LamodaDatabase {
       } catch {throw new ValidationError('Хранилище Lamoda недоступно.');} finally {existing.close();}
     }
     this.db = new DatabaseSync(this.path,{timeout:1000}); chmodSync(this.path,0o600);
-    try {this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-      CREATE TABLE IF NOT EXISTS lamoda_meta(id INTEGER PRIMARY KEY CHECK(id=1),provider TEXT NOT NULL,version INTEGER NOT NULL,account_digest TEXT);
-      INSERT OR IGNORE INTO lamoda_meta VALUES(1,'lamoda-prices',1,NULL);
-      CREATE TABLE IF NOT EXISTS collector_state(id INTEGER PRIMARY KEY CHECK(id=1),schedule_enabled INTEGER NOT NULL DEFAULT 0,
-        schedule_mode TEXT NOT NULL DEFAULT 'interval',schedule TEXT NOT NULL DEFAULT '[]',interval_minutes INTEGER NOT NULL DEFAULT 30,
-        schedule_anchor TEXT,next_check TEXT,not_before TEXT,action_required INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '');
-      INSERT OR IGNORE INTO collector_state(id) VALUES(1);
-      CREATE TABLE IF NOT EXISTS products(sku TEXT PRIMARY KEY,title TEXT NOT NULL,color TEXT NOT NULL,url TEXT NOT NULL,image_url TEXT,position INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1);
-      CREATE TABLE IF NOT EXISTS checks(id INTEGER PRIMARY KEY,event_id TEXT NOT NULL UNIQUE,trigger TEXT NOT NULL,status TEXT NOT NULL,started_at TEXT NOT NULL,finished_at TEXT,
-        total INTEGER NOT NULL DEFAULT 0,completed INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '',down INTEGER NOT NULL DEFAULT 0,up INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id),sku TEXT NOT NULL REFERENCES products(sku),
-        checked_at TEXT NOT NULL,price_at TEXT,price INTEGER,original_price INTEGER,availability TEXT NOT NULL,status TEXT NOT NULL,message TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT 'browser',
-        UNIQUE(check_id,sku));
-      CREATE INDEX IF NOT EXISTS lamoda_observations_product ON observations(sku,id DESC);
-      CREATE TABLE IF NOT EXISTS telegram_outbox(event_id TEXT PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id),payload TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,delivered_at TEXT,message_id INTEGER);
-      CREATE TABLE IF NOT EXISTS notification_state(id INTEGER PRIMARY KEY CHECK(id=1),kind TEXT,reason TEXT);
-      INSERT OR IGNORE INTO notification_state(id) VALUES(1);`);
+    try {migrateLamoda(this.db);
       this.rowCache = new RowCache(this.db,{key:'sku',initial:() => ({latest:null,good:null,summary:emptySummary(),sparkline:[]}),
         reduce:(state,row) => {
           state.latest = row;

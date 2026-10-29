@@ -5,7 +5,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -17,7 +17,7 @@ spec.loader.exec_module(deploy)
 def archive(extra=()):
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode='w:gz') as bundle:
-        for name in ('run.js', 'package.json', 'package-lock.json', '.nvmrc', 'dist/index.html'):
+        for name in ('run.js', 'package.json', 'package-lock.json', '.nvmrc', 'dist/index.html', 'storage-contract.json', 'scripts/storage-maintenance.js'):
             entry = tarfile.TarInfo(name)
             entry.size = 2
             bundle.addfile(entry, io.BytesIO(b'{}'))
@@ -28,6 +28,82 @@ def archive(extra=()):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_storage_format_checks_read_and_write_support_independently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            with closing(sqlite3.connect(data / 'prices.sqlite3')) as sql, sql:
+                sql.execute('CREATE TABLE storage_meta(id INTEGER,store TEXT,format INTEGER)')
+                sql.execute("INSERT INTO storage_meta VALUES(1,'randewoo',2)")
+            contract = {'stores': {'randewoo': {'read': [1, 2], 'write': [1]}}}
+            self.assertFalse(deploy.compatible_databases(data, contract, ['randewoo']))
+            contract['stores']['randewoo']['write'].append(2)
+            self.assertTrue(deploy.compatible_databases(data, contract, ['randewoo']))
+
+    def test_legacy_bridge_requires_unchanged_schema_and_baseline_calculations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            current, before = data / 'prices.sqlite3', data / 'before.sqlite3'
+            with closing(sqlite3.connect(current)) as sql, closing(sqlite3.connect(before)) as copy:
+                sql.execute('CREATE TABLE observations(id INTEGER PRIMARY KEY,price INTEGER)')
+                sql.execute('INSERT INTO observations VALUES(1,100)');sql.commit();sql.backup(copy)
+                sql.execute('CREATE TABLE storage_meta(id INTEGER,store TEXT,format INTEGER)')
+                sql.execute("INSERT INTO storage_meta VALUES(1,'randewoo',1)")
+                sql.execute('CREATE TABLE projection_versions(name TEXT PRIMARY KEY,version TEXT)')
+                sql.execute("INSERT INTO projection_versions VALUES('price_rows','1')")
+                sql.execute('INSERT INTO observations VALUES(2,90)');sql.commit()
+            copies = [{'provider': 'randewoo', 'backup': 'before.sqlite3'}]
+            contract = {'projections': {'rows': 1, 'history': 1, 'published': 1}}
+            self.assertTrue(deploy.legacy_rollback_compatible(data, copies, ['randewoo'], contract))
+            # New observations survive code rollback; restoring the old DB is unnecessary.
+            with closing(sqlite3.connect(current)) as sql, sql:
+                self.assertEqual(sql.execute('SELECT COUNT(*) FROM observations').fetchone()[0], 2)
+                sql.execute('ALTER TABLE observations ADD COLUMN changed TEXT')
+            self.assertFalse(deploy.legacy_rollback_compatible(data, copies, ['randewoo'], contract))
+
+    @patch.object(deploy, 'StorageDeployment')
+    def test_incompatible_rollback_never_launches_previous_code_or_restores_databases(self, factory):
+        storage = factory.return_value
+        storage.stores = []
+        storage.can_rollback.return_value = False
+        with patch.object(deploy, 'service') as service, patch.object(deploy, 'switch_current') as switch, \
+                patch.object(deploy, 'wait_healthy', side_effect=RuntimeError('bad new release')):
+            with self.assertRaisesRegex(RuntimeError, 'rollback blocked'):
+                deploy.activate_release('new', 'old', Mock(return_value=[]))
+        self.assertEqual(switch.call_args_list, [call('new')])
+        self.assertEqual(service.call_args_list.count(call('start')), 1)
+        storage.activate.assert_not_called()
+        storage.phase.assert_any_call('blocked')
+
+    @patch.object(deploy, 'StorageDeployment')
+    def test_migrations_precede_start_and_rollback_prepares_previous_calculations(self, factory):
+        storage = factory.return_value
+        storage.stores = ['ozon']
+        storage.previous_contract = True
+        storage.preparation_started = False
+        events = []
+        @contextmanager
+        def locked(release):
+            events.append(('locked', release))
+            yield lambda: events.append(('prepared', release))
+            events.append(('unlocked', release))
+        storage.locked.side_effect = locked
+        storage.activate.side_effect = lambda: events.append('activate')
+        with patch.object(deploy, 'service', side_effect=lambda action: events.append(action)), \
+                patch.object(deploy, 'switch_current', side_effect=lambda value: events.append(('switch', value))), \
+                patch.object(deploy, 'wait_healthy', side_effect=[RuntimeError('bad new release'), None]):
+            with self.assertRaisesRegex(RuntimeError, 'bad new release'):
+                deploy.activate_release('new', 'old', lambda: [{'provider': 'ozon'}])
+        self.assertLess(events.index(('prepared', 'new')), events.index(('switch', 'new')))
+        self.assertLess(events.index(('prepared', 'old')), events.index(('switch', 'old')))
+        self.assertEqual(events[-1], 'activate')
+
+    def test_health_requires_each_expected_store_and_storage_protocol(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=io.BytesIO(b'{"ok":true,"runtime":"node.js","storage_protocol":1,"stores":{"randewoo":{"ok":true},"ozon":{"ok":false}}}'))
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(deploy, 'urlopen', return_value=response):
+            self.assertFalse(deploy.healthy(['randewoo', 'ozon'], True))
+
     def test_each_store_has_its_own_consistent_backup_and_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
@@ -131,12 +207,17 @@ class DeploymentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
             deploy.extract_release(archive([link]), Path(directory))
 
-    def test_backup_happens_after_stopping_before_switching(self):
+    @patch.object(deploy, 'StorageDeployment')
+    def test_backup_happens_after_stopping_before_switching(self, factory):
+        storage = factory.return_value
+        storage.stores = []
+        storage.previous_contract = True
+        storage.preparation_started = False
         events = []
         with patch.object(deploy, 'service', side_effect=lambda action: events.append(action)), \
                 patch.object(deploy, 'switch_current', side_effect=lambda target: events.append(target)), \
-                patch.object(deploy, 'wait_healthy', side_effect=lambda: events.append('healthy')):
-            deploy.activate_release('new', 'old', lambda: events.append('backup'))
+                patch.object(deploy, 'wait_healthy', side_effect=lambda *args: events.append('healthy')):
+            deploy.activate_release('new', 'old', lambda: events.append('backup') or [])
         self.assertEqual(events, ['stop', 'backup', 'new', 'start', 'healthy'])
 
     @unittest.skipIf(os.name == 'nt', 'Linux deployment filesystem check')
@@ -151,8 +232,13 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual((base / 'current').resolve(), new)
             self.assertEqual(list(base.glob('.current-*')), [])
 
-    def test_failed_health_restores_previous_code_without_deleting_shared_data(self):
-        backup = Mock()
+    @patch.object(deploy, 'StorageDeployment')
+    def test_failed_health_restores_previous_code_without_deleting_shared_data(self, factory):
+        storage = factory.return_value
+        storage.stores = []
+        storage.previous_contract = True
+        storage.preparation_started = False
+        backup = Mock(return_value=[])
         with patch.object(deploy, 'service') as service, \
                 patch.object(deploy, 'switch_current') as switch, \
                 patch.object(deploy, 'wait_healthy', side_effect=[RuntimeError('bad release'), None]):
@@ -162,7 +248,12 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(switch.call_args_list, [call('new'), call('old')])
         backup.assert_called_once_with()
 
-    def test_backup_failure_restarts_the_existing_release(self):
+    @patch.object(deploy, 'StorageDeployment')
+    def test_backup_failure_restarts_the_existing_release(self, factory):
+        storage = factory.return_value
+        storage.stores = []
+        storage.previous_contract = True
+        storage.preparation_started = False
         with patch.object(deploy, 'service') as service, \
                 patch.object(deploy, 'switch_current') as switch, patch.object(deploy, 'wait_healthy'):
             with self.assertRaisesRegex(OSError, 'disk full'):

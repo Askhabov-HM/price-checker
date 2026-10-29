@@ -1,3 +1,4 @@
+import {migrateRandewoo} from './storage-schema.js';
 import {DatabaseSync, backup as sqliteBackup} from 'node:sqlite';
 import {mkdirSync, renameSync} from 'node:fs';
 import {dirname, join} from 'node:path';
@@ -16,88 +17,37 @@ export class Database {
     if (path !== ':memory:') mkdirSync(dirname(path), {recursive: true});
     this.connection = new DatabaseSync(path, {timeout: 30000});
     this.statements = new Map();
-    this.connection.exec(`
-      PRAGMA journal_mode=WAL;
-      CREATE TABLE IF NOT EXISTS products(
-        id INTEGER PRIMARY KEY,url TEXT NOT NULL UNIQUE,brand TEXT NOT NULL DEFAULT '',
-        name TEXT NOT NULL DEFAULT '',image TEXT NOT NULL DEFAULT '');
-      CREATE TABLE IF NOT EXISTS variants(
-        id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL REFERENCES products(id),
-        volume_ml TEXT NOT NULL DEFAULT '1.5',sku TEXT,label TEXT NOT NULL DEFAULT '1,5 мл',UNIQUE(product_id,sku));
-      CREATE TABLE IF NOT EXISTS lists(id TEXT PRIMARY KEY,name TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS memberships(
-        id INTEGER PRIMARY KEY,list_id TEXT NOT NULL REFERENCES lists(id),variant_id INTEGER NOT NULL REFERENCES variants(id),
-        joined_at TEXT NOT NULL,left_at TEXT,quantity INTEGER NOT NULL DEFAULT 1);
-      CREATE UNIQUE INDEX IF NOT EXISTS active_membership ON memberships(list_id,variant_id) WHERE left_at IS NULL;
-      CREATE TABLE IF NOT EXISTS checks(
-        id INTEGER PRIMARY KEY,started_at TEXT NOT NULL,finished_at TEXT,trigger TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'running',message TEXT NOT NULL DEFAULT '',completed INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS observations(
-        id INTEGER PRIMARY KEY,variant_id INTEGER NOT NULL REFERENCES variants(id),check_id INTEGER REFERENCES checks(id),
-        checked_at TEXT NOT NULL,context TEXT NOT NULL,price INTEGER,original_price INTEGER,in_stock INTEGER,status TEXT NOT NULL,
-        message TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '');
-      CREATE INDEX IF NOT EXISTS observation_lookup ON observations(variant_id,context,checked_at DESC,id DESC);
-      CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-    `);
-    const schema = this.get("SELECT sql FROM sqlite_master WHERE name='variants'").sql;
-    if (/UNIQUE\s*\(\s*product_id\s*,\s*volume_ml\s*\)/i.test(schema)) {
-      this.connection.exec(`PRAGMA foreign_keys=OFF;
-        BEGIN IMMEDIATE;
-        CREATE TABLE variants_new(id INTEGER PRIMARY KEY,product_id INTEGER NOT NULL REFERENCES products(id),
-          volume_ml TEXT NOT NULL DEFAULT '1.5',sku TEXT,label TEXT NOT NULL DEFAULT '1,5 мл',UNIQUE(product_id,sku));
-        INSERT INTO variants_new SELECT * FROM variants;
-        DROP TABLE variants;
-        ALTER TABLE variants_new RENAME TO variants;
-        COMMIT;
-        PRAGMA foreign_keys=ON;`);
-      this.statements.clear();
-    }
-    const observationSchema = this.get("SELECT sql FROM sqlite_master WHERE name='observations'").sql;
-    if (/UNIQUE\s*\(\s*variant_id\s*,\s*checked_at\s*,\s*context\s*\)/i.test(observationSchema)) {
-      // Independent checks can finish in the same second. Preserve every event and its original ID.
-      this.transaction(() => this.connection.exec(`CREATE TABLE observations_new(
-          id INTEGER PRIMARY KEY,variant_id INTEGER NOT NULL REFERENCES variants(id),check_id INTEGER REFERENCES checks(id),
-          checked_at TEXT NOT NULL,context TEXT NOT NULL,price INTEGER,original_price INTEGER,in_stock INTEGER,status TEXT NOT NULL,
-          message TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '');
-        INSERT INTO observations_new(id,variant_id,check_id,checked_at,context,price,original_price,in_stock,status,message,source)
-          SELECT id,variant_id,check_id,checked_at,context,price,original_price,in_stock,status,message,source FROM observations;
-        DROP TABLE observations;
-        ALTER TABLE observations_new RENAME TO observations;
-        CREATE INDEX observation_lookup ON observations(variant_id,context,checked_at DESC,id DESC);`));
-      this.statements.clear();
-    }
-    // Create after legacy table migrations, which replace observations and its indexes.
-    this.connection.exec('CREATE INDEX IF NOT EXISTS observation_history ON observations(context,check_id,checked_at,id)');
-    this.connection.exec(`CREATE INDEX IF NOT EXISTS observation_check ON observations(check_id,variant_id,context,id);
-      CREATE INDEX IF NOT EXISTS observation_previous ON observations(variant_id,context,id DESC);`);
-    this.transaction(() => {
-      for (const [key, label] of Object.entries(LISTS)) this.run('INSERT OR IGNORE INTO lists VALUES(?,?)', key, label);
-      this.run("UPDATE checks SET status='interrupted',finished_at=?,message='Приложение было закрыто во время проверки' WHERE status='running'", now());
-      for (const [key, value] of Object.entries({schedule: ['00:30', '09:00', '14:00', '20:00'], schedule_enabled: true})) {
-        this.run('INSERT OR IGNORE INTO settings VALUES(?,?)', key, JSON.stringify(value));
-      }
-    });
-    this.rowCache = new RowCache(this.connection,{key:'variant_id',scope:'context',chronological:true,
-      initial:() => ({latest:null,last:null,previous:null,summary:emptySummary(),sparkline:[]}),
-      reduce:(state,row) => {
-        state.latest = row;
-        if (row.status === 'ok') {
-          recordPrice(state.summary,row.price,row.checked_at);
-          if (row.price != null) {state.previous = state.last?.price ?? null;state.last = row;}
+    try {
+      migrateRandewoo(this.connection);
+      this.transaction(() => {
+        for (const [key, label] of Object.entries(LISTS)) this.run('INSERT OR IGNORE INTO lists VALUES(?,?)', key, label);
+        this.run("UPDATE checks SET status='interrupted',finished_at=?,message='Приложение было закрыто во время проверки' WHERE status='running'", now());
+        for (const [key, value] of Object.entries({schedule: ['00:30', '09:00', '14:00', '20:00'], schedule_enabled: true})) {
+          this.run('INSERT OR IGNORE INTO settings VALUES(?,?)', key, JSON.stringify(value));
         }
-        appendSparkline(state,{checked_at:row.checked_at,price:row.price,status:row.status});
-      }});
-    this.historyCache = new HistoryCache(this.connection,{
-      scopes:Object.keys(LISTS).flatMap(list => Object.keys(CONTEXTS).map(context => list+':'+context)),
-      sources:[{table:'observations',event:row => `CASE WHEN ${row}.check_id IS NULL THEN 't:'||${row}.checked_at ELSE 'c:'||${row}.check_id END`},
-        {table:'checks',event:row => `'c:'||${row}.id`}],
-      resets:[{table:'memberships',scope:row => `scope LIKE ${row}.list_id||':%'`,
-        changed:'OLD.list_id IS NOT NEW.list_id OR OLD.variant_id IS NOT NEW.variant_id OR OLD.joined_at IS NOT NEW.joined_at OR OLD.left_at IS NOT NEW.left_at'}],
-    });
-    this.published = new CollectionSnapshot(this.connection,{
-      scopes:Object.keys(LISTS).flatMap(list => Object.keys(CONTEXTS).map(context => list+':'+context)),
-      build:scope => {const [list,context] = scope.split(':');return this.dashboard(list,context);},
-    });
+      });
+      this.rowCache = new RowCache(this.connection,{key:'variant_id',scope:'context',chronological:true,
+        initial:() => ({latest:null,last:null,previous:null,summary:emptySummary(),sparkline:[]}),
+        reduce:(state,row) => {
+          state.latest = row;
+          if (row.status === 'ok') {
+            recordPrice(state.summary,row.price,row.checked_at);
+            if (row.price != null) {state.previous = state.last?.price ?? null;state.last = row;}
+          }
+          appendSparkline(state,{checked_at:row.checked_at,price:row.price,status:row.status});
+        }});
+      this.historyCache = new HistoryCache(this.connection,{
+        scopes:Object.keys(LISTS).flatMap(list => Object.keys(CONTEXTS).map(context => list+':'+context)),
+        sources:[{table:'observations',event:row => `CASE WHEN ${row}.check_id IS NULL THEN 't:'||${row}.checked_at ELSE 'c:'||${row}.check_id END`},
+          {table:'checks',event:row => `'c:'||${row}.id`}],
+        resets:[{table:'memberships',scope:row => `scope LIKE ${row}.list_id||':%'`,
+          changed:'OLD.list_id IS NOT NEW.list_id OR OLD.variant_id IS NOT NEW.variant_id OR OLD.joined_at IS NOT NEW.joined_at OR OLD.left_at IS NOT NEW.left_at'}],
+      });
+      this.published = new CollectionSnapshot(this.connection,{
+        scopes:Object.keys(LISTS).flatMap(list => Object.keys(CONTEXTS).map(context => list+':'+context)),
+        build:scope => {const [list,context] = scope.split(':');return this.dashboard(list,context);},
+      });
+    } catch (error) {this.connection.close();throw error;}
   }
 
   statement(sql) {

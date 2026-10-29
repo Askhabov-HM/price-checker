@@ -1,3 +1,4 @@
+import {migrateOzon} from '../../storage-schema.js';
 import {existsSync, mkdirSync, realpathSync, chmodSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -32,27 +33,7 @@ export class OzonDatabase {
     this.db = new DatabaseSync(path, {timeout:1000});
     try {
       chmodSync(path,0o600);
-      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-        CREATE TABLE IF NOT EXISTS ozon_meta(id INTEGER PRIMARY KEY CHECK(id=1),provider TEXT NOT NULL,version INTEGER NOT NULL,context_digest TEXT);
-        INSERT OR IGNORE INTO ozon_meta VALUES(1,'ozon-prices',1,NULL);
-        CREATE TABLE IF NOT EXISTS products(sku TEXT PRIMARY KEY,url TEXT NOT NULL,title TEXT NOT NULL,image_url TEXT,created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS membership(sku TEXT NOT NULL REFERENCES products(sku),list TEXT NOT NULL CHECK(list IN ('watching','favorites','cart')),quantity INTEGER NOT NULL DEFAULT 1,position INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(sku,list));
-        CREATE TABLE IF NOT EXISTS checks(id INTEGER PRIMARY KEY,trigger TEXT NOT NULL,status TEXT NOT NULL,started_at TEXT NOT NULL,finished_at TEXT,total INTEGER NOT NULL DEFAULT 0,completed INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '');
-        CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id),sku TEXT NOT NULL REFERENCES products(sku),checked_at TEXT NOT NULL,status TEXT NOT NULL,availability TEXT,regular_kopecks INTEGER,ozon_card_kopecks INTEGER,seller_id TEXT,seller_name TEXT,message TEXT NOT NULL DEFAULT '',UNIQUE(check_id,sku));
-        CREATE INDEX IF NOT EXISTS observations_product ON observations(sku,id DESC);
-        CREATE TABLE IF NOT EXISTS list_snapshots(check_id INTEGER NOT NULL REFERENCES checks(id),list TEXT NOT NULL CHECK(list IN ('watching','favorites','cart')),sku TEXT NOT NULL REFERENCES products(sku),quantity INTEGER NOT NULL CHECK(quantity>0),PRIMARY KEY(check_id,list,sku));
-        CREATE TABLE IF NOT EXISTS seller_events(id INTEGER PRIMARY KEY,sku TEXT NOT NULL REFERENCES products(sku),checked_at TEXT NOT NULL,old_id TEXT NOT NULL,new_id TEXT NOT NULL,old_name TEXT,new_name TEXT);
-        CREATE TABLE IF NOT EXISTS collector_state(id INTEGER PRIMARY KEY CHECK(id=1),schedule_enabled INTEGER NOT NULL DEFAULT 0,next_check TEXT,not_before TEXT,action_required INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '');
-        INSERT OR IGNORE INTO collector_state(id) VALUES(1);`);
-      if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'source')) this.db.exec("ALTER TABLE observations ADD COLUMN source TEXT NOT NULL DEFAULT 'http'");
-      if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'listed_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN listed_price_kopecks INTEGER');
-      if (!this.db.prepare('PRAGMA table_info(observations)').all().some(column => column.name === 'original_price_kopecks')) this.db.exec('ALTER TABLE observations ADD COLUMN original_price_kopecks INTEGER');
-      const stateColumns = new Set(this.db.prepare('PRAGMA table_info(collector_state)').all().map(column => column.name));
-      for (const [name,definition] of Object.entries({schedule_mode:"TEXT NOT NULL DEFAULT 'interval'",schedule:"TEXT NOT NULL DEFAULT '[\"00:00\"]'",interval_minutes:'INTEGER NOT NULL DEFAULT 30',schedule_anchor:'TEXT'})) {
-        if (!stateColumns.has(name)) this.db.exec(`ALTER TABLE collector_state ADD COLUMN ${name} ${definition}`);
-      }
-      this.db.exec(`CREATE INDEX IF NOT EXISTS seller_events_product ON seller_events(sku,id DESC);
-        CREATE INDEX IF NOT EXISTS checks_finished ON checks(finished_at,id);`);
+      migrateOzon(this.db);
       this.rowCache = new RowCache(this.db,{key:'sku',initial:() => ({latest:null,price:null,seller:null,
         prices:{listed:emptySummary(),regular:emptySummary(),ozon_card:emptySummary()},sparkline:[]}),
       reduce:(state,row) => {

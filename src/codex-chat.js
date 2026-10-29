@@ -1,3 +1,4 @@
+import {migrateCodex} from './storage-schema.js';
 import {spawn} from 'node:child_process';
 import {existsSync, mkdirSync} from 'node:fs';
 import {isAbsolute} from 'node:path';
@@ -127,13 +128,7 @@ export class CodexChat {
   constructor(db, {runner, ownerId, send, logger = () => {}}) {
     this.db = db; this.runner = runner; this.ownerId = ownerId; this.send = send; this.logger = logger;
     this.activeKey = `telegram_dialogue:${ownerId}`; this.abort = new AbortController();
-    db.run(`CREATE TABLE IF NOT EXISTS telegram_dialogues(
-      id INTEGER PRIMARY KEY,owner_id INTEGER NOT NULL,created_at TEXT NOT NULL,session_id TEXT)`);
-    db.run(`CREATE TABLE IF NOT EXISTS telegram_ai_messages(
-      update_id INTEGER NOT NULL,owner_id INTEGER NOT NULL,dialogue_id INTEGER NOT NULL REFERENCES telegram_dialogues(id),
-      prompt TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',answer TEXT,created_at TEXT NOT NULL,finished_at TEXT,
-      next_part INTEGER NOT NULL DEFAULT 0,delivered_at TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(update_id,owner_id))`);
+    migrateCodex(db.connection);
     // An interrupted turn may already have reached OpenAI. Do not replay it automatically.
     db.run("UPDATE telegram_ai_messages SET status='failed',answer=?,finished_at=? WHERE owner_id=? AND status='running'",
       'Ответ Codex был прерван перезапуском. Сообщение сохранено; отправь его ещё раз для продолжения.', now(), ownerId);

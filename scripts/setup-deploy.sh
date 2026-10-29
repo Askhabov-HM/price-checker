@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $EUID != 0 || $# != 1 ]]; then
-  echo 'Usage: sudo bash scripts/setup-deploy.sh /path/to/deploy-key.pub' >&2
+  echo 'Usage: sudo bash scripts/setup-deploy.sh /path/to/deploy-key.pub | --update' >&2
   exit 1
 fi
 systemctl is-active --quiet price-checker.service
@@ -13,13 +13,24 @@ test -d /var/lib/price-checker/data
 test -f /var/lib/price-checker/secrets/price-checker-auth.json
 command -v python3 >/dev/null
 test -x /usr/local/bin/npm
-ssh-keygen -lf "$1" >/dev/null
-public_key=$(cat "$1")
-[[ $public_key == ssh-ed25519\ * && $public_key != *$'\n'* ]]
+if [[ $1 != --update ]]; then
+  ssh-keygen -lf "$1" >/dev/null
+  public_key=$(cat "$1")
+  [[ $public_key == ssh-ed25519\ * && $public_key != *$'\n'* ]]
+fi
 
 script_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 install -d -m 755 /usr/local/lib/price-checker
-install -m 644 "$script_directory/deploy.py" /usr/local/lib/price-checker/deploy.py
+python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$script_directory/deploy.py"
+if [[ -f /usr/local/lib/price-checker/deploy.py ]]; then
+  cp -p /usr/local/lib/price-checker/deploy.py /usr/local/lib/price-checker/deploy.previous.py
+fi
+install -m 644 "$script_directory/deploy.py" /usr/local/lib/price-checker/deploy.new.py
+mv -T /usr/local/lib/price-checker/deploy.new.py /usr/local/lib/price-checker/deploy.py
+if [[ $1 == --update ]]; then
+  echo 'Storage-aware deploy entrypoint updated; existing SSH key and running service preserved.'
+  exit 0
+fi
 install -d -m 700 /root/.ssh
 touch /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys

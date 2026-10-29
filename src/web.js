@@ -4,6 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {join, resolve, sep} from 'node:path';
 import {CONTEXTS} from './database.js';
+import {deploymentState} from './storage-maintenance.js';
 import {FetchError, ValidationError} from './errors.js';
 import {loadAuthentication} from './auth.js';
 import {LoginError} from './randewoo-login.js';
@@ -57,7 +58,7 @@ export function exportCsv(rows, context) {
 }
 
 export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAuthentication(tracker.root), controlToken, ozon = null,lamoda = null,
-  publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN} = {}) {
+  readiness, onActivate, publicOrigin = process.env.PRICE_CHECKER_PUBLIC_ORIGIN} = {}) {
   const csrf = randomBytes(32).toString('base64url');
   let externalOrigin;
   if (publicOrigin) {
@@ -102,7 +103,24 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
     const authState = () => ({required: Boolean(auth), authenticated, login: session?.login || null, csrf_token: token});
     try {
       if (request.method === 'GET' && url.pathname === '/api/health') {
-        return send(response, 200, {ok: true, runtime: 'node.js', timezone: 'Europe/Moscow'});
+        const ready = readiness?.() || {ok:true};
+        return send(response, ready.ok ? 200 : 503, {...ready, runtime: 'node.js', timezone: 'Europe/Moscow'});
+      }
+      if (url.pathname.startsWith('/api/deploy/')) {
+        if (!controlToken || request.headers.authorization !== 'Bearer '+controlToken
+          || !['127.0.0.1','::1','::ffff:127.0.0.1'].includes(request.socket.remoteAddress)) return send(response,403,{error:'Недоступно'});
+        request.resume();
+        if (request.method === 'GET' && url.pathname === '/api/deploy/status') return send(response,200,{ok:true,
+          drained:!tracker.running && !ozon?.running && !lamoda?.running && !lamoda?.desktop?.status().job});
+        if (request.method === 'POST' && url.pathname === '/api/deploy/activate' && onActivate) {
+          if (deploymentState(tracker.root)) return send(response,409,{error:'Обновление ещё не завершено'});
+          await onActivate();return send(response,200,{ok:true});
+        }
+        return send(response,404,{error:'Недоступно'});
+      }
+      const maintenance = deploymentState(tracker.root);
+      if (request.method !== 'GET' && maintenance && maintenance.phase !== 'drain' && url.pathname !== '/api/shutdown') {
+        request.resume();return send(response,503,{error:'Приложение готовится к запуску после обновления.'});
       }
       if (request.method === 'GET' && url.pathname === '/api/auth') return send(response, 200, authState());
       if (request.method === 'GET' && url.pathname === '/lamoda/android/open') {

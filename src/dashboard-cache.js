@@ -1,3 +1,4 @@
+import {migrate,projectionVersion,storageContract} from './storage-migrations.js';
 import {createHash} from 'node:crypto';
 
 // The graph only compares compositions for equality. Keep the complete digest so
@@ -14,19 +15,18 @@ function atomic(sql, name, action) {
 // Disposable, additive projections. Source-table triggers also cover imports,
 // repairs, old application versions and writes from another process.
 export class HistoryCache {
-  constructor(sql, {name = 'list_history', scopes, sources, resets = [], order = 'stamp,position'}) {
-    this.sql = sql; this.name = name; this.order = order;
-    sql.exec(`CREATE TABLE IF NOT EXISTS ${name}_scopes(scope TEXT PRIMARY KEY,initialized INTEGER NOT NULL DEFAULT 0);
+  constructor(sql, {name = 'list_history', scopes, sources, resets = [], order = 'stamp,position', version = storageContract.projections.history}) {
+    this.sql = sql; this.name = name; this.order = order; this.version = version;
+    const schema = [];
+    schema.push(`CREATE TABLE IF NOT EXISTS ${name}_scopes(scope TEXT PRIMARY KEY,initialized INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS ${name}_points(scope TEXT NOT NULL,event TEXT NOT NULL,stamp TEXT NOT NULL,
         position INTEGER NOT NULL,point TEXT NOT NULL,PRIMARY KEY(scope,event));
       CREATE INDEX IF NOT EXISTS ${name}_period ON ${name}_points(scope,stamp,position);
       CREATE TABLE IF NOT EXISTS ${name}_dirty(scope TEXT NOT NULL,event TEXT NOT NULL,PRIMARY KEY(scope,event));`);
-    const add = sql.prepare(`INSERT OR IGNORE INTO ${name}_scopes(scope) VALUES(?)`);
-    for (const scope of scopes) add.run(scope);
     for (const {table,event} of sources) {
       for (const operation of ['INSERT','UPDATE','DELETE']) {
         const aliases = operation === 'INSERT' ? ['NEW'] : operation === 'DELETE' ? ['OLD'] : ['OLD','NEW'];
-        sql.exec(`CREATE TRIGGER IF NOT EXISTS ${name}_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN
+        schema.push(`CREATE TRIGGER IF NOT EXISTS ${name}_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN
           ${aliases.map(row => `INSERT OR IGNORE INTO ${name}_dirty SELECT scope,${event(row)} FROM ${name}_scopes;`).join('\n')}
         END;`);
       }
@@ -34,14 +34,24 @@ export class HistoryCache {
     for (const {table,scope,changed = '1'} of resets) {
       for (const operation of ['INSERT','UPDATE','DELETE']) {
         const aliases = operation === 'INSERT' ? ['NEW'] : operation === 'DELETE' ? ['OLD'] : ['OLD','NEW'];
-        sql.exec(`CREATE TRIGGER IF NOT EXISTS ${name}_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table}
+        schema.push(`CREATE TRIGGER IF NOT EXISTS ${name}_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table}
           ${operation === 'UPDATE' ? 'WHEN ' + changed : ''} BEGIN
           ${aliases.map(row => `INSERT OR IGNORE INTO ${name}_dirty SELECT scope,'*' FROM ${name}_scopes WHERE ${scope(row)};`).join('\n')}
         END;`);
       }
     }
+    migrate(sql,{component:name+'_schema',definition:schema.join('\n'),apply:() => sql.exec(schema.join('\n'))});
+    const add = sql.prepare(`INSERT OR IGNORE INTO ${name}_scopes(scope) VALUES(?)`);
+    for (const scope of scopes) add.run(scope);
   }
-  refresh(scope, build) {
+  ensureVersion() {
+    const {sql,name} = this;
+    projectionVersion(sql,name,this.version,() => {
+      sql.exec(`DELETE FROM ${name}_points; DELETE FROM ${name}_dirty; UPDATE ${name}_scopes SET initialized=0`);
+    });
+  }
+  refresh(scope,build) {return atomic(this.sql,this.name+'_version',() => {this.ensureVersion();return this.refreshCurrent(scope,build);});}
+  refreshCurrent(scope, build) {
     const {sql,name} = this;
     const dirty = () => sql.prepare(`SELECT event FROM ${name}_dirty WHERE scope=?`).all(scope).map(row => row.event);
     const initialized = () => sql.prepare(`SELECT initialized FROM ${name}_scopes WHERE scope=?`).get(scope)?.initialized;
@@ -58,9 +68,11 @@ export class HistoryCache {
     });
   }
   read(scope, since, build) {
-    this.refresh(scope,build);
-    return this.sql.prepare(`SELECT point FROM ${this.name}_points WHERE scope=? AND stamp>=? ORDER BY ${this.order}`)
-      .all(scope,since).map(row => JSON.parse(row.point));
+    return atomic(this.sql,this.name+'_read',() => {
+      this.refresh(scope,build);
+      return this.sql.prepare(`SELECT point FROM ${this.name}_points WHERE scope=? AND stamp>=? ORDER BY ${this.order}`)
+        .all(scope,since).map(row => JSON.parse(row.point));
+    });
   }
   refreshAll(build) {
     for (const {scope} of this.sql.prepare(`SELECT scope FROM ${this.name}_scopes`).all()) this.refresh(scope,events => build(scope,events));
@@ -68,13 +80,14 @@ export class HistoryCache {
 }
 
 export class RowCache {
-  constructor(sql, {name = 'price_rows', table = 'observations', key, scope = "''", chronological = false, reverseTies = false, initial, reduce}) {
-    Object.assign(this,{sql,name,table,key,scope,chronological,reverseTies,initial,reduce});
-    sql.exec(`CREATE TABLE IF NOT EXISTS ${name}(scope TEXT NOT NULL,item TEXT NOT NULL,cursor INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(scope,item));
+  constructor(sql, {name = 'price_rows', table = 'observations', key, scope = "''", chronological = false, reverseTies = false, initial, reduce, version = storageContract.projections.rows}) {
+    Object.assign(this,{sql,name,table,key,scope,chronological,reverseTies,initial,reduce,version});
+    const schema = [];
+    schema.push(`CREATE TABLE IF NOT EXISTS ${name}(scope TEXT NOT NULL,item TEXT NOT NULL,cursor INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(scope,item));
       CREATE TABLE IF NOT EXISTS ${name}_dirty(scope TEXT NOT NULL,item TEXT NOT NULL,reset INTEGER NOT NULL,PRIMARY KEY(scope,item));`);
     for (const operation of ['INSERT','UPDATE','DELETE']) {
       const aliases = operation === 'INSERT' ? ['NEW'] : operation === 'DELETE' ? ['OLD'] : ['OLD','NEW'];
-      sql.exec(`CREATE TRIGGER IF NOT EXISTS ${name}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN
+      schema.push(`CREATE TRIGGER IF NOT EXISTS ${name}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN
         ${aliases.map(row => {
           const item = `CAST(${row}.${key} AS TEXT)`, context = scope === "''" ? scope : row + '.' + scope;
           const reset = operation === 'INSERT'
@@ -84,8 +97,15 @@ export class RowCache {
         }).join('\n')}
       END;`);
     }
+    migrate(sql,{component:name+'_schema',definition:schema.join('\n'),apply:() => sql.exec(schema.join('\n'))});
   }
-  read(keys, scope = '') {
+  read(keys,scope = '') {
+    return atomic(this.sql,this.name+'_read',() => {
+      projectionVersion(this.sql,this.name,this.version,() => this.sql.exec(`DELETE FROM ${this.name}; DELETE FROM ${this.name}_dirty`));
+      return this.readCurrent(keys,scope);
+    });
+  }
+  readCurrent(keys, scope = '') {
     if (!keys.length) return new Map();
     const {sql,name} = this, wanted = JSON.stringify(keys.map(String));
     const load = () => sql.prepare(`SELECT CAST(w.value AS TEXT) AS item,c.cursor,c.state,d.reset,d.item AS dirty

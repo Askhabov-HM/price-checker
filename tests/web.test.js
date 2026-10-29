@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync,writeFileSync,unlinkSync} from 'node:fs';
+import {join} from 'node:path';
 import {get as httpGet} from 'node:http';
 import {Tracker} from '../src/service.js';
 import {makeServer, listen} from '../src/web.js';
@@ -8,6 +9,22 @@ import {cleanup, item, temporary} from './helpers.js';
 import {Authentication, createCredentials} from '../src/auth.js';
 
 const loginCredentials = await createCredentials('test-admin', 'test-access-password');
+
+test('deployment health fails for unavailable storage and activation is private and gated',async t => {
+  let ready = false,activated = false;
+  const token = 'test-local-deploy-control';
+  const {root,base,post} = await setup(t,{controlToken:token,readiness:() => ({ok:ready,storage_protocol:1,stores:{ozon:{ok:ready}}}),onActivate:() => {activated = true;}});
+  assert.equal((await fetch(base+'/api/health')).status,503);
+  ready = true;assert.equal((await fetch(base+'/api/health')).status,200);
+  assert.equal((await post('/api/deploy/activate',{})).status,403);
+  writeFileSync(join(root,'.data/deployment.json'),JSON.stringify({phase:'validate'}));
+  assert.equal((await post('/api/settings',{schedule_enabled:false})).status,503);
+  assert.equal((await post('/api/deploy/activate',{}, {Authorization:'Bearer '+token})).status,409);
+  assert.equal(activated,false);
+  unlinkSync(join(root,'.data/deployment.json'));
+  assert.equal((await post('/api/deploy/activate',{}, {Authorization:'Bearer '+token})).status,200);
+  assert.equal(activated,true);
+});
 
 async function setup(t, options) {
   const root = temporary(t), tracker = new Tracker(root, {client: undefined});

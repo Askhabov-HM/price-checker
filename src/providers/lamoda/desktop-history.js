@@ -1,3 +1,4 @@
+import {migrateDesktopHistory} from '../../storage-schema.js';
 import {ValidationError} from '../../errors.js';
 import {LamodaError,validSku} from './parser.js';
 import {HistoryCache,RowCache,compositionKey,emptySummary,recordPrice,publicSummary,appendSparkline} from '../../dashboard-cache.js';
@@ -7,13 +8,7 @@ const reason = code => new LamodaError(code).message;
 export class DesktopHistory {
   constructor(db,current = Date.now) {
     this.db = db;this.sql = db.db;this.current = current;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS desktop_products(sku TEXT PRIMARY KEY,title TEXT NOT NULL,color TEXT NOT NULL,
-      url TEXT NOT NULL,image_url TEXT,position INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1);
-      CREATE TABLE IF NOT EXISTS desktop_indexed(run_id TEXT PRIMARY KEY REFERENCES desktop_snapshots(run_id));
-      CREATE TABLE IF NOT EXISTS desktop_observations(run_id TEXT NOT NULL REFERENCES desktop_snapshots(run_id),sku TEXT NOT NULL,
-        checked_at TEXT NOT NULL,price_at TEXT,price INTEGER,original_price INTEGER,availability TEXT NOT NULL,
-        PRIMARY KEY(run_id,sku));
-      CREATE INDEX IF NOT EXISTS desktop_observations_sku ON desktop_observations(sku,checked_at DESC);`);
+    migrateDesktopHistory(this.sql);
     this.rowCache = new RowCache(this.sql,{name:'desktop_rows',table:'desktop_observations',key:'sku',chronological:true,reverseTies:true,
       initial:() => ({latest:null,summary:emptySummary(),sparkline:[]}),reduce:(state,row) => {
         state.latest = row;

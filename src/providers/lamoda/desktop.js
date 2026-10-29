@@ -1,3 +1,4 @@
+import {migrateDesktop} from '../../storage-schema.js';
 import {createHash,randomBytes} from 'node:crypto';
 import {ValidationError} from '../../errors.js';
 import {LamodaError,parseWishlistState,readAllFavorites} from './parser.js';
@@ -12,19 +13,7 @@ export class LamodaDesktop {
     this.sql = db.db;
     this.current = current;
     this.queue = queue;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS desktop_device(id INTEGER PRIMARY KEY CHECK(id=1),token_hash TEXT NOT NULL,name TEXT NOT NULL,last_seen TEXT);
-      CREATE TABLE IF NOT EXISTS desktop_pairing(id INTEGER PRIMARY KEY CHECK(id=1),code_hash TEXT NOT NULL,expires INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS desktop_state(id INTEGER PRIMARY KEY CHECK(id=1),not_before TEXT);
-      INSERT OR IGNORE INTO desktop_state(id) VALUES(1);
-      CREATE TABLE IF NOT EXISTS desktop_failures(id INTEGER PRIMARY KEY,at TEXT NOT NULL,code TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS desktop_snapshots(run_id TEXT PRIMARY KEY,received_at TEXT NOT NULL,account_digest TEXT NOT NULL,
-        item_count INTEGER NOT NULL,payload_hash TEXT NOT NULL,items_json TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS desktop_snapshots_received ON desktop_snapshots(received_at DESC);`);
-    const columns = new Set(this.sql.prepare('PRAGMA table_info(desktop_state)').all().map(row => row.name));
-    if (!columns.has('schedule_enabled')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 0');
-    if (!columns.has('next_check')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN next_check TEXT');
-    if (!columns.has('action_required')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN action_required INTEGER NOT NULL DEFAULT 0');
-    if (!columns.has('last_error')) this.sql.exec('ALTER TABLE desktop_state ADD COLUMN last_error TEXT');
+    migrateDesktop(this.sql);
     this.history = new DesktopHistory(db,current);
     if (this.schedule().enabled && !this.schedule().next_check) this.nextCheck();
   }
@@ -102,6 +91,7 @@ export class LamodaDesktop {
     if (this.job && this.job.status !== 'ended') return this.jobState(this.job);
     const queueState = this.queue.status('lamoda');
     if (queueState.queued || queueState.active_store === 'lamoda') throw new ValidationError('Lamoda уже выполняет проверку.');
+    if (this.queue.paused?.()) throw new ValidationError('Сбор временно приостановлен для обновления приложения.');
     const job = {id:randomBytes(16).toString('hex'),status:'queued',expires:null,runId:null,slot,
       controller:new AbortController(),resolve:null,timer:null,failed:false};
     this.job = job;
