@@ -1,15 +1,23 @@
+import {migrate,projectionVersion,publishedVersion,StorageError} from './storage-migrations.js';
 // Keep the published dashboard available while a collector writes its next result.
 // Stored in SQLite so HTTP and CLI collectors share the same boundary.
 export class CollectionSnapshot {
-  constructor(db,{scopes,build,sellers = false}) {
-    Object.assign(this,{db,scopes,build,sellers});
-    db.exec(`CREATE TABLE IF NOT EXISTS collection_snapshot(
-      scope TEXT PRIMARY KEY,boundary TEXT NOT NULL,payload TEXT NOT NULL)`);
+  constructor(db,{scopes,build,sellers = false,version = publishedVersion()}) {
+    Object.assign(this,{db,scopes,build,sellers,version});
+    migrate(db,{component:'collection_snapshot_schema',apply:() => db.exec(`CREATE TABLE IF NOT EXISTS collection_snapshot(
+      scope TEXT PRIMARY KEY,boundary TEXT NOT NULL,payload TEXT NOT NULL)`)});
+  }
+  ensureVersion() {
+    projectionVersion(this.db,'collection_snapshot',this.version,() => {
+      if (this.running()) throw new StorageError('projection_upgrade_requires_idle');
+      this.db.exec('DELETE FROM collection_snapshot');
+    });
   }
   running() {return !!this.db.prepare("SELECT 1 FROM checks WHERE status='running' LIMIT 1").get();}
   start(action) {
     this.db.exec('SAVEPOINT collection_snapshot_start');
     try {
+      this.ensureVersion();
       if (!this.running()) {
         const boundary = {maxId:this.db.prepare('SELECT COALESCE(MAX(id),0) AS id FROM observations').get().id};
         if (this.sellers) boundary.maxSellerId = this.db.prepare('SELECT COALESCE(MAX(id),0) AS id FROM seller_events').get().id;
@@ -47,6 +55,7 @@ export class CollectionSnapshot {
     // A CLI collector can start/finish between SQL statements in an HTTP read.
     this.db.exec('SAVEPOINT collection_snapshot_read');
     try {
+      this.ensureVersion();
       const result = action();
       this.db.exec('RELEASE collection_snapshot_read');
       return result;

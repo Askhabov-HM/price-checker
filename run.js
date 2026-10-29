@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import {AuthConfigurationError} from './src/auth.js';
+import {deploymentState,existingStores,runtimeReadiness,warmRuntime} from './src/storage-maintenance.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +47,18 @@ async function main() {
     return 1;
   }
   let tracker, ozon, lamoda, telegram, server, shutdownPromise, resolveStopped;
+  const requiredStores = [...new Set(['randewoo',...existingStores(root),...(deploymentState(root)?.required_stores || [])])];
+  let workersStarted = false;
+  const readiness = () => runtimeReadiness({randewoo:tracker,ozon,lamoda},requiredStores);
+  const startWorkers = async (requireReady = true) => {
+    if (workersStarted) return;
+    if (deploymentState(root) || requireReady && !readiness().ok) throw new Error('Storage is not ready');
+    workersStarted = true;
+    telegram?.start();
+    if (tracker.storageReady !== false) tracker.startScheduler();
+    if (ozon?.storageReady !== false) await ozon?.startScheduler();
+    if (lamoda?.storageReady !== false) await lamoda?.startScheduler();
+  };
   const pidFile = join(root, '.data/server.pid'), metaFile = join(root, '.data/server.json');
   const shutdown = () => {
     if (!shutdownPromise) shutdownPromise = (async () => {
@@ -65,6 +78,7 @@ async function main() {
   const signal = () => {shutdown().catch(() => {process.exitCode = 1; resolveStopped?.();});};
   process.once('SIGINT', signal); process.once('SIGTERM', signal);
   try {
+    if (deploymentState(root) && requiredStores.some(store => !existingStores(root).includes(store))) throw new Error('Required store is missing');
     const {Tracker} = await import('./src/service.js');
     const {makeServer, listen} = await import('./src/web.js');
     const {createTelegramBot} = await import('./src/telegram.js');
@@ -87,16 +101,14 @@ async function main() {
     const {ensureFrontend} = await import('./scripts/build-frontend.js');
     await ensureFrontend();
     const controlToken = randomBytes(32).toString('base64url');
-    server = makeServer(tracker, {onShutdown: signal, controlToken, ozon,lamoda});
+    warmRuntime({randewoo:tracker,ozon,lamoda});
+    server = makeServer(tracker, {onShutdown: signal, controlToken, ozon,lamoda,readiness,onActivate:startWorkers});
     const port = await listen(server, args.port);
     writeFileSync(pidFile, String(process.pid), 'ascii');
     writeFileSync(metaFile, JSON.stringify({pid: process.pid, port, runtime: 'node.js', control_token: controlToken}), {encoding: 'utf8', mode: 0o600});
     const url = 'http://127.0.0.1:' + port;
     console.log(`Price Checker (Node.js): ${url}\nРасписание: Москва. Для остановки нажмите Ctrl+C.`);
-    telegram?.start();
-    tracker.startScheduler();
-    await ozon?.startScheduler();
-    await lamoda?.startScheduler();
+    if (!deploymentState(root)) await startWorkers(false);
     if (!args.noBrowser) openBrowser(url);
     await new Promise(resolve => {resolveStopped = resolve;});
     return 0;

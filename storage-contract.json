@@ -1,0 +1,9 @@
+{
+  "protocol": 1,
+  "stores": {
+    "randewoo": {"read": [1], "write": [1]},
+    "ozon": {"read": [1], "write": [1]},
+    "lamoda": {"read": [1], "write": [1]}
+  },
+  "projections": {"rows": 1, "history": 1, "published": 1}
+}

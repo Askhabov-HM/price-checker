@@ -1,3 +1,4 @@
+import {migratePush} from '../../storage-schema.js';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createPrivateKey,sign} from 'node:crypto';
@@ -65,10 +66,7 @@ export class FirebaseSender {
 export class LamodaPush {
   constructor(mobile,sender,{current = Date.now} = {}) {
     this.mobile = mobile;this.sql = mobile.sql;this.sender = sender;this.current = current;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS mobile_push_device(id INTEGER PRIMARY KEY CHECK(id=1),device_hash TEXT NOT NULL,
-      token TEXT,enabled INTEGER NOT NULL DEFAULT 0,registered_at TEXT,accepted_at TEXT,error TEXT);
-      CREATE TABLE IF NOT EXISTS mobile_push_outbox(job_id TEXT PRIMARY KEY REFERENCES mobile_jobs(id) ON DELETE CASCADE,
-      device_hash TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT 0,accepted_at TEXT);`);
+    migratePush(this.sql);
   }
   status() {
     const row = this.sql.prepare('SELECT enabled,registered_at,accepted_at,error FROM mobile_push_device WHERE id=1').get();

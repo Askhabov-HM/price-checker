@@ -13,8 +13,10 @@ import tarfile
 import tempfile
 import time
 from datetime import datetime, timezone
-from contextlib import closing
-from urllib.request import urlopen
+from contextlib import closing, contextmanager, nullcontext
+from urllib.request import urlopen, Request
+import select
+import signal
 
 BASE = Path('/opt/price-checker')
 DATA = Path('/var/lib/price-checker/data')
@@ -54,7 +56,8 @@ def extract_release(archive, destination):
                 raise ValueError('Release contains a forbidden archive entry')
         bundle.extractall(destination, members=members, filter='data')
     make_release_readable(destination)
-    for required in ('run.js', 'package.json', 'package-lock.json', '.nvmrc', 'dist/index.html'):
+    for required in ('run.js', 'package.json', 'package-lock.json', '.nvmrc', 'dist/index.html',
+                     'storage-contract.json', 'scripts/storage-maintenance.js'):
         if not (destination / required).is_file():
             raise ValueError(f'Release is missing {required}')
 
@@ -73,19 +76,21 @@ def service(action):
     subprocess.run(['/usr/bin/systemctl', action, SERVICE], check=True, timeout=90)
 
 
-def healthy():
+def healthy(required_stores=(), storage_protocol=False):
     try:
         with urlopen('http://127.0.0.1:8000/api/health', timeout=2) as response:
             result = json.load(response)
-        return result.get('ok') is True and result.get('runtime') == 'node.js'
+        return (result.get('ok') is True and result.get('runtime') == 'node.js'
+                and (not storage_protocol or result.get('storage_protocol') == 1)
+                and all(result.get('stores', {}).get(store, {}).get('ok') is True for store in required_stores))
     except (OSError, ValueError):
         return False
 
 
-def wait_healthy():
+def wait_healthy(required_stores=(), storage_protocol=False):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if healthy():
+        if healthy(required_stores, storage_protocol):
             return
         time.sleep(1)
     raise RuntimeError('Service did not become healthy within 30 seconds')
@@ -135,21 +140,219 @@ def backup_databases(data, commit, account=None):
     return copies
 
 
-def activate_release(release, previous, backup):
-    # Stop polling and SQLite writes before taking the deployment backup.
-    # Retain the database on rollback: a new process may already have saved data.
+STORE_PATHS = {'randewoo': 'prices.sqlite3', 'ozon': 'ozon/prices.sqlite3', 'lamoda': 'lamoda/prices.sqlite3'}
+JOURNAL_TABLES = {'storage_meta', 'storage_migrations', 'projection_versions'}
+
+
+def release_contract(release):
+    path = Path(release) / 'storage-contract.json'
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text())
+    if value.get('protocol') != 1:
+        raise ValueError('Unsupported storage deployment protocol')
+    for store in STORE_PATHS:
+        entry = value['stores'][store]
+        if any(not isinstance(entry.get(mode), list) or not entry[mode]
+               or any(type(version) is not int or version < 1 for version in entry[mode]) for mode in ('read', 'write')):
+            raise ValueError('Invalid storage compatibility declaration')
+    return value
+
+
+def database_format(path, store):
+    with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as sql:
+        tables = {row[0] for row in sql.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if store != 'randewoo':
+            if sql.execute(f'SELECT provider,version FROM {store}_meta WHERE id=1').fetchone() != (store + '-prices', 1):
+                raise ValueError('Unexpected store identity')
+        elif 'ozon_meta' in tables or 'lamoda_meta' in tables:
+            raise ValueError('Unexpected store identity')
+        if 'storage_meta' not in tables:
+            return 1
+        row = sql.execute('SELECT store,format FROM storage_meta WHERE id=1').fetchone()
+        if not row or row[0] != store:
+            raise ValueError('Unexpected storage identity')
+        return row[1]
+
+
+def compatible_databases(data, contract, stores):
+    if not contract:
+        return False
     try:
+        for store in stores:
+            version = database_format(data / STORE_PATHS[store], store)
+            if any(version not in contract['stores'][store][mode] for mode in ('read', 'write')):
+                return False
+        return True
+    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError):
+        return False
+
+
+def legacy_schema(path):
+    with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as sql:
+        return {name: (kind, definition) for kind, name, table, definition in
+                sql.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+                if table not in JOURNAL_TABLES}
+
+
+def legacy_rollback_compatible(data, copies, stores, new_contract):
+    # Bridge only: the previously running release already handled the exact
+    # pre-deploy schema. Prove that only isolated bookkeeping tables were added
+    # and that calculations still use the unchanged baseline formulas.
+    if new_contract.get('projections') != {'rows': 1, 'history': 1, 'published': 1}:
+        return False
+    by_store = {entry['provider']: entry for entry in copies}
+    try:
+        for store in stores:
+            current = data / STORE_PATHS[store]
+            previous = data / by_store[store]['backup']
+            if database_format(current, store) != 1 or legacy_schema(current) != legacy_schema(previous):
+                return False
+            with closing(sqlite3.connect(current.resolve().as_uri() + '?mode=ro', uri=True)) as sql:
+                if sql.execute("SELECT 1 FROM projection_versions WHERE version<>'1' LIMIT 1").fetchone():
+                    return False
+        return True
+    except (OSError, sqlite3.Error, ValueError, KeyError):
+        return False
+
+
+class StorageDeployment:
+    def __init__(self, release, previous, data=DATA):
+        self.release, self.previous, self.data = Path(release), Path(previous), Path(data)
+        self.contract, self.previous_contract = release_contract(release), release_contract(previous)
+        self.stores = [store for store, path in STORE_PATHS.items() if (self.data / path).exists()]
+        self.marker = self.data / 'deployment.json'
+        self.copies = []
+        self.preparation_started = False
+
+    def preflight(self):
+        if self.marker.exists():
+            raise RuntimeError('Unfinished deployment: inspect deployment.json before continuing')
+        if not self.contract or not compatible_databases(self.data, self.contract, self.stores):
+            raise RuntimeError('New release cannot read/write the existing databases')
+
+    def phase(self, phase):
+        temporary = self.marker.with_name(f'.deployment-{os.getpid()}.json')
+        temporary.write_text(json.dumps({'phase': phase, 'required_stores': self.stores,
+                                        'release': self.release.name, 'previous': self.previous.name}))
+        temporary.chmod(0o644)
+        os.replace(temporary, self.marker)
+
+    def control(self, action, method='GET'):
+        # The local control token is never logged, sent to another host or saved in the marker.
+        value = json.loads((self.data / 'server.json').read_text())
+        request = Request(f'http://127.0.0.1:8000/api/deploy/{action}', method=method,
+                          headers={'Authorization': 'Bearer ' + value['control_token']})
+        with urlopen(request, timeout=5) as response:
+            return json.load(response)
+
+    def drain(self):
+        self.phase('drain')
+        if not self.previous_contract:
+            return  # First installation: legacy SIGTERM already interrupts safely.
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                if self.control('status').get('drained'):
+                    return
+            except (OSError, ValueError, KeyError):
+                return
+            time.sleep(1)
+        # systemctl stop now uses the application's normal interruption path.
+
+    @contextmanager
+    def locked(self, release):
+        process = subprocess.Popen(['/usr/sbin/runuser', '-u', APP_USER, '--', '/usr/local/bin/node',
+                                    str(Path(release) / 'scripts/storage-maintenance.js'), 'hold', str(release)],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True)
+        def receive(timeout=120):
+            if not select.select([process.stdout], [], [], timeout)[0]:
+                raise RuntimeError('Storage preparation timed out')
+            try:
+                result = json.loads(process.stdout.readline())
+            except (ValueError, OSError):
+                raise RuntimeError('Storage preparation process failed') from None
+            if result.get('ok') is not True:
+                reason = result.get('reason', 'storage_operation_failed')
+                if not isinstance(reason, str) or not re.fullmatch('[a-z_]+', reason):
+                    reason = 'storage_operation_failed'
+                store = result.get('store') if result.get('store') in STORE_PATHS else 'storage'
+                raise RuntimeError(f'Storage preparation failed: {store}: {reason}')
+            return result
+        def prepare():
+            process.stdin.write('prepare\n');process.stdin.flush()
+            receive(300)
+        try:
+            locked = receive()
+            if set(locked.get('stores', [])) != set(self.stores):
+                raise RuntimeError('Store inventory changed while stopping writers')
+            yield prepare
+        finally:
+            try:
+                process.stdin.write('release\n');process.stdin.flush();process.stdin.close()
+                process.wait(timeout=15)
+            except (OSError, subprocess.TimeoutExpired):
+                os.killpg(process.pid, signal.SIGTERM)
+                try: process.wait(timeout=10)
+                except subprocess.TimeoutExpired: os.killpg(process.pid, signal.SIGKILL);process.wait()
+            process.stdout.close()
+
+    def can_rollback(self):
+        if not self.preparation_started:
+            return True
+        if self.previous_contract:
+            return compatible_databases(self.data, self.previous_contract, self.stores)
+        return legacy_rollback_compatible(self.data, self.copies, self.stores, self.contract)
+
+    def activate(self):
+        self.marker.unlink()
+        try:
+            if self.control('activate', 'POST').get('ok') is not True:
+                raise RuntimeError('Collector activation failed')
+        except BaseException:
+            self.phase('blocked')
+            raise
+
+
+def activate_release(release, previous, backup):
+    storage = StorageDeployment(release, previous)
+    storage.preflight()
+    try:
+        storage.drain()
         service('stop')
-        backup()
+        storage.phase('prepare')
+        with storage.locked(release) as prepare:
+            storage.copies = backup()
+            if {entry['provider'] for entry in storage.copies} != set(storage.stores):
+                raise RuntimeError('Incomplete deployment backup')
+            storage.preparation_started = True
+            prepare()
+        storage.phase('validate')
         switch_current(release)
         service('start')
-        wait_healthy()
+        wait_healthy(storage.stores, True)
+        storage.activate()
     except BaseException:
-        print('Deployment failed; restoring the previous code version.', flush=True)
+        storage.phase('blocked')
         service('stop')
-        switch_current(previous)
-        service('start')
-        wait_healthy()
+        if not storage.can_rollback():
+            raise RuntimeError('Automatic rollback blocked: previous code is incompatible; current databases and backups retained') from None
+        print('Deployment failed; returning to compatible previous code without restoring databases.', flush=True)
+        try:
+            lock = storage.locked(previous if storage.previous_contract else release) if storage.preparation_started else nullcontext()
+            with lock as prepare:
+                if not storage.can_rollback():
+                    raise RuntimeError('Storage compatibility changed before rollback')
+                if storage.previous_contract and storage.preparation_started:
+                    prepare()  # Rebuild calculations for the previous algorithm, too.
+            switch_current(previous)
+            if storage.previous_contract:
+                storage.phase('validate');service('start');wait_healthy(storage.stores, True);storage.activate()
+            else:
+                storage.marker.unlink();service('start');wait_healthy()
+        except BaseException:
+            storage.phase('blocked');service('stop')
+            raise RuntimeError('Rollback readiness failed; collection remains stopped and databases retained') from None
         raise
 
 
@@ -199,7 +402,7 @@ def main():
         (release / '.secrets').symlink_to(SECRETS)
 
         def backup():
-            backup_databases(DATA, commit, account)
+            return backup_databases(DATA, commit, account)
 
         activate_release(release, previous, backup)
         print(f'Deployed {commit}; health check passed.', flush=True)

@@ -1,4 +1,4 @@
-import {mkdirSync, realpathSync} from 'node:fs';
+import {mkdirSync, realpathSync, existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {acquireInstance, AlreadyRunning} from './instance.js';
@@ -15,6 +15,7 @@ export async function acquireCollection(root,signal,onWaiting = () => {}) {
   const path = lockPath(root);
   while (true) {
     signal?.throwIfAborted();
+    if (existsSync(join(root,'.data/deployment.json'))) throw new Error('Сбор временно приостановлен для обновления приложения.');
     try {return await acquireInstance(path);}
     catch (error) {
       if (!(error instanceof AlreadyRunning)) throw error;
@@ -26,6 +27,7 @@ export async function acquireCollection(root,signal,onWaiting = () => {}) {
 
 export class CollectionQueue {
   constructor(root) {this.root = root;this.jobs = [];this.active = null;}
+  paused() {return existsSync(join(this.root,'.data/deployment.json'));}
   status(store) {
     const index = this.jobs.findIndex(job => job.store === store);
     return {queued:index !== -1 && this.jobs[index] !== this.active,
@@ -35,6 +37,10 @@ export class CollectionQueue {
   enqueue(store,operation,{signal} = {}) {
     const existing = this.jobs.find(job => job.store === store);
     if (existing) return existing.ticket;
+    if (this.paused()) {
+      const done = Promise.reject(new Error('Сбор временно приостановлен для обновления приложения.'));
+      done.catch(() => {});return {done,ready:Promise.resolve()};
+    }
     const done = Promise.withResolvers(),ready = Promise.withResolvers();
     const job = {store,operation,signal,done,ready,ticket:{done:done.promise,ready:ready.promise}};
     // Cancellation must be safe even if nobody awaits a fire-and-forget request.

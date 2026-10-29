@@ -327,6 +327,8 @@ test('batched history keeps message order, latest duplicate readings and quantit
 test('history index is installed on existing databases and survives reopening', t => {
   const {db, root} = setup(t);
   db.connection.exec('DROP INDEX observation_history');
+  // Model a pre-journal database, not manual damage to an already applied migration.
+  db.connection.exec('DROP TABLE storage_migrations; DROP TABLE storage_meta');
   const reopened = new Database(join(root, 'prices.sqlite3'));
   cleanup(t, () => reopened.close());
   assert.deepEqual(reopened.all('PRAGMA index_info(observation_history)').map(row => row.name), ['context', 'check_id', 'checked_at', 'id']);
