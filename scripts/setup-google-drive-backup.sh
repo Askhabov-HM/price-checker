@@ -17,6 +17,9 @@ if ! command -v rclone >/dev/null || ! command -v restic >/dev/null; then
 fi
 install -d -m 700 /var/lib/price-checker-backup /var/lib/price-checker-backup-coordination /var/lib/price-checker/secrets/google-drive-backup
 install -d -m 755 /usr/local/lib/price-checker
+install -d -m 750 -o root -g pricechecker /var/lib/price-checker/data/backup-journal
+install -m 644 "$directory/backup-journal.py" /usr/local/lib/price-checker/
+python3 /usr/local/lib/price-checker/backup-journal.py /var/lib/price-checker/data
 install -m 644 "$directory/google-drive-backup.py" /usr/local/lib/price-checker/google-drive-backup.py
 python3 - <<'PY'
 import json

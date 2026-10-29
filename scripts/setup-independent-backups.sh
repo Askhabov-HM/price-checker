@@ -29,11 +29,12 @@ install -d -m 700 /var/lib/price-checker-backup-coordination
 exec 9>/var/lib/price-checker-backup-coordination/install.lock
 flock -n 9 || { echo 'Another backup installation is running' >&2; exit 1; }
 install -d -m 755 /usr/local/lib/price-checker
+install -d -m 750 -o root -g pricechecker /var/lib/price-checker/data/backup-journal
 for store in randewoo ozon lamoda; do
   install -d -m 700 "/var/lib/price-checker-$store-backup"
 done
 install -d -m 700 /var/lib/price-checker-backup-maintenance
-scripts=(google-drive-backup.py store-backup.py lamoda-backup.py backup-maintenance.py)
+scripts=(backup-journal.py google-drive-backup.py store-backup.py lamoda-backup.py backup-maintenance.py)
 units=(price-checker-backup.service price-checker-backup.timer
   price-checker-store-backup@.service price-checker-store-backup@.timer
   price-checker-lamoda-backup.service price-checker-lamoda-backup.timer
@@ -107,6 +108,7 @@ exec 8>/var/lib/price-checker-backup-coordination/repository.lock
 flock -w 2400 8
 installed=1
 for name in "${scripts[@]}"; do install -m 644 "$directory/$name" /usr/local/lib/price-checker/; done
+python3 "$directory/backup-journal.py" /var/lib/price-checker/data
 for name in "${units[@]}"; do install -m 644 "$directory/systemd/$name" /etc/systemd/system/; done
 systemctl daemon-reload
 flock -u 8

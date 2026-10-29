@@ -13,6 +13,7 @@ import {LamodaShell} from './lamoda-shell';
 
 export function AppShell() {
   const section = useRouterState({select:state => state.location.pathname.split('/')[1]});
+  if(section==='storage')return <Outlet/>;
   return section === 'lamoda' ? <LamodaShell/> : section === 'ozon' ? <OzonShell/> : <RandewooShell/>;
 }
 function RandewooShell() {
@@ -33,6 +34,7 @@ function RandewooShell() {
     </Button>
     <Link className="ozon-provider-link" to="/ozon" search={{...search,ozonList:'favorites',price:'listed'}}>Ozon ↗</Link>
     <Link className="ozon-provider-link" to="/lamoda" search={search}>Lamoda ↗</Link>
+    <a className="ozon-provider-link" href="/storage">Базы и резервные копии ↗</a>
     <div className="sidebar-note"><strong>Только пробники 1,5 мл</strong><p>Сохраняем реальные проверки и показываем, как меняется цена.</p></div>
     <div className="sidebar-bottom">
       <Button id="settings-button" variant="ghost" className="settings-button max-[850px]:size-10 max-[850px]:p-0" aria-label="Настройки" disabled={!status} onClick={() => setSettings(true)}>

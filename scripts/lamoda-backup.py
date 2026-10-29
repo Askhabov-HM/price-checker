@@ -111,15 +111,19 @@ class LamodaBackup(base.Backup):
         if not force and not force_verify and signature == self.state.get('signature') and now - self.state.get('last_success_epoch', 0) < 3600:
             return {'status': 'unchanged', 'snapshot_id': self.state.get('snapshot_id')}
         manifest = create_snapshot(self.config['data_dir'], self.work)
+        if getattr(self,'journal',None): self.journal.stage(self.journal_run,'uploading')
         output = self.restic('backup', '--json', '--host', 'price-checker', '--tag', TAG, 'staging')
         summaries = [entry for line in output.splitlines() if line.strip() for entry in [json.loads(line)] if entry.get('message_type') == 'summary']
         snapshot = summaries[-1].get('snapshot_id', '') if summaries else ''
         if not base.re.fullmatch('[0-9a-f]{8,64}', snapshot):
             raise base.BackupError('restic did not confirm a completed Lamoda snapshot')
+        self.record_snapshot(snapshot,manifest)
         maintenance = force_verify or now - self.state.get('last_verified_epoch', 0) >= 86400
         if maintenance:
+            if getattr(self,'journal',None): self.journal.stage(self.journal_run,'verifying')
             if self.verify(snapshot) != manifest:
                 raise base.BackupError('Downloaded Lamoda manifest differs from its snapshot')
+            self.record_verified()
             # Only this tag's recovery points are expired. The separate shared
             # maintenance service checks/prunes under the same backup lock.
             self.restic('forget', '--tag', TAG, '--host', 'price-checker', '--group-by', 'host,paths,tags',
@@ -156,7 +160,7 @@ def main():
             result = backup.state
         else:
             with backup.lock():
-                result = backup.verify(args.snapshot) if args.command == 'verify' else backup.restore(args.snapshot, args.target)
+                result = backup.audit_verify(args.snapshot) if args.command == 'verify' else backup.restore(args.snapshot, args.target)
         print(json.dumps(result))
         return 0
     except (base.BackupError, OSError, sqlite3.Error, ValueError) as error:

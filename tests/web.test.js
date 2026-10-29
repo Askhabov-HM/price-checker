@@ -173,7 +173,7 @@ test('login protects all data and mutations; logout revokes the session and leav
   assert.deepEqual(await (await fetch(base + '/api/health')).json(), {ok: true, runtime: 'node.js', timezone: 'Europe/Moscow'});
   const state = await (await fetch(base + '/api/auth')).json();
   assert.equal(state.authenticated, false);
-  for (const path of ['/api/status', '/api/dashboard', '/api/product/' + id, '/api/export']) {
+  for (const path of ['/api/status', '/api/dashboard', '/api/product/' + id, '/api/export', '/api/storage/overview', '/api/storage/rows', '/api/storage/export?scope=all']) {
     const response = await fetch(base + path);
     assert.equal(response.status, 401);
     assert.ok(!(await response.text()).includes('Fragrance'));
@@ -277,4 +277,15 @@ test('Randewoo phone endpoints enforce CSRF, save verified cookies and expose no
   const status = await (await fetch(base + '/api/status')).text();
   assert.doesNotMatch(status, /private-verified-cookie|private-csrf|userData|79991234567/);
   assert.equal(JSON.parse(status).auth_status, 'ok');
+});
+
+
+test('storage API reads permitted records after login and never exposes private tables',async t=>{
+ const {base,tracker}=await setup(t,{auth:new Authentication(loginCredentials)});
+ const login=await signIn(base);const headers={Cookie:login.headers.get('set-cookie').split(';')[0]};await login.text();
+ assert.equal((await fetch(base+'/storage')).status,200);
+ const records=await fetch(base+'/api/storage/rows?store=randewoo&table=observations',{headers});
+ assert.equal(records.status,200);const data=await records.json();assert.equal(data.total,1);assert.equal(data.rows.length,1);
+ const bad=await fetch(base+'/api/storage/rows?store=randewoo&table=telegram_outbox',{headers});assert.equal(bad.status,400);await bad.text();
+ assert.equal(tracker.db.connection.prepare('SELECT count(*) n FROM observations').get().n,1);
 });
