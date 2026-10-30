@@ -1,1 +1,29 @@
-.storage-page{max-width:1600px;margin:auto;padding:28px;min-width:0}.storage-heading,.storage-tabs,.storage-tools,.storage-pagination{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:22px}.storage-heading{justify-content:space-between}.storage-page h1{font-size:28px;font-weight:650;margin:12px 0}.storage-page h2{font-size:19px;font-weight:600;margin:12px 0}.storage-page a{color:#3658a0;text-decoration:underline}.storage-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}.storage-cards article{border:1px solid #ddd;border-radius:12px;padding:20px;background:white}.storage-filters{display:flex;gap:14px;flex-wrap:wrap;align-items:end;margin:20px 0}.storage-page label{display:flex;flex-direction:column;gap:6px;font-size:13px}.storage-page input,.storage-page select{border:1px solid #ccc;background:white;border-radius:6px;padding:8px;max-width:220px}.storage-page form{display:flex;align-items:end;gap:6px}.storage-grid{overflow:auto;max-height:65vh;border:1px solid #ddd;border-radius:8px;margin-bottom:18px}.storage-grid table{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px;background:white}.storage-grid th{position:sticky;top:0;background:#f3f5f8;text-align:left;z-index:1}.storage-grid td,.storage-grid th{padding:10px 12px;border-bottom:1px solid #eee;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}.storage-grid th button{cursor:pointer;font-weight:600}.storage-record{color:#3658a0;text-decoration:underline;cursor:pointer}.storage-pagination input{width:90px}.storage-detail{max-width:760px!important;max-height:85vh;overflow:auto}.storage-detail dl>div{padding:8px 0;border-bottom:1px solid #eee}.storage-detail dt{font-weight:600}.storage-detail dd{overflow-wrap:anywhere;white-space:pre-wrap}.storage-detail small{font-weight:400;color:#657080}.storage-error{color:#b42318}.storage-unavailable{color:#2563a6}@media(max-width:600px){.storage-page{padding:16px}.storage-page h1{font-size:22px}.storage-filters form{width:100%}}
+.storage-page{max-width:1600px;margin:auto;padding:28px;min-width:0;color:var(--ink)}
+.storage-heading,.storage-tabs,.storage-tools,.storage-pagination{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:22px}
+.storage-heading{justify-content:space-between}
+.storage-page h1{font-size:28px;font-weight:650;margin:12px 0}
+.storage-page h2{font-size:19px;font-weight:600;margin:12px 0}
+.storage-page a{color:var(--green);text-decoration:underline}
+.storage-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}
+.storage-cards article{border:1px solid var(--line);border-radius:12px;padding:20px;background:var(--surface);color:var(--ink)}
+.storage-filters{display:flex;gap:14px;flex-wrap:wrap;align-items:end;margin:20px 0}
+.storage-page label{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.storage-page input,.storage-page select{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:6px;padding:8px;max-width:220px}
+.storage-page input::placeholder{color:var(--muted);opacity:1}
+.storage-page form{display:flex;align-items:end;gap:6px}
+.storage-grid{overflow:auto;max-height:65vh;border:1px solid var(--line);border-radius:8px;margin-bottom:18px}
+.storage-grid table{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px;background:var(--surface);color:var(--ink)}
+.storage-grid th{position:sticky;top:0;background:var(--surface-inset);text-align:left;z-index:1}
+.storage-grid td,.storage-grid th{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+.storage-grid th button{cursor:pointer;font-weight:600}
+.storage-record{color:var(--green);text-decoration:underline;cursor:pointer}
+.storage-pagination input{width:90px}
+.storage-detail{max-width:760px!important;max-height:85vh;overflow:auto;background:var(--surface);color:var(--ink)}
+.storage-detail dl>div{padding:8px 0;border-bottom:1px solid var(--line)}
+.storage-detail dt{font-weight:600}
+.storage-detail dd{overflow-wrap:anywhere;white-space:pre-wrap}
+.storage-detail small{font-weight:400;color:var(--muted)}
+.storage-error{color:var(--chart-error)}
+.storage-unavailable{color:var(--unavailable)}
+.storage-error .storage-record,.storage-unavailable .storage-record{color:inherit}
+@media(max-width:600px){.storage-page{padding:16px}.storage-page h1{font-size:22px}.storage-filters form{width:100%}}
