@@ -5,7 +5,7 @@ import {Database,LISTS,CONTEXTS} from './database.js';
 import {OzonDatabase} from './providers/ozon/database.js';
 import {LamodaDatabase} from './providers/lamoda/database.js';
 import {DesktopHistory} from './providers/lamoda/desktop-history.js';
-import {migrateMobile,migratePush,migrateDesktop,migrateTelegram,migrateOzonTelegram,migrateCodex} from './storage-schema.js';
+import {migrateMobile,migrateMobileTelemetry,migratePush,migrateDesktop,migrateTelegram,migrateOzonTelegram,migrateCodex} from './storage-schema.js';
 import {assertStorage,atomicStorage,StorageError,tableExists,storageContract,publishedVersion} from './storage-migrations.js';
 
 export const storePaths = {randewoo:'prices.sqlite3',ozon:'ozon/prices.sqlite3',lamoda:'lamoda/prices.sqlite3'};
@@ -47,11 +47,11 @@ export function prepareStores(root,{stores = existingStores(root)} = {}) {
         : store === 'ozon' ? new OzonDatabase(root) : new LamodaDatabase(root);
       const sql = db.connection || db.db;
       if (store === 'randewoo') {migrateTelegram(sql);migrateOzonTelegram(sql);migrateCodex(sql);}
-      if (store === 'lamoda') {migrateMobile(sql);migratePush(sql);migrateDesktop(sql);}
+      if (store === 'lamoda') {migrateMobile(sql);migrateMobileTelemetry(sql);migratePush(sql);migrateDesktop(sql);}
       atomicStorage(sql,'deployment_recovery',() => {
         sql.prepare("UPDATE checks SET status='interrupted',finished_at=?,message=? WHERE status='running'")
           .run(new Date().toISOString(),'Проверка прервана обновлением приложения.');
-        if (store === 'lamoda') sql.exec("UPDATE mobile_jobs SET status='canceled',result=NULL WHERE status='pending'");
+        if (store === 'lamoda') sql.exec("UPDATE mobile_jobs SET status='canceled',result=NULL WHERE status='pending'; UPDATE mobile_runs SET state='ended' WHERE state='active'");
       });
       // Warm all rows (including archived items) and all graph scopes before readiness.
       if (store === 'randewoo') {

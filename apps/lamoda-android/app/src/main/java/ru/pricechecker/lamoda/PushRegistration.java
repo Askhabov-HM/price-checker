@@ -25,14 +25,16 @@ public final class PushRegistration extends JobService {
                 String device = new TokenVault(this).read(), token = getSharedPreferences("push",0).getString("token","");
                 if (!device.isEmpty() && !token.isEmpty()) {
                     String server = getSharedPreferences("connection",0).getString("server",BuildConfig.DEFAULT_SERVER);
-                    new ServerApi(server,device).call("push",new JSONObject().put("token",token).put("enabled",ReminderService.allowed(this))
+                    new ServerApi(server,device,getApplicationContext()).call("push",new JSONObject().put("token",token).put("enabled",ReminderService.allowed(this))
                             .put("project_id",getString(R.string.project_id)));
                     getSharedPreferences("push",0).edit().putBoolean("registered",true).apply();
+                    CollectorDiagnostics.event(this,CollectorDiagnostics.Event.PUSH_REGISTERED);
                 }
             } catch (ServerApi.ApiException error) {
+                CollectorDiagnostics.event(this,CollectorDiagnostics.Event.PUSH_REGISTRATION_FAILED);
                 retry = error.status != 401 && error.status != 400;
                 getSharedPreferences("push",0).edit().putBoolean("registered",false).apply();
-            } catch (Exception ignored) { retry = true; }
+            } catch (Exception ignored) { CollectorDiagnostics.event(this,CollectorDiagnostics.Event.PUSH_REGISTRATION_FAILED); retry = true; }
             jobFinished(params,retry);
         });
         return true;

@@ -53,8 +53,11 @@ final class ServerApi {
         });
     }
     JSONObject call(String action, JSONObject body) throws Exception {
-        if (!action.matches("pair|next|start|page|fail|push|stop")) throw new IllegalArgumentException("Некорректное действие.");
+        if (!action.matches("pair|next|start|page|fail|push|stop|telemetry|capabilities")) throw new IllegalArgumentException("Некорректное действие.");
+        long started=android.os.SystemClock.elapsedRealtime();
         HttpsURLConnection connection = (HttpsURLConnection) new URL(origin + "/api/lamoda-mobile/" + action).openConnection();
+        int status = 0;
+        if (context != null) CollectorDiagnostics.api(context,action,CollectorDiagnostics.Phase.BEGIN,0,null,0,body);
         try {
             configureTls(connection); connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(15000); connection.setReadTimeout(20000);
@@ -71,10 +74,10 @@ final class ServerApi {
                 connection.setRequestProperty("Content-Type", "application/json"); connection.setFixedLengthStreamingMode(bytes.length);
                 try (java.io.OutputStream output = connection.getOutputStream()) { output.write(bytes); }
             }
-            int status = connection.getResponseCode();
-            if (status >= 300 && status < 400) throw new IllegalStateException("Сервер перенаправляет запрос. Проверьте адрес.");
+            status = connection.getResponseCode();
+            if (status >= 300 && status < 400) throw new ApiException(status,"Сервер перенаправляет запрос. Проверьте адрес.");
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-            if (stream == null) throw new IllegalStateException("Сервер недоступен: HTTP " + status);
+            if (stream == null) throw new ApiException(status,"Сервер недоступен: HTTP " + status);
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             try (stream) {
                 byte[] buffer = new byte[8192]; int length;
@@ -82,13 +85,25 @@ final class ServerApi {
             }
             JSONObject result;
             try { result = new JSONObject(output.toString(StandardCharsets.UTF_8.name())); }
-            catch (Exception error) { throw new IllegalStateException("Сервер ещё не поддерживает Android-сбор или указан неверный адрес."); }
-            if (status < 200 || status >= 300) throw new ApiException(status, result.optString("error", "Ошибка сервера: HTTP " + status));
+            catch (Exception error) { throw new ApiException(status,"Сервер ещё не поддерживает Android-сбор или указан неверный адрес."); }
+            if (status < 200 || status >= 300) throw new ApiException(status,result.optString("error","Ошибка сервера: HTTP "+status),result.optBoolean("retryable"));
+            if (context != null) CollectorDiagnostics.api(context,action,CollectorDiagnostics.Phase.OK,status,null,android.os.SystemClock.elapsedRealtime()-started,body);
             return result;
+        } catch (Exception error) {
+            if (context != null) CollectorDiagnostics.api(context,action,CollectorDiagnostics.Phase.ERROR,status,
+                    ConnectionIssue.kind(error,error instanceof ApiException ? status : 0,"pair".equals(action)),android.os.SystemClock.elapsedRealtime()-started,body);
+            throw error;
         } finally { connection.disconnect(); }
     }
+    void requireProtocol() throws Exception {
+        try{if(call("capabilities",null).optInt("protocol")<2)throw new UpgradeRequired();}
+        catch(ApiException error){if(error.status==404||error.status==405)throw new UpgradeRequired();throw error;}
+    }
+    static final class UpgradeRequired extends Exception {}
     static final class ApiException extends Exception {
         final int status;
-        ApiException(int status, String message) { super(message); this.status = status; }
+        final boolean retryable;
+        ApiException(int status,String message){this(status,message,false);}
+        ApiException(int status,String message,boolean retryable){super(message);this.status=status;this.retryable=retryable;}
     }
 }

@@ -29,7 +29,9 @@ final class TokenVault {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key());
         String value = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":"
                 + Base64.encodeToString(cipher.doFinal(token.getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP);
-        context.getSharedPreferences("connection", 0).edit().putString("token", value).apply();
+        // Pairing rotates the server token. Confirm durable local storage before reporting success.
+        if (!context.getSharedPreferences("connection", 0).edit().putString("token", value).commit())
+            throw new java.security.GeneralSecurityException("Token storage failed");
     }
     String read() throws Exception {
         String value = context.getSharedPreferences("connection", 0).getString("token", "");

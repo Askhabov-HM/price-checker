@@ -30,34 +30,48 @@ public final class CollectionWorker extends Worker {
     @NonNull @Override public ForegroundInfo getForegroundInfo() { return foreground(getApplicationContext()); }
     @NonNull @Override public Result doWork() {
         Context context = getApplicationContext();
+        CollectorDiagnostics.event(context,getInputData().getBoolean("tick",false) ? CollectorDiagnostics.Event.WORK_TICK : CollectorDiagnostics.Event.WORK_STARTED);
         // Periodic ticks, push and manual requests all use the same unique one-time queue.
         if (getInputData().getBoolean("tick",false)) {
             CollectionTasks.request(context,false,null); return Result.success();
         }
         CompletableFuture<Boolean> done = new CompletableFuture<>();
+        CollectorStore store=CollectorStore.get(context);
+        String savedRun=getInputData().getString("run");
+        final String run=savedRun==null?store.begin(getInputData().getBoolean("manual",false),getInputData().getString("job"),getId().toString().replace("-","")):savedRun;
         try {
-            if (isStopped() || new TokenVault(context).read().isEmpty()) return Result.success();
+            if(CollectionTasks.pairing())return Result.retry();
+            if (isStopped()) return Result.success();
+            if (new TokenVault(context).read().isEmpty()) {store.finish(run);CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_NO_TOKEN);return Result.success();}
+            if(store.canceled(run))return Result.success();
             CollectionTasks.flushStops(context);
             long epoch = getInputData().getLong("epoch",CollectionTasks.epoch(context));
-            if (epoch != CollectionTasks.epoch(context)) return Result.success();
+            if (epoch != CollectionTasks.epoch(context)) { CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_STALE); return Result.success(); }
             try { setForegroundAsync(foreground(context)).get(); }
             catch (Exception error) {
+                CollectorDiagnostics.event(context,CollectorDiagnostics.Event.FOREGROUND_DENIED);
                 // A device may deny background foreground-service starts. The active
                 // WorkManager job can still finish normally within the server deadline.
                 if (isStopped()) return Result.retry();
             }
             main.post(() -> {
                 if (isStopped() || epoch != CollectionTasks.epoch(context)) { done.complete(true); return; }
-                CollectionEngine.get(context).start(getId().toString(),getRunAttemptCount() == 0 && getInputData().getBoolean("manual",false),
+                if(store.canceled(run)){done.complete(true);return;}
+                CollectionEngine.get(context).start(getId().toString(),run,getInputData().getBoolean("manual",false),
                         CollectionRetryPolicy.expectedJob(getRunAttemptCount(),getInputData().getString("job")),done);
             });
             // Ordinary workers have a ten-minute limit. Leave time for cleanup before that limit.
-            return done.get(8,TimeUnit.MINUTES) ? Result.success() : Result.retry();
-        } catch (ServerApi.ApiException error) { return error.status == 401 ? Result.failure() : Result.retry(); }
-        catch (Exception error) { return Result.retry(); }
+            boolean success = done.get(8,TimeUnit.MINUTES);
+            CollectorDiagnostics.event(context,success ? CollectorDiagnostics.Event.WORK_SUCCESS : CollectorDiagnostics.Event.WORK_RETRY);
+            return success ? Result.success() : Result.retry();
+        } catch (ServerApi.ApiException error) {
+            CollectorDiagnostics.event(context,error.status == 401 ? CollectorDiagnostics.Event.WORK_FAILED : CollectorDiagnostics.Event.WORK_RETRY);
+            return error.status == 401 ? Result.failure() : Result.retry();
+        } catch (Exception error) { CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_RETRY); return Result.retry(); }
         finally { main.post(() -> CollectionEngine.releaseIfPresent(getId().toString())); }
     }
     @Override public void onStopped() {
+        CollectorDiagnostics.event(getApplicationContext(),CollectorDiagnostics.Event.WORK_STOPPED);
         main.post(() -> CollectionEngine.releaseIfPresent(getId().toString()));
     }
 }

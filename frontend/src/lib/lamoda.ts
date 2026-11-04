@@ -13,9 +13,22 @@ export interface LamodaStatus extends ScheduleSettings, CollectionStatus {
     schedule:{enabled:boolean;interval_minutes:3;next_check:string|null;action_required:boolean;last_error:string|null};
     job:{id:string;status:'queued'|'active';expires_at:string|null}|null};
   mobile?:{enabled:boolean;device:{name:string;last_seen:string|null}|null;job:{id:string;expires:number;next_page:number}|null;
+    runtime?:{state:string;job_id:string|null;next_page?:number;last_contact:string|null;stage:string|null;expires?:number};
     push?:{configured:boolean;enabled:boolean;registered_at:string|null;accepted_at:string|null;error:string|null}|null;
     diagnostics:{job_id:string;event:string;at:string;page:number|null;reason:string|null;screen_locked:number|null;screen_off:number|null}[]};
 }
+export interface MobileTimelineEvent {
+  event_id:string;source:'phone'|'server';event:string;event_at:string;received_at:string;
+  job_id?:string|null;run_id?:string;page?:number|null;reason?:string|null;stage?:string;outcome?:string;
+  action?:string;phase?:string;http_status?:number;duration_ms?:number;issue?:string;
+  attempt?:number;work_state?:string;stop_reason?:number;next_run_at?:string;
+  screen_locked?:boolean|number|null;screen_off?:boolean|number|null;network_validated?:boolean;
+  idle?:boolean;battery_saver?:boolean;battery_exempt?:boolean;background_restricted?:boolean;
+  exit_reason?:number;exit_status?:number;exit_at?:string;
+  dropped_events?:number;
+}
+export const mobileTimelineOptions=(job:string|null)=>queryOptions({queryKey:['lamoda','mobile','timeline',job],
+  queryFn:({signal})=>request<{events:MobileTimelineEvent[]}>('/api/providers/lamoda/mobile/timeline'+(job?'?job='+encodeURIComponent(job):''),{signal}),refetchInterval:5000});
 export interface LamodaPoint extends PricePoint {original_price:number|null;availability:string;price_at:string|null;}
 export interface LamodaItem {
   id:string;sku:string;title:string;color:string;url:string;image_url:string|null;price:number|null;original_price:number|null;
