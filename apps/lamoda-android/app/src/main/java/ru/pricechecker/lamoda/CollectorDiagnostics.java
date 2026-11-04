@@ -7,69 +7,73 @@ import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.os.PowerManager;
 import android.util.Log;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-import java.util.TimeZone;
+import org.json.JSONObject;
+import java.time.Instant;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 final class CollectorDiagnostics {
-    enum Event { APP_OPEN, LINK_RECEIVED, LINK_VALID, LINK_INVALID, PAIR_SAVED, PAIR_SAVE_FAILED, PAIR_FAILED,
-        FORGOTTEN, WORK_REQUEST_MANUAL, WORK_REQUEST_PUSH, WORK_REQUEST_POLL, WORK_NO_TOKEN,
-        WORK_STARTED, WORK_TICK, WORK_STALE, WORK_SUCCESS, WORK_RETRY, WORK_FAILED, WORK_STOPPED,
-        FOREGROUND_DENIED, PUSH_RECEIVED, PUSH_EXPIRED, PUSH_REGISTERED, PUSH_REGISTRATION_FAILED,
-        SOURCE_LOGIN_REQUIRED, SOURCE_ACCOUNT_MISMATCH, SOURCE_UNVERIFIED, SOURCE_ERROR, RENDERER_GONE }
-    enum Phase { BEGIN, OK, ERROR }
-    private CollectorDiagnostics() {}
-    private static synchronized void append(Context context, String entry) {
-        // Only enums, validated API actions and numeric status codes reach this journal.
-        // Never pass a Throwable, Intent, URL, token, job ID or source document to Log.
+    enum Event { APP_OPEN,LINK_RECEIVED,LINK_VALID,LINK_INVALID,PAIR_SAVED,PAIR_SAVE_FAILED,PAIR_FAILED,
+        FORGOTTEN,WORK_REQUEST_MANUAL,WORK_REQUEST_PUSH,WORK_REQUEST_POLL,WORK_NO_TOKEN,WORK_STARTED,WORK_TICK,WORK_STALE,
+        WORK_SUCCESS,WORK_RETRY,WORK_FAILED,WORK_STOPPED,FOREGROUND_DENIED,PUSH_RECEIVED,PUSH_EXPIRED,PUSH_REGISTERED,
+        PUSH_REGISTRATION_FAILED,SOURCE_LOGIN_REQUIRED,SOURCE_ACCOUNT_MISMATCH,SOURCE_UNVERIFIED,SOURCE_ERROR,RENDERER_GONE,
+        PROCESS_START,PROCESS_ALIVE,PROCESS_EXIT,WORK_STATE,API,PROGRESS,HEARTBEAT,CANCEL_REQUESTED,CANCEL_ACK,CANCEL_PENDING }
+    enum Phase {BEGIN,OK,ERROR}
+    enum Stage {requesting,reading,uploading,waiting,finished,canceling}
+    private static final String PROCESS=UUID.randomUUID().toString().replace("-","");
+    private static final AtomicInteger sequence=new AtomicInteger();
+    private CollectorDiagnostics(){}
+    static boolean id(String value){return value!=null&&value.matches("[a-f0-9]{32}");}
+    static JSONObject environment(Context context)throws Exception {
+        PowerManager power=context.getSystemService(PowerManager.class);
+        ConnectivityManager network=context.getSystemService(ConnectivityManager.class);
+        NetworkCapabilities capabilities=network.getNetworkCapabilities(network.getActiveNetwork());
+        return new JSONObject().put("screen_locked",context.getSystemService(KeyguardManager.class).isDeviceLocked())
+                .put("screen_off",!power.isInteractive()).put("idle",power.isDeviceIdleMode()).put("battery_saver",power.isPowerSaveMode())
+                .put("battery_exempt",power.isIgnoringBatteryOptimizations(context.getPackageName()))
+                .put("background_restricted",android.os.Build.VERSION.SDK_INT>=28&&context.getSystemService(ActivityManager.class).isBackgroundRestricted())
+                .put("dropped_events",CollectorStore.get(context).meta("dropped"))
+                .put("network_validated",capabilities!=null&&capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+    }
+    static void event(Context context,Event event){record(context,event,new JSONObject());}
+    static void record(Context context,Event event,JSONObject fields) {
         try {
-            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.ROOT);
-            format.setTimeZone(TimeZone.getTimeZone("UTC"));
-            String line = format.format(new Date()) + " " + entry;
-            android.content.SharedPreferences prefs = context.getSharedPreferences("diagnostics",0);
-            String[] previous = prefs.getString("events","").split("\n");
-            StringBuilder history = new StringBuilder();
-            for (int i = Math.max(0,previous.length-79); i < previous.length; i++)
-                if (!previous[i].isEmpty()) history.append(previous[i]).append('\n');
-            prefs.edit().putString("events",history.append(line).toString()).apply();
-            Log.i("LamodaCollector",line);
-        } catch (RuntimeException ignored) { /* Diagnostics must not interrupt collection. */ }
+            JSONObject value=environment(context);
+            // Only explicitly selected fields; never source data, URLs or exception text.
+            java.util.Iterator<String> keys=fields.keys();while(keys.hasNext()){
+                String key=keys.next();Object item=fields.get(key);
+                if(!DiagnosticSchema.valid(key,item))throw new IllegalArgumentException("Unsafe diagnostic field");
+                value.put(key,item);
+            }
+            value.put("event_id",UUID.randomUUID().toString().replace("-","")).put("process_id",PROCESS)
+                    .put("seq",sequence.incrementAndGet()).put("event",event.name()).put("event_at",Instant.now().toString());
+            CollectorStore.get(context).append(value);Log.i("LamodaCollector",value.toString());
+            if(event!=Event.PROCESS_ALIVE)CollectionTasks.syncDiagnostics(context);
+        }catch(Exception ignored){Log.w("LamodaCollector","JOURNAL_WRITE_FAILED");}
     }
-    static void event(Context context, Event event) {
-        if (event != Event.PUSH_RECEIVED && event != Event.WORK_STARTED && event != Event.WORK_STOPPED) {
-            append(context,event.name()); return;
-        }
+    static void progress(Context context,Event event,String run,String job,int page,Stage stage) {
+        try{JSONObject fields=new JSONObject().put("stage",stage.name());if(id(run))fields.put("run_id",run);if(id(job))fields.put("job_id",job);if(page>0)fields.put("page",page);record(context,event,fields);}
+        catch(Exception ignored){/* No untrusted error text. */}
+    }
+    static void api(Context context,String action,Phase phase,int status,ConnectionIssue.Kind issue,long duration,JSONObject body) {
+        if(!action.matches("pair|next|start|page|fail|push|stop|capabilities"))return;
         try {
-            PowerManager power = context.getSystemService(PowerManager.class);
-            append(context,event.name() + " locked=" + context.getSystemService(KeyguardManager.class).isDeviceLocked()
-                    + " screen_off=" + !power.isInteractive() + " idle=" + power.isDeviceIdleMode()
-                    + " battery_saver=" + power.isPowerSaveMode());
-        } catch (RuntimeException ignored) { append(context,event.name()); }
+            JSONObject fields=new JSONObject().put("action",action).put("phase",phase.name()).put("http_status",status).put("duration_ms",duration);
+            if(issue!=null)fields.put("issue",issue.name());
+            if(body!=null){for(String key:new String[]{"run_id","job_id"})if(id(body.optString(key)))fields.put(key,body.getString(key));int page=body.optInt("page");if(page>0&&page<=1000)fields.put("page",page);}
+            record(context,Event.API,fields);
+        }catch(Exception ignored){/* Never log the body itself. */}
     }
-    static void api(Context context, String action, Phase phase, int status, ConnectionIssue.Kind issue) {
-        if (!action.matches("pair|next|start|page|fail|push|stop")) return;
-        append(context,"API " + action + " " + phase.name() + " HTTP=" + status + (issue == null ? "" : " " + issue.name()));
-    }
-    static String failure(Exception error, boolean pairing) {
-        int status = error instanceof ServerApi.ApiException ? ((ServerApi.ApiException)error).status : 0;
+    static String failure(Exception error,boolean pairing) {
+        if(error instanceof ServerApi.UpgradeRequired)return "Нужна новая серверная часть Lamoda. Обновите VPS перед запуском этой сборки приложения.";
+        int status=error instanceof ServerApi.ApiException?((ServerApi.ApiException)error).status:0;
         return ConnectionIssue.message(ConnectionIssue.kind(error,status,pairing));
     }
     static String report(Context context) {
-        String server;
-        try { server = AddressPolicy.server(context.getSharedPreferences("connection",0).getString("server",BuildConfig.DEFAULT_SERVER)); }
-        catch (RuntimeException error) { server = "некорректный адрес"; }
-        PowerManager power = context.getSystemService(PowerManager.class);
-        ConnectivityManager network = context.getSystemService(ConnectivityManager.class);
-        NetworkCapabilities capabilities = network.getNetworkCapabilities(network.getActiveNetwork());
-        boolean connected = !context.getSharedPreferences("connection",0).getString("token","").isEmpty();
-        return "Lamoda Collector " + BuildConfig.VERSION_NAME + " / diagnostics=1\n"
-                + "VPS: " + server + "\nПодключение сохранено: " + connected
-                + "\nСеть проверена Android: " + (capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
-                + "\nDoze: " + power.isDeviceIdleMode() + "\nЭнергосбережение: " + power.isPowerSaveMode()
-                + "\nБез оптимизации батареи: " + power.isIgnoringBatteryOptimizations(context.getPackageName())
-                + "\nФон ограничен Android: " + (android.os.Build.VERSION.SDK_INT >= 28 && context.getSystemService(ActivityManager.class).isBackgroundRestricted())
-                + "\nУведомления разрешены: " + ReminderService.allowed(context)
-                + "\n\nПоследние события (UTC):\n" + context.getSharedPreferences("diagnostics",0).getString("events","Событий пока нет.");
+        String server;try{server=AddressPolicy.server(context.getSharedPreferences("connection",0).getString("server",BuildConfig.DEFAULT_SERVER));}catch(RuntimeException error){server="некорректный адрес";}
+        String current;try{current=environment(context).toString();}catch(Exception ignored){current="недоступно";}
+        return "Lamoda Collector "+BuildConfig.VERSION_NAME+" / protocol=2\nVPS: "+server+"\nТекущее состояние Android: "+current
+                +"\nПодключение сохранено: "+!context.getSharedPreferences("connection",0).getString("token","").isEmpty()
+                +"\nУведомления разрешены: "+ReminderService.allowed(context)+"\n"+CollectorStore.get(context).report();
     }
 }

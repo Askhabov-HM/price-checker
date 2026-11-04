@@ -129,6 +129,21 @@ export function migratePush(sql) {
   }});
 }
 
+export function migrateMobileTelemetry(sql) {
+  migrate(sql,{component:'migrateMobileTelemetry',version:1,apply:() => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS mobile_phone_events(
+      id INTEGER PRIMARY KEY,device_hash TEXT NOT NULL,event_id TEXT NOT NULL,
+      event_at TEXT NOT NULL,received_at TEXT NOT NULL,job_id TEXT,run_id TEXT,
+      event TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(event_id));
+      CREATE INDEX IF NOT EXISTS mobile_phone_events_job ON mobile_phone_events(job_id,id);
+      CREATE TABLE IF NOT EXISTS mobile_runs(
+      id TEXT PRIMARY KEY,device_hash TEXT NOT NULL,state TEXT NOT NULL,operation_id TEXT,
+      check_id INTEGER REFERENCES checks(id),created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS mobile_runs_operation ON mobile_runs(operation_id);
+      CREATE TABLE IF NOT EXISTS mobile_job_links(job_id TEXT PRIMARY KEY,check_id INTEGER NOT NULL REFERENCES checks(id));`);
+  }});
+}
+
 export function migrateDesktop(sql) {
   migrate(sql,{component:'migrateDesktop',version:1,apply:() => {
     sql.exec(`CREATE TABLE IF NOT EXISTS desktop_device(id INTEGER PRIMARY KEY CHECK(id=1),token_hash TEXT NOT NULL,name TEXT NOT NULL,last_seen TEXT);

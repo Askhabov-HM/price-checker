@@ -42,7 +42,9 @@ final class CollectionEngine {
     private WebView web;
     private Listener listener;
     private ViewGroup host;
-    private String collector, owner, text = "Войдите в Lamoda. Вход сохраняется на телефоне.";
+    private String collector, owner, runId, text = "Войдите в Lamoda. Вход сохраняется на телефоне.";
+    private CollectorDiagnostics.Stage stage=CollectorDiagnostics.Stage.waiting;
+    private final Runnable heartbeat=new Runnable(){@Override public void run(){if(owner==null)return;progress(CollectorDiagnostics.Event.HEARTBEAT);main.postDelayed(this,30000);}};
     private JSONObject job, pendingUpload;
     private CompletableFuture<Boolean> completion;
     private boolean pageReady, busy, visible;
@@ -117,17 +119,29 @@ final class CollectionEngine {
     void message(String value) {
         text = value; publish();
     }
-    private void publish() { if (listener != null) listener.changed(text,running(),job != null); }
-    void start(String id, boolean manual, String expected, CompletableFuture<Boolean> done) {
+    private void publish() { if (listener != null) listener.changed(text,running(),owner != null || CollectorStore.get(context).active()!=null); }
+    private void progress(CollectorDiagnostics.Event event){CollectorDiagnostics.progress(context,event,runId,job==null?null:job.optString("id"),job==null?0:job.optInt("next_page",1),stage);}
+    void start(String id,String run,boolean manual,String expected,CompletableFuture<Boolean> done) {
         if (owner != null) { done.complete(true); return; }
-        owner = id; completion = done; generation++; busy = true; restarts = 0; nextReadAt = 0; web.onResume();
+        owner = id;runId=run;completion = done; generation++; busy = true; restarts = 0; nextReadAt = 0; web.onResume();
+        stage=CollectorDiagnostics.Stage.requesting;progress(CollectorDiagnostics.Event.PROGRESS);main.removeCallbacks(heartbeat);main.postDelayed(heartbeat,30000);
         message("Получаем задание с VPS…");
-        api(client -> client.call(manual ? "start" : "next",manual ? new JSONObject() : null),result -> {
+        api(client -> {
+            client.requireProtocol();
+            if(!CollectorStore.get(context).markSent(run))return new JSONObject().put("outcome","canceled");
+            JSONObject request=new JSONObject().put("run_id",run);
+            if(expected!=null&&!expected.isEmpty())request.put("expected_job",expected);
+            return client.call(manual?"start":"next",request);
+        },result -> {
             JSONObject next = result.optJSONObject("job");
             if (next == null || expected != null && !expected.isEmpty() && !expected.equals(next.optString("id"))) {
-                finish(true,"Активного задания нет. Следующий сбор — по расписанию VPS."); return;
+                String outcome=result.optString("outcome");
+                finish(true,"canceled".equals(outcome)?"Запуск отменён на VPS.":"completed".equals(outcome)?"Сбор уже завершён и сохранён на VPS."
+                        :"failed".equals(outcome)?"Сбор завершился ошибкой на VPS. Подробности доступны в журнале Android на сайте."
+                        :"ended".equals(outcome)?"Задание VPS завершилось или было прервано. Для нового запуска нажмите «Собрать сейчас»."
+                        :"Активного задания нет. Следующий сбор — по расписанию VPS.");return;
             }
-            job = next; busy = false; publish();
+            job = next;CollectorStore.get(context).bind(run,next.getString("id"));busy = false;publish();
             if (pageReady && AddressPolicy.lamoda(web.getUrl())) ready();
             else web.loadUrl(WISHLIST);
         });
@@ -137,10 +151,10 @@ final class CollectionEngine {
         if (id.equals(owner)) finish(false,"Фоновая задача прервана Android. Расписание сохранено.");
     }
     void stop() {
-        if (job == null) return;
+        String run=runId!=null?runId:CollectorStore.get(context).active();if(run==null)return;
         try {
-            CollectionTasks.rememberStop(context,job.getString("id"));
-            finish(true,"Текущий сбор остановлен. Следующий выполнится по расписанию.");
+            boolean remote=CollectionTasks.cancelCurrent(context,run);
+            finish(true,remote?"Сбор остановлен на телефоне. Ожидаем подтверждение VPS; при отсутствии сети отмена сохранена.":"Ожидание запуска отменено на телефоне. Расписание сохранено.");
         } catch (Exception error) { message("Не удалось сохранить остановку. Повторите."); }
     }
     private void abortRead() {
@@ -148,7 +162,10 @@ final class CollectionEngine {
         web.evaluateJavascript("globalThis.__pcMobileReadId=null;globalThis.__priceCheckerCancel?.();delete globalThis.__pcMobileResult;",null);
     }
     private void finish(boolean success, String message) {
+        stage=CollectorDiagnostics.Stage.finished;progress(CollectorDiagnostics.Event.PROGRESS);main.removeCallbacks(heartbeat);
+        if(success && runId!=null)CollectorStore.get(context).finish(runId);
         generation++; abortRead(); busy = false; job = null; pendingUpload = null; owner = null;
+        runId=null;
         CompletableFuture<Boolean> done = completion; completion = null;
         CookieManager.getInstance().flush(); ReminderService.dismissProgress(context);
         if (!visible) web.onPause();
@@ -171,7 +188,8 @@ final class CollectionEngine {
         });
     }
     private void networkFailure(Exception error) {
-        boolean retry = !(error instanceof ServerApi.ApiException) || ((ServerApi.ApiException)error).status >= 500;
+        boolean retry = !(error instanceof ServerApi.UpgradeRequired) && (!(error instanceof ServerApi.ApiException)
+                || ((ServerApi.ApiException)error).status >= 500 || ((ServerApi.ApiException)error).retryable);
         finish(!retry,CollectorDiagnostics.failure(error,false) + (retry ? " Android повторит задачу в фоне." : ""));
     }
     private void ready() {
@@ -190,6 +208,7 @@ final class CollectionEngine {
         if (!pageReady || !AddressPolicy.lamoda(web.getUrl())) return;
         if (SystemClock.elapsedRealtime() < nextReadAt) { ready(); return; }
         busy = true;
+        stage=CollectorDiagnostics.Stage.reading;progress(CollectorDiagnostics.Event.PROGRESS);
         int read = reads.begin(SystemClock.elapsedRealtime(),true), page = job.optInt("next_page",1);
         message("Читаем страницу избранного " + page + ". Сбор продолжится в фоне.");
         String script = collector + "\nglobalThis.__pcMobileReadId="+read+";globalThis.__pcMobileResult={pending:true};globalThis.__priceCheckerReadPage("+page+").then(value=>{if(globalThis.__pcMobileReadId==="+read+")globalThis.__pcMobileResult=value;},()=>{if(globalThis.__pcMobileReadId==="+read+")globalThis.__pcMobileResult={error:'account_unverified'};});";
@@ -212,13 +231,15 @@ final class CollectionEngine {
                 reads.invalidate();
                 if (!result.optString("error").isEmpty()) { fail(result.getString("error"),result); return; }
                 pendingUpload = result.put("job_id",job.getString("id")).put("page",job.optInt("next_page",1));
-                message("Передаём страницу серверу…");
+                stage=CollectorDiagnostics.Stage.uploading;progress(CollectorDiagnostics.Event.PROGRESS);message("Передаём страницу серверу…");
                 JSONObject body = pendingUpload;
+                body.put("run_id",runId);
                 api(client -> client.call("page",body),response -> {
                     pendingUpload = null; busy = false; restarts = 0;
                     if (response.optBoolean("complete")) { finish(true,"Всё избранное передано VPS. Результат обработки придёт в Telegram."); return; }
                     job.put("next_page",response.getInt("next_page"));
                     nextReadAt = SystemClock.elapsedRealtime()+3000;
+                    stage=CollectorDiagnostics.Stage.waiting;progress(CollectorDiagnostics.Event.PROGRESS);
                     int current = generation;
                     main.postDelayed(() -> { if (current == generation && job != null) read(); },3000);
                 });

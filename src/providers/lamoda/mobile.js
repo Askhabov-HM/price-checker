@@ -1,4 +1,6 @@
-import {migrateMobile} from '../../storage-schema.js';
+import {migrateMobile,migrateMobileTelemetry} from '../../storage-schema.js';
+import {MobileTelemetry} from './mobile-telemetry.js';
+import {MobileRuns} from './mobile-runs.js';
 import {randomBytes,createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {ValidationError} from '../../errors.js';
@@ -11,6 +13,8 @@ export class LamodaMobile {
   constructor(db,{current = Date.now} = {}) {
     this.db = db;this.sql = db.db;this.current = current;
     migrateMobile(this.sql);
+    migrateMobileTelemetry(this.sql);
+    this.telemetry = new MobileTelemetry(this);this.runs = new MobileRuns(this);
   }
   diagnostic(jobId,event,{page = null,reason = null,screenLocked = null,screenOff = null} = {}) {
     this.sql.prepare('INSERT INTO mobile_diagnostics(job_id,event,at,page,reason,screen_locked,screen_off) VALUES(?,?,?,?,?,?,?)')
@@ -24,7 +28,8 @@ export class LamodaMobile {
   status() {
     const device = this.sql.prepare('SELECT name,last_seen FROM mobile_device WHERE id=1').get();
     const job = this.sql.prepare("SELECT id,expires,next_page FROM mobile_jobs WHERE status='pending' AND expires>? ORDER BY rowid DESC LIMIT 1").get(this.current());
-    return {enabled:!!device,device:device || null,job:job || null,push:this.push?.status() ?? null,diagnostics:this.diagnostics()};
+    return {enabled:!!device,device:device || null,job:job || null,push:this.push?.status() ?? null,diagnostics:this.diagnostics(),
+      runtime:this.telemetry.runtime()};
   }
   pairing() {
     const code = randomBytes(16).toString('hex'),expires = this.current()+10*60000;
@@ -117,6 +122,7 @@ export class LamodaMobile {
     this.sql.prepare("DELETE FROM mobile_jobs WHERE status!='pending'").run();
     const id = randomBytes(16).toString('hex');
     this.sql.prepare("INSERT INTO mobile_jobs(id,check_id,status,expires) VALUES(?,?,'pending',?)").run(id,check,expires);
+    this.sql.prepare('INSERT INTO mobile_job_links(job_id,check_id) VALUES(?,?)').run(id,check);
     this.diagnostic(id,'job_created');
     this.sql.prepare('INSERT INTO telegram_outbox(event_id,check_id,payload) VALUES(?,?,?)')
       .run('android:'+id,check,JSON.stringify({store:'lamoda',kind:'android',finishedAt:new Date(this.current()).toISOString()}));

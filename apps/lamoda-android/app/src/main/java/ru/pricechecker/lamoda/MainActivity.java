@@ -38,9 +38,14 @@ public class MainActivity extends Activity {
     private TextView status, workStatus;
     private LiveData<List<WorkInfo>> work;
     private final Observer<List<WorkInfo>> workObserver = tasks -> {
+        refreshControls();
+        if(CollectorStore.get(this).pendingCancellation()){workStatus.setText("Отмена сохранена на телефоне. Ожидаем подтверждение VPS и доступную сеть.");return;}
         WorkInfo active = null;
         if (tasks != null) for (WorkInfo task : tasks) if (!task.getState().isFinished()) { active = task; break; }
-        if (active == null) { workStatus.setText("Очередь Android: нет ожидающего сбора."); return; }
+        if (active == null) {
+            String cancellation=CollectorStore.get(this).lastCancellation();
+            workStatus.setText("completed".equals(cancellation)?"VPS сообщил: сбор уже завершён, результат сохранён.":"canceled".equals(cancellation)?"VPS подтвердил отмену сбора.":"ended".equals(cancellation)?"VPS сообщил: задание уже завершилось или истекло.":"local".equals(cancellation)?"Ожидание отменено на телефоне.":"Очередь Android: нет ожидающего сбора.");return;
+        }
         if (active.getState() == WorkInfo.State.RUNNING) workStatus.setText("Задача Android запущена. Попытка: " + (active.getRunAttemptCount()+1) + ".");
         else {
             ConnectivityManager network = getSystemService(ConnectivityManager.class);
@@ -51,14 +56,24 @@ public class MainActivity extends Activity {
                     ? "Пауза перед повтором до " + android.text.format.DateFormat.format("HH:mm:ss",active.getNextScheduleTimeMillis()) + "."
                     : "Сеть доступна; Android ещё не запустил задачу. Проверьте ограничения фона в диагностике.";
             workStatus.setText("Ожидает запуска (" + active.getState().name() + "). " + waiting + " Попыток: "
-                    + active.getRunAttemptCount() + ". Стоп доступен после получения задания VPS.");
+                    + active.getRunAttemptCount() + ". Ожидание можно отменить кнопкой выше.");
         }
     };
     private Button collect, stop, notifications;
     private boolean pairing;
     private final CollectionEngine.Listener listener = (text,running,canStop) -> {
-        status.setText(text); collect.setEnabled(!running && !pairing); stop.setEnabled(canStop && !pairing);
+        status.setText(text);refreshControls();
     };
+    private void refreshControls() {
+        if(collect==null||stop==null||engine==null)return;
+        CollectorStore store=CollectorStore.get(this);boolean pending=store.active()!=null,confirm=store.pendingCancellation();
+        collect.setEnabled(!engine.running()&&!pairing&&!pending&&!confirm);
+        stop.setEnabled(!pairing&&(engine.running()||pending));
+        stop.setText(engine.running()?"Остановить сбор":pending?"Отменить ожидание":confirm?"Отмена ждёт VPS":"Стоп");
+    }
+    private final Runnable refreshState=new Runnable(){@Override public void run(){
+        if(work!=null)workObserver.onChanged(work.getValue());main.postDelayed(this,1000);
+    }};
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         CollectorDiagnostics.event(this,CollectorDiagnostics.Event.APP_OPEN);
@@ -117,6 +132,7 @@ public class MainActivity extends Activity {
     }
     private void pair(String invitation) {
         if (engine.running() || pairing) { engine.message("Сначала остановите текущий сбор, затем откройте ссылку подключения снова."); return; }
+        try{CollectionTasks.pauseForPairing(getApplicationContext());}catch(RuntimeException error){engine.message("Не удалось приостановить очередь для подключения. Повторите.");return;}
         CollectorDiagnostics.event(this,CollectorDiagnostics.Event.LINK_VALID);
         pairing = true; collect.setEnabled(false); engine.message("Подключаем телефон к VPS…");
         String origin = getSharedPreferences("connection",0).getString("server",BuildConfig.DEFAULT_SERVER);
@@ -132,11 +148,12 @@ public class MainActivity extends Activity {
                     throw new java.security.GeneralSecurityException("Token storage failed",error);
                 }
                 CollectorDiagnostics.event(getApplicationContext(),CollectorDiagnostics.Event.PAIR_SAVED);
+                CollectionTasks.finishPairing(getApplicationContext(),true);
                 main.post(() -> {
                     pairing = false; CollectionTasks.schedule(getApplicationContext()); PushRegistration.schedule(getApplicationContext());
                     if (!isDestroyed()) request(true,null);
                 });
-            } catch (Exception error) { CollectorDiagnostics.event(getApplicationContext(),CollectorDiagnostics.Event.PAIR_FAILED); main.post(() -> {
+            } catch (Exception error) { CollectionTasks.finishPairing(getApplicationContext(),false);CollectorDiagnostics.event(getApplicationContext(),CollectorDiagnostics.Event.PAIR_FAILED); main.post(() -> {
                 pairing = false;
                 if (!isDestroyed()) { collect.setEnabled(true); engine.message(CollectorDiagnostics.failure(error,true)); }
             }); }
@@ -148,10 +165,12 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this); scroll.addView(text);
         new AlertDialog.Builder(this).setTitle("Диагностика Lamoda").setView(scroll)
                 .setPositiveButton("Закрыть",null).setNeutralButton("Копировать",(dialog,which) ->
-                    getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Lamoda diagnostics",report))).show();
+                    getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Lamoda diagnostics",report)))
+                .setNegativeButton("Поделиться",(dialog,which)->startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND)
+                    .setType("text/plain").putExtra(Intent.EXTRA_TEXT,report),"Поделиться диагностикой"))).show();
     }
     private void connection() {
-        if (engine.running() || pairing) { engine.message("Сначала остановите текущий сбор."); return; }
+        if (engine.running() || pairing) {engine.message("Сначала остановите текущий запуск.");return;}
         new AlertDialog.Builder(this).setTitle("Подключение к VPS")
                 .setMessage("В личном Telegram-боте выберите /lamoda_android и нажмите «Подключить телефон». Вход Lamoda сохраняется на телефоне.\n\nРасписание задаётся на VPS. «Стоп» отменяет только текущий сбор.")
                 .setPositiveButton("Понятно",null)
@@ -187,8 +206,8 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(request,permissions,results); if (request == 33) refreshPush();
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); open(intent); }
-    @Override protected void onResume() { super.onResume(); engine.visible(true); refreshPush(); }
-    @Override protected void onPause() { engine.visible(false); super.onPause(); }
+    @Override protected void onResume() {super.onResume();engine.visible(true);refreshPush();main.removeCallbacks(refreshState);main.post(refreshState);}
+    @Override protected void onPause() {main.removeCallbacks(refreshState);engine.visible(false);super.onPause();}
     @Override protected void onDestroy() { if (work != null) work.removeObserver(workObserver); engine.detach(listener); network.shutdown(); super.onDestroy(); }
     @Override public void onBackPressed() { if (!engine.back()) super.onBackPressed(); }
 }

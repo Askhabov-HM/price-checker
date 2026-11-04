@@ -164,21 +164,27 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         }
         // Existing Android clients retry 5xx responses, but treat job:null as
         // successful completion. Keep a queued request retryable until admitted.
-        const mobileJob = () => {
-          if (lamoda.collectionQueue.status('lamoda').queued)
+        const mobileJob = (view = null) => {
+          if (view?.queued || !view && lamoda.collectionQueue.status('lamoda').queued)
             return send(response,503,{error:'Проверка Lamoda ожидает в общей очереди.'},'application/json; charset=utf-8',{'Retry-After':'5'});
-          const job = lamoda.mobile.next();
+          const job = view ? view.job : lamoda.mobile.next();
           const state = value => value === 'true' ? 1 : value === 'false' ? 0 : null;
           lamoda.mobile.contact(job?.id,{screenLocked:state(request.headers['x-screen-locked']),screenOff:state(request.headers['x-screen-off'])});
-          return send(response,200,{job});
+          return send(response,200,{...view,job,protocol:2});
         };
+        if (request.method === 'GET' && action === 'capabilities') return send(response,200,{protocol:2,telemetry:true,cancel_run:true});
         if (request.method === 'GET' && action === 'next') return mobileJob();
         if (request.method !== 'POST') {request.resume();return send(response,405,{error:'Метод не поддерживается.'});}
         if (request.headers['content-type']?.split(';')[0].trim() !== 'application/json') {request.resume();return send(response,415,{error:'Ожидается JSON.'});}
-        const input = await readJson(request,action === 'page' ? 2*1024*1024 : action === 'push' ? 8192 : 4096);
+        const input = await readJson(request,action === 'page' ? 2*1024*1024 : action === 'telemetry' ? 128*1024 : action === 'push' ? 8192 : 4096);
         if (action === 'pair') return send(response,200,lamoda.mobile.pair(input.code,input.name));
         if (action === 'push') return send(response,200,lamoda.push.register(input));
-        if (action === 'stop') return send(response,200,await lamoda.stopMobile(input.job_id));
+        if (action === 'telemetry') return send(response,200,lamoda.mobile.telemetry.accept(input));
+        if (action === 'stop') return send(response,200,input.run_id !== undefined ? await lamoda.stopMobileRun(input.run_id,input.job_id ?? null) : await lamoda.stopMobile(input.job_id));
+        if (['start','next'].includes(action) && input.run_id !== undefined) {
+          if (input.expected_job !== undefined && (typeof input.expected_job !== 'string' || !/^[a-f0-9]{32}$/.test(input.expected_job))) throw new ValidationError('Некорректное задание Android.');
+          return mobileJob(await lamoda.mobileRequest(input.run_id,{manual:action === 'start',expected:input.expected_job}));
+        }
         if (action === 'start') {
           if (!lamoda.running) await lamoda.start({trigger:'android'});
           return mobileJob();
@@ -186,7 +192,10 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
         if (action === 'page') {
           try {return send(response,200,await lamoda.mobile.accept(input.job_id,input.page,input.user,input.payload));}
           catch (error) {
-            if (error instanceof LamodaError) {try {lamoda.mobile.fail(input.job_id,error.code);} catch { /* Invalid or expired job. */ }}
+            if (error instanceof LamodaError) {
+              try {lamoda.mobile.fail(input.job_id,error.code);} catch { /* Invalid or expired job. */ }
+              return send(response,400,{error:error.message,retryable:!['login_required','account_mismatch','interrupted'].includes(error.code) && !error.retry_after_ms});
+            }
             throw error;
           }
         }
@@ -210,6 +219,11 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
           if (url.pathname === '/api/providers/lamoda/status') return send(response,200,{...(lamoda ? lamoda.status() : {available:false,configured:false,message:'Раздел Lamoda временно недоступен.'}),csrf_token:token});
           if (!lamoda) return send(response,503,{error:'Раздел Lamoda временно недоступен.'});
           if (url.pathname === '/api/providers/lamoda/desktop/status') return send(response,200,lamoda.desktop.status());
+          if (url.pathname === '/api/providers/lamoda/mobile/timeline') {
+            const job = url.searchParams.get('job');
+            if (job && !/^[a-f0-9]{32}$/.test(job)) throw new ValidationError('Некорректное задание Android.');
+            return send(response,200,{events:lamoda.mobile.telemetry.timeline(job)});
+          }
           if (url.pathname === '/api/providers/lamoda/desktop/dashboard') return send(response,200,lamoda.desktop.dashboard());
           const desktopProduct = /^\/api\/providers\/lamoda\/desktop\/product\/(lamoda:item:[A-Z0-9]{6,32})\/history$/.exec(decodeURIComponent(url.pathname));
           if (desktopProduct) {

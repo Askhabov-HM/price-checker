@@ -36,9 +36,14 @@ public final class CollectionWorker extends Worker {
             CollectionTasks.request(context,false,null); return Result.success();
         }
         CompletableFuture<Boolean> done = new CompletableFuture<>();
+        CollectorStore store=CollectorStore.get(context);
+        String savedRun=getInputData().getString("run");
+        final String run=savedRun==null?store.begin(getInputData().getBoolean("manual",false),getInputData().getString("job"),getId().toString().replace("-","")):savedRun;
         try {
+            if(CollectionTasks.pairing())return Result.retry();
             if (isStopped()) return Result.success();
-            if (new TokenVault(context).read().isEmpty()) { CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_NO_TOKEN); return Result.success(); }
+            if (new TokenVault(context).read().isEmpty()) {store.finish(run);CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_NO_TOKEN);return Result.success();}
+            if(store.canceled(run))return Result.success();
             CollectionTasks.flushStops(context);
             long epoch = getInputData().getLong("epoch",CollectionTasks.epoch(context));
             if (epoch != CollectionTasks.epoch(context)) { CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_STALE); return Result.success(); }
@@ -51,7 +56,8 @@ public final class CollectionWorker extends Worker {
             }
             main.post(() -> {
                 if (isStopped() || epoch != CollectionTasks.epoch(context)) { done.complete(true); return; }
-                CollectionEngine.get(context).start(getId().toString(),getRunAttemptCount() == 0 && getInputData().getBoolean("manual",false),
+                if(store.canceled(run)){done.complete(true);return;}
+                CollectionEngine.get(context).start(getId().toString(),run,getInputData().getBoolean("manual",false),
                         CollectionRetryPolicy.expectedJob(getRunAttemptCount(),getInputData().getString("job")),done);
             });
             // Ordinary workers have a ten-minute limit. Leave time for cleanup before that limit.
