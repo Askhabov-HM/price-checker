@@ -18,7 +18,8 @@ import java.util.concurrent.TimeUnit;
 import org.json.JSONObject;
 
 final class CollectionTasks {
-    private static final String PERIODIC = "lamoda-scheduled-poll", IMMEDIATE = "lamoda-collection";
+    private static final String PERIODIC = "lamoda-scheduled-poll";
+    static final String IMMEDIATE = "lamoda-collection";
     private static final Constraints NETWORK = new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
     private CollectionTasks() {}
     static SharedPreferences preferences(Context context) { return context.getSharedPreferences("collection",0); }
@@ -36,12 +37,14 @@ final class CollectionTasks {
         request(context,manual,expected,false);
     }
     static synchronized void request(Context context, boolean manual, String expected, boolean expedited) {
-        if (!connected(context)) return;
+        if (!connected(context)) { CollectorDiagnostics.event(context,CollectorDiagnostics.Event.WORK_NO_TOKEN); return; }
+        CollectorDiagnostics.event(context,manual ? CollectorDiagnostics.Event.WORK_REQUEST_MANUAL
+                : expected != null ? CollectorDiagnostics.Event.WORK_REQUEST_PUSH : CollectorDiagnostics.Event.WORK_REQUEST_POLL);
         schedule(context);
         Data input = new Data.Builder().putBoolean("manual",manual).putString("job",expected == null ? "" : expected)
                 .putLong("epoch",epoch(context)).build();
         OneTimeWorkRequest.Builder work = new OneTimeWorkRequest.Builder(CollectionWorker.class).setConstraints(NETWORK).setInputData(input);
-        if (expedited) work.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST);
+        if (expedited || manual) work.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST);
         WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE,manual ? ExistingWorkPolicy.REPLACE : ExistingWorkPolicy.KEEP,work.build());
     }
     static synchronized void rememberStop(Context context, String id) {
@@ -62,7 +65,7 @@ final class CollectionTasks {
         String token = new TokenVault(context).read();
         if (token.isEmpty()) return;
         String origin = context.getSharedPreferences("connection",0).getString("server",BuildConfig.DEFAULT_SERVER);
-        ServerApi api = new ServerApi(origin,token);
+        ServerApi api = new ServerApi(origin,token,context);
         for (String id : new HashSet<>(stops)) {
             api.call("stop",new JSONObject().put("job_id",id));
             synchronized (CollectionTasks.class) {
@@ -72,6 +75,7 @@ final class CollectionTasks {
         }
     }
     static synchronized void forget(Context context) {
+        CollectorDiagnostics.event(context,CollectorDiagnostics.Event.FORGOTTEN);
         new TokenVault(context).clear();
         WorkManager manager = WorkManager.getInstance(context);
         manager.cancelUniqueWork(PERIODIC); manager.cancelUniqueWork(IMMEDIATE); manager.cancelUniqueWork("lamoda-stops");

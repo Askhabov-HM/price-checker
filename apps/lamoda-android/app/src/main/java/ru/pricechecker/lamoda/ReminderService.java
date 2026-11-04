@@ -43,15 +43,16 @@ public final class ReminderService extends FirebaseMessagingService {
         PushRegistration.schedule(this);
     }
     @Override public void onMessageReceived(RemoteMessage message) {
+        CollectorDiagnostics.event(this,CollectorDiagnostics.Event.PUSH_RECEIVED);
         String job = message.getData().get("lamoda_job"), expiry = message.getData().get("lamoda_expires");
-        if (!ReminderPolicy.valid(job,expiry,System.currentTimeMillis())) return;
+        if (!ReminderPolicy.valid(job,expiry,System.currentTimeMillis())) { CollectorDiagnostics.event(this,CollectorDiagnostics.Event.PUSH_EXPIRED); return; }
         CollectionTasks.request(this,false,job,message.getPriority() == RemoteMessage.PRIORITY_HIGH);
         if (!allowed(this)) return;
         Intent intent = new Intent(this,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra("lamoda_job",job).putExtra("lamoda_expires",expiry);
         PendingIntent open = PendingIntent.getActivity(this,0,intent,PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification notification = new Notification.Builder(this,CHANNEL).setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Обновляем Lamoda в фоне").setContentText("Нажмите, чтобы посмотреть сбор или остановить его.")
+                .setContentTitle("Lamoda: получено задание").setContentText("Сбор передан Android. Нажмите, чтобы посмотреть состояние.")
                 .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(true)
                 .setTimeoutAfter(Long.parseLong(expiry)-System.currentTimeMillis()).build();
         try { getSystemService(NotificationManager.class).notify(TAG,0,notification); }

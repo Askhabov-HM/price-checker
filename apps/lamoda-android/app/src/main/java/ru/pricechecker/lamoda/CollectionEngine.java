@@ -84,6 +84,7 @@ final class CollectionEngine {
                 CookieManager.getInstance().flush(); pageReady = AddressPolicy.lamoda(url); ready();
             }
             @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                CollectorDiagnostics.event(context,CollectorDiagnostics.Event.RENDERER_GONE);
                 if (view.getParent() instanceof ViewGroup) ((ViewGroup)view.getParent()).removeView(view);
                 finish(false,"WebView остановлен Android. Повторим сбор при следующем запуске задачи.");
                 view.destroy(); createWebView();
@@ -171,7 +172,7 @@ final class CollectionEngine {
     }
     private void networkFailure(Exception error) {
         boolean retry = !(error instanceof ServerApi.ApiException) || ((ServerApi.ApiException)error).status >= 500;
-        finish(!retry,"Не удалось передать данные VPS. " + (retry ? "Повторим в фоне." : "Проверьте подключение телефона к серверу."));
+        finish(!retry,CollectorDiagnostics.failure(error,false) + (retry ? " Android повторит задачу в фоне." : ""));
     }
     private void ready() {
         if (owner == null || job == null || busy || !pageReady) return;
@@ -225,6 +226,9 @@ final class CollectionEngine {
         });
     }
     private void fail(String code, JSONObject result) {
+        CollectorDiagnostics.event(context,"login_required".equals(code) ? CollectorDiagnostics.Event.SOURCE_LOGIN_REQUIRED
+                : "account_mismatch".equals(code) ? CollectorDiagnostics.Event.SOURCE_ACCOUNT_MISMATCH
+                : "account_unverified".equals(code) ? CollectorDiagnostics.Event.SOURCE_UNVERIFIED : CollectorDiagnostics.Event.SOURCE_ERROR);
         if (job == null) { finish(false,"Страница Lamoda не загрузилась. Повторим в фоне."); return; }
         abortRead(); busy = true;
         try {
