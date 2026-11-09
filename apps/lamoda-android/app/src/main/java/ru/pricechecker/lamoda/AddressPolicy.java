@@ -3,6 +3,10 @@ package ru.pricechecker.lamoda;
 import java.net.URI;
 
 final class AddressPolicy {
+    static String wishlist(int page) {
+        if(page<1||page>1000)throw new IllegalArgumentException("Invalid wishlist page");
+        return "https://www.lamoda.ru/wishlist/?page="+page;
+    }
     static String invitation(String value) {
         URI uri = URI.create(value);
         if (!"pricechecker-lamoda".equals(uri.getScheme()) || !"collect".equals(uri.getRawAuthority())

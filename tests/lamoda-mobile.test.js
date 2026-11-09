@@ -227,34 +227,43 @@ test('Android HTTP API scopes bearer tokens, requires owner CSRF for pairing, an
   assert.equal(script.status,200);assert.match(script.headers.get('content-type'),/javascript/);assert.equal(await script.text(),androidLaunchScript);
 });
 
-test('Android Stop aborts an in-flight wishlist fetch without starting another request',async () => {
-  const source = readFileSync(new URL('../apps/lamoda-android/app/src/main/assets/collector.js',import.meta.url),'utf8');
-  let calls = 0,signal;
-  const context = {location:{origin:'https://www.lamoda.ru'},AbortController,setTimeout,clearTimeout,
-    fetch:(_url,options) => new Promise((_resolve,reject) => {
-      calls++;signal = options.signal;signal.addEventListener('abort',() => reject(new Error('aborted')),{once:true});
-    })};
-  runInNewContext(source,context);const pending = context.__priceCheckerReadPage(1);
-  context.__priceCheckerCancel();assert.equal(signal.aborted,true);
-  assert.equal((await pending).error,'interrupted');assert.equal(calls,1);assert.equal(context.__priceCheckerCancel,undefined);
-});
-
-test('Android collector uses only fixed same-origin wishlist GETs and strips profile information',async () => {
+test('Android collector reads the navigated wishlist document and strips profile information',async () => {
   const source = readFileSync(new URL('../apps/lamoda-android/app/src/main/assets/collector.js',import.meta.url),'utf8');
   const input = state();input.user.customer.email='synthetic-private@example.invalid';input.user.delivery_address='synthetic-private';
   input.user.wishlist[0].adjacent_skus = ['SYNTHETIC001','SYNTHETIC009'];
   input.payload.products[0] = {...product('SYNTHETIC009'),is_hybrid:true,hybrid_products:['SYNTHETIC001','SYNTHETIC009']};
   const script = 'var __NUXT__ = {\n        user: '+JSON.stringify(input.user)+',\n        payload: '+JSON.stringify(input.payload)+',\n};';
-  const calls=[],context = {location:{origin:'https://www.lamoda.ru'},AbortController,setTimeout,clearTimeout,TextDecoder,TextEncoder,
-    DOMParser:class {parseFromString(){return {scripts:[{textContent:script}]};}},
-    fetch:async (url,options) => {calls.push({url,options});return new Response('<html>synthetic</html>',{headers:{'content-type':'text/html'}});}};
+  let calls=0;
+  const context = {location:{origin:'https://www.lamoda.ru',href:'https://www.lamoda.ru/wishlist/?page=1'},URL,TextEncoder,
+    document:{readyState:'complete',scripts:[{textContent:script}]},
+    fetch:() => {calls++;throw Error('Unexpected fetch');}};
   runInNewContext(source,context);
   const result = JSON.parse(JSON.stringify(await context.__priceCheckerReadPage(1)));
-  assert.equal(calls[0].url,'/wishlist/?page=1');assert.equal(calls[0].options.credentials,'same-origin');
-  assert.equal(calls.length,1);assert.equal(result.user.customer.id,42);assert.doesNotMatch(JSON.stringify(result),/synthetic-private/);
+  assert.equal(calls,0);assert.equal(result.user.customer.id,42);assert.doesNotMatch(JSON.stringify(result),/synthetic-private/);
   assert.deepEqual(result.user.wishlist[0].adjacent_skus,['SYNTHETIC001','SYNTHETIC009']);
   assert.equal(parseWishlistState(result.user,result.payload).items[0].sku,'SYNTHETIC001');
-  context.location.origin='https://other.example';assert.equal((await context.__priceCheckerReadPage(2)).error,'invalid_data');assert.equal(calls.length,1);
-  context.location.origin='https://www.lamoda.ru';context.fetch=async () => new Response('',{status:429,headers:{'Retry-After':'120'}});
-  const limited=await context.__priceCheckerReadPage(1);assert.equal(limited.retry_after_ms,120000);assert.equal(limited.error,'rate_limited');
+  context.location.origin='https://other.example';assert.equal((await context.__priceCheckerReadPage(2)).error,'invalid_data');assert.equal(calls,0);
+});
+
+test('navigated DOM snapshots preserve all 162 favorites across three pages and publish only after the final page',async t => {
+  const {lamoda,mobile}=service(t);pair(mobile);await lamoda.start();const job=mobile.next();
+  const source=readFileSync(new URL('../apps/lamoda-android/app/src/main/assets/collector.js',import.meta.url),'utf8');
+  const favorites=Array.from({length:162},(_,i)=>'SYNTHETIC'+String(i).padStart(4,'0'));
+  const context={URL,TextEncoder,location:{origin:'https://www.lamoda.ru',href:'https://www.lamoda.ru/wishlist/?page=1'},
+    document:{readyState:'complete',scripts:[]},fetch:()=>{throw Error('Unexpected fetch');}};
+  runInNewContext(source,context);
+  assert.equal(context.__priceCheckerReadPage(1).pending,true);
+  for(let page=1;page<=3;page++) {
+    const user={customer:{id:42,is_active:true},wishlist:favorites.map(product_sku=>({product_sku}))};
+    const payload={products:favorites.slice((page-1)*60,page*60).map(product),pagination:{page,limit:60,offset:(page-1)*60,found:162,pages:3}};
+    context.location.href='https://www.lamoda.ru/wishlist/?page='+page;
+    context.document.scripts=[{textContent:'var __NUXT__ = {\n        user: '+JSON.stringify(user)+',\n        payload: '+JSON.stringify(payload)+',\n};'}];
+    const result=JSON.parse(JSON.stringify(context.__priceCheckerReadPage(page)));
+    const response=await mobile.accept(job.id,page,result.user,result.payload);
+    assert.equal(response.complete,page===3);
+    if(page<3)assert.equal(lamoda.db.dashboard().items.length,0);
+  }
+  await lamoda.running;
+  assert.equal(lamoda.db.dashboard().items.length,162);
+  assert.equal(lamoda.db.checks()[0].status,'success');
 });
