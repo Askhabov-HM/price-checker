@@ -20,7 +20,7 @@ export interface LamodaStatus extends ScheduleSettings, CollectionStatus {
 export interface MobileTimelineEvent {
   event_id:string;source:'phone'|'server';event:string;event_at:string;received_at:string;
   job_id?:string|null;run_id?:string;page?:number|null;reason?:string|null;stage?:string;outcome?:string;
-  action?:string;phase?:string;http_status?:number;duration_ms?:number;issue?:string;
+  action?:string;phase?:string;http_status?:number;duration_ms?:number;issue?:string;source_reason?:string;
   attempt?:number;work_state?:string;stop_reason?:number;next_run_at?:string;
   screen_locked?:boolean|number|null;screen_off?:boolean|number|null;network_validated?:boolean;
   idle?:boolean;battery_saver?:boolean;battery_exempt?:boolean;background_restricted?:boolean;

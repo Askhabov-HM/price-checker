@@ -75,7 +75,7 @@ final class CollectionEngine {
                 document++; pageReady = false;
                 if (reads.invalidate()) {
                     busy = false;
-                    if (++restarts > 2) { fail("account_unverified",null); return; }
+                    if (++restarts > 2) { failNative("page_navigation"); return; }
                     message("Страница обновилась. Ждём загрузки Lamoda…");
                 }
             }
@@ -216,16 +216,16 @@ final class CollectionEngine {
     }
     private void poll(int read) {
         if (job == null || !reads.current(read)) return;
-        if (reads.timedOut(SystemClock.elapsedRealtime())) { fail("account_unverified",null); return; }
+        if (reads.timedOut(SystemClock.elapsedRealtime())) { failNative("page_timeout"); return; }
         web.evaluateJavascript("JSON.stringify(globalThis.__pcMobileReadId === "+read+" ? globalThis.__pcMobileResult : {context_lost:true})",value -> {
             if (job == null || !reads.current(read)) return;
             try {
                 Object decoded = new JSONTokener(value).nextValue();
-                if (!(decoded instanceof String)) { fail("account_unverified",null); return; }
+                if (!(decoded instanceof String)) { failNative("native_result"); return; }
                 JSONObject result = new JSONObject((String)decoded);
                 if (result.optBoolean("context_lost")) {
                     reads.invalidate(); busy = false;
-                    if (++restarts > 2) fail("account_unverified",null); else ready(); return;
+                    if (++restarts > 2) failNative("context_lost"); else ready(); return;
                 }
                 if (result.optBoolean("pending")) { main.postDelayed(() -> poll(read),600); return; }
                 reads.invalidate();
@@ -243,13 +243,26 @@ final class CollectionEngine {
                     int current = generation;
                     main.postDelayed(() -> { if (current == generation && job != null) read(); },3000);
                 });
-            } catch (Exception error) { fail("invalid_data",null); }
+            } catch (Exception error) { failNative("native_result"); }
         });
     }
+    private void failNative(String reason) {
+        try {fail("account_unverified",new JSONObject().put("source_reason",reason));}
+        catch(Exception ignored){fail("account_unverified",null);}
+    }
     private void fail(String code, JSONObject result) {
-        CollectorDiagnostics.event(context,"login_required".equals(code) ? CollectorDiagnostics.Event.SOURCE_LOGIN_REQUIRED
+        CollectorDiagnostics.Event event="login_required".equals(code) ? CollectorDiagnostics.Event.SOURCE_LOGIN_REQUIRED
                 : "account_mismatch".equals(code) ? CollectorDiagnostics.Event.SOURCE_ACCOUNT_MISMATCH
-                : "account_unverified".equals(code) ? CollectorDiagnostics.Event.SOURCE_UNVERIFIED : CollectorDiagnostics.Event.SOURCE_ERROR);
+                : "account_unverified".equals(code) ? CollectorDiagnostics.Event.SOURCE_UNVERIFIED : CollectorDiagnostics.Event.SOURCE_ERROR;
+        String reason=result==null?"":result.optString("source_reason");
+        try {
+            JSONObject fields=new JSONObject().put("stage","reading");
+            if(SourceFailure.valid(reason))fields.put("source_reason",reason);
+            int status=result==null?0:result.optInt("http_status");if(status>=0&&status<=599)fields.put("http_status",status);
+            if(CollectorDiagnostics.id(runId))fields.put("run_id",runId);
+            if(job!=null){fields.put("job_id",job.getString("id")).put("page",job.optInt("next_page",1));}
+            CollectorDiagnostics.record(context,event,fields);
+        }catch(Exception ignored){CollectorDiagnostics.event(context,event);}
         if (job == null) { finish(false,"Страница Lamoda не загрузилась. Повторим в фоне."); return; }
         abortRead(); busy = true;
         try {
@@ -262,6 +275,7 @@ final class CollectionEngine {
                 String message = login ? "Откройте Lamoda, войдите или завершите проверку сайта. Затем нажмите «Собрать сейчас»."
                         : retry ? "Ошибка Lamoda. Повторим сбор в фоне."
                         : "Ошибка Lamoda передана VPS. Расписание и пауза источника сохранены.";
+                String detail=SourceFailure.message(reason);if(!detail.isEmpty())message=detail+" "+message;
                 if (login && !visible) ReminderService.attention(context,message);
                 finish(!retry,message);
             });

@@ -5,6 +5,9 @@ const events = new Set(('APP_OPEN LINK_RECEIVED LINK_VALID LINK_INVALID PAIR_SAV
   +'FOREGROUND_DENIED PUSH_RECEIVED PUSH_EXPIRED PUSH_REGISTERED PUSH_REGISTRATION_FAILED SOURCE_LOGIN_REQUIRED SOURCE_ACCOUNT_MISMATCH SOURCE_UNVERIFIED SOURCE_ERROR RENDERER_GONE '
   +'PROCESS_START PROCESS_ALIVE PROCESS_EXIT WORK_STATE API PROGRESS HEARTBEAT CANCEL_REQUESTED CANCEL_ACK CANCEL_PENDING').split(' '));
 const enums = {
+  source_reason:['redirect','http_error','content_type','request_failed','request_timeout','read_canceled','response_read',
+    'response_too_large','state_too_large','html_parse','state_script_missing','state_script_ambiguous','user_state','payload_state',
+    'state_shape','customer_missing','customer_null','page_navigation','context_lost','native_result','page_timeout'],
   action:['pair','next','start','page','fail','push','stop','capabilities'],phase:['BEGIN','OK','ERROR'],
   issue:['LINK','AUTH','BUSY','HTTP','REDIRECT','RESPONSE','DNS','TIMEOUT','TLS','CONNECT','NETWORK','STORAGE','UNKNOWN','UPGRADE'],
   work_state:['ENQUEUED','RUNNING','SUCCEEDED','FAILED','BLOCKED','CANCELLED'],

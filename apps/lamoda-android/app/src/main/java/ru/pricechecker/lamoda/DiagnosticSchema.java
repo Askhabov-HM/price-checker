@@ -14,6 +14,7 @@ final class DiagnosticSchema {
         if(key.equals("run_id")||key.equals("job_id"))return value instanceof String&&((String)value).matches("[a-f0-9]{32}");
         if(BOOLEAN.contains(key))return value instanceof Boolean;
         switch(key) {
+            case "source_reason":return SourceFailure.valid(value);
             case "action":return oneOf(value,"pair|next|start|page|fail|push|stop|capabilities");
             case "phase":return oneOf(value,"BEGIN|OK|ERROR");
             case "stage":return oneOf(value,"requesting|reading|uploading|waiting|finished|canceling");
