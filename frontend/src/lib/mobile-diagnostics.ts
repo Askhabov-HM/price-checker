@@ -13,6 +13,13 @@ const names:Record<string,string>={job_created:'Задание создано',p
   PROGRESS:'Ход сбора',HEARTBEAT:'Подтверждение активности',CANCEL_REQUESTED:'Запрошена отмена',CANCEL_PENDING:'Отмена ждёт связи',CANCEL_ACK:'VPS подтвердил результат отмены',
   SOURCE_UNVERIFIED:'Lamoda не подтвердила аккаунт',SOURCE_LOGIN_REQUIRED:'Lamoda требует вход',SOURCE_ACCOUNT_MISMATCH:'Другой аккаунт Lamoda',SOURCE_ERROR:'Ошибка чтения Lamoda',RENDERER_GONE:'WebView завершён Android'};
 const stages:Record<string,string>={requesting:'получение задания',reading:'чтение страницы',uploading:'отправка страницы',waiting:'ожидание',finished:'локальная работа завершена',canceling:'отмена'};
+const sourceReasons:Record<string,string>={redirect:'перенаправление запроса избранного',http_error:'HTTP-ошибка Lamoda',content_type:'неожиданный тип ответа',
+  request_failed:'запрос не выполнен: сеть или блокировка',request_timeout:'тайм-аут запроса',read_canceled:'чтение прервано',response_read:'ошибка чтения ответа',
+  response_too_large:'слишком большой ответ',state_too_large:'слишком большой блок данных',html_parse:'ошибка разбора HTML',
+  state_script_missing:'нет ожидаемого блока данных Lamoda',state_script_ambiguous:'несколько блоков данных Lamoda',user_state:'не удалось разобрать блок аккаунта',
+  payload_state:'не удалось разобрать блок избранного',state_shape:'неожиданная структура избранного',customer_missing:'нет подтверждения аккаунта',
+  customer_null:'Lamoda сообщила об отсутствии входа',page_navigation:'страница изменилась во время чтения',context_lost:'потерян контекст страницы',
+  native_result:'не получен результат из WebView',page_timeout:'тайм-аут чтения страницы'};
 export function mobileEventText(event:MobileTimelineEvent) {
   const parts=[event.event==='API'?`${event.action} · ${event.phase}`:names[event.event]||event.event];
   if(event.page)parts.push(`страница ${event.page}`);
@@ -22,6 +29,7 @@ export function mobileEventText(event:MobileTimelineEvent) {
   if(event.http_status)parts.push(`HTTP ${event.http_status}`);
   if(event.duration_ms!==undefined&&event.phase!=='BEGIN')parts.push(`${event.duration_ms} мс`);
   if(event.issue||event.reason)parts.push(event.issue||event.reason||'');
+  if(event.source_reason)parts.push(sourceReasons[event.source_reason]||event.source_reason);
   if(event.outcome)parts.push(event.outcome==='completed'?'результат уже сохранён':event.outcome==='canceled'?'отменено':event.outcome);
   if(event.stop_reason!==undefined)parts.push(`причина остановки Android: ${event.stop_reason}`);
   if(event.exit_reason!==undefined)parts.push(`причина завершения: ${event.exit_reason}, код: ${event.exit_status}`);
