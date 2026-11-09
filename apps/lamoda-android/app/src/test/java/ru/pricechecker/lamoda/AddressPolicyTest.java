@@ -2,6 +2,12 @@ package ru.pricechecker.lamoda;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class AddressPolicyTest {
+    @Test public void collectionNavigationUsesOnlyBoundedWishlistPages() {
+        assertEquals("https://www.lamoda.ru/wishlist/?page=1",AddressPolicy.wishlist(1));
+        assertEquals("https://www.lamoda.ru/wishlist/?page=1000",AddressPolicy.wishlist(1000));
+        assertThrows(IllegalArgumentException.class,()->AddressPolicy.wishlist(0));
+        assertThrows(IllegalArgumentException.class,()->AddressPolicy.wishlist(1001));
+    }
     @Test public void invitationsAcceptOnlyTheFixedAppRouteAndSingleUseCapability() {
         String invitation = "0123456789abcdef0123456789abcdef";
         assertEquals("", AddressPolicy.invitation("pricechecker-lamoda://collect"));
