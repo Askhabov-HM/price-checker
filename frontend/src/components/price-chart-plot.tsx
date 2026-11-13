@@ -1,18 +1,28 @@
-import {useLayoutEffect,useMemo,useRef} from 'react';
+import {useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
 import {usePreferences} from '@/lib/store';
 import {date, rub} from '@/lib/format';
 import type {PricePoint} from '@/lib/types';
 import {chartData, useChart} from './price-chart';
 import {isUnavailable} from '@/lib/availability';
+import {Button} from './ui/button';
+
+export const maxPlotPoints = 256;
 
 export default function Plot({id, small = false}: {id?: string; small?: boolean}) {
   const {points, total} = useChart();
   const scale = usePreferences(state => state.chartScale);
-  const {rows} = useMemo(() => chartData(points, scale, total), [points, scale, total]);
+  const {rows: allRows} = useMemo(() => chartData(points, scale, total), [points, scale, total]);
+  const first = points[0]?.checked_at || '';
+  const [window, setWindow] = useState<{first:string; end:number}|null>(null);
+  const end = small || !window || window.first !== first ? points.length : Math.min(points.length, window.end);
+  const start = small ? 0 : Math.max(0, end - maxPlotPoints);
+  // Calculate segments and carried prices before slicing so page boundaries
+  // cannot connect different sellers/compositions or lose an unavailable price.
+  const rows = useMemo(() => allRows.slice(start,end), [allRows,start,end]);
   const viewport = useRef<HTMLDivElement>(null),pinned = useRef(true),previousView = useRef('');
-  const contentWidth = Math.max(0,points.length-1)*20+32;
-  const view = `${scale}:${points[0]?.checked_at || ''}`;
+  const contentWidth = Math.max(0,rows.length-1)*20+32;
+  const view = `${scale}:${first}:${start}`;
   const hasPlot = points.some(point => point.status === 'error' || isUnavailable(point) || point.price != null && Number.isFinite(point.price));
   useLayoutEffect(() => {
     const element = viewport.current;
@@ -38,7 +48,14 @@ export default function Plot({id, small = false}: {id?: string; small?: boolean}
   const unavailable = points.filter(isUnavailable).length;
   const label = `${small ? `${valid.length} измерений цены` : 'История цены'}${unavailable ? ` · Нет в наличии: ${unavailable}` : ''}${errors ? ` · Ошибок проверки: ${errors}` : ''}`;
   if (!valid.length && !errors && !unavailable) return <div id={id} className={small ? 'sparkline' : 'chart-empty'} role="img" aria-label={label}>{small ? null : 'Пока нет данных для этого графика'}</div>;
-  return <div id={id} className={small ? 'sparkline' : 'price-chart'} role="img" aria-label={label} data-scale={scale}>
+  const paged = !small && points.length > maxPlotPoints;
+  return <div id={id} className={small ? 'sparkline' : `price-chart${paged ? ' price-chart-paged' : ''}`} role={paged ? 'group' : 'img'} aria-label={label} data-scale={scale}>
+    {paged && <div className="chart-pagination" aria-label="Период на графике">
+      <Button variant="outline" size="sm" disabled={start === 0} onClick={() => setWindow({first,end:start + 1})}>Раньше</Button>
+      <span>{start + 1}–{end} из {points.length}</span>
+      <Button variant="outline" size="sm" disabled={end === points.length} onClick={() => setWindow(end + maxPlotPoints - 1 >= points.length ? null : {first,end:end + maxPlotPoints - 1})}>Позже</Button>
+      <Button variant="ghost" size="sm" disabled={end === points.length} onClick={() => setWindow(null)}>Последние</Button>
+    </div>}
     {!small && !!valid.length && <div className="chart-fixed-axis" aria-hidden="true"><ResponsiveContainer width="100%" height="100%" minWidth={0}>
       <LineChart data={rows} margin={{top:20,right:0,bottom:35,left:10}} accessibilityLayer={false}>
         <YAxis width={68} domain={domain} allowDataOverflow tick={{fill:'var(--chart-text)',fontSize:10}} tickFormatter={value => rub(Number(value))}/>

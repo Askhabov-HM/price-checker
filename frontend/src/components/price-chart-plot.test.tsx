@@ -2,7 +2,7 @@ import {cloneElement, type ReactElement} from 'react';
 import {fireEvent, render, screen, waitFor} from '@testing-library/react';
 import {afterEach,describe, expect, it, vi} from 'vitest';
 import {PriceChart} from './price-chart';
-import Plot from './price-chart-plot';
+import Plot, {maxPlotPoints} from './price-chart-plot';
 import {usePreferences} from '@/lib/store';
 import type {PricePoint} from '@/lib/types';
 
@@ -14,6 +14,32 @@ vi.mock('recharts', async importOriginal => ({
 
 describe('compact chart rendering in jsdom', () => {
   afterEach(() => vi.restoreAllMocks());
+  it('bounds a long SVG and lets the user reach the oldest and latest observations', () => {
+    const points:PricePoint[] = Array.from({length:2000},(_,i) => ({checked_at:new Date(1760000000000+i*60000).toISOString(),price:10000+i}));
+    const {container} = render(<PriceChart.Root points={points} total><Plot/></PriceChart.Root>);
+    const dots = () => container.querySelectorAll('.recharts-line-dot').length;
+    expect(dots()).toBe(maxPlotPoints);
+    expect(container.querySelector('.price-chart-content')).toHaveStyle({minWidth:'5132px'});
+    expect(screen.getByText('1745–2000 из 2000')).toBeInTheDocument();
+    expect(screen.getByText('Позже')).toBeDisabled();
+    for (let i=0;i<7;i++) fireEvent.click(screen.getByText('Раньше'));
+    expect(screen.getByText('Раньше')).toBeDisabled();
+    expect(screen.getByText('1–215 из 2000')).toBeInTheDocument();
+    expect(dots()).toBe(215);
+    fireEvent.click(screen.getByText('Позже'));expect(screen.getByText('215–470 из 2000')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Последние'));expect(screen.getByText('1745–2000 из 2000')).toBeInTheDocument();
+    expect(dots()).toBe(maxPlotPoints);
+  });
+
+  it('preserves carried unavailable prices from outside the visible window', async () => {
+    const points:PricePoint[] = Array.from({length:300},(_,i) => ({checked_at:new Date(1760000000000+i*60000).toISOString(),
+      price:i===0?10000:null,in_stock:i===0}));
+    const {container} = render(<PriceChart.Root points={points}><Plot/></PriceChart.Root>);
+    expect(container.querySelectorAll('.chart-unavailable-dot')).toHaveLength(maxPlotPoints);
+    expect(container.innerHTML).not.toMatch(/NaN|Infinity/);
+    fireEvent.focus(screen.getByRole('application'));
+    expect(await screen.findByText(/Последняя известная: 100/)).toBeInTheDocument();
+  });
   it('opens wide charts at the latest checks, keeps the price axis visible and preserves a manually selected position', () => {
     let width = 5000;
     vi.spyOn(HTMLElement.prototype,'scrollWidth','get').mockImplementation(() => width);

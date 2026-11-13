@@ -67,6 +67,20 @@ test('HTTP dashboard and a newly opened detail expose the previous result until 
   assert.equal((await read('/api/product/'+id+'?days=0')).points.length,2);
 });
 
+test('membership responses and dashboards expose local edits while collection prices remain frozen',async t => {
+  const {base,tracker,id,post} = await setup(t);
+  const check = tracker.db.startCheck('manual');
+  tracker.db.observation(id,item({price_kopecks:19000}),'public',check);
+  for (const [path,list,field] of [['/api/watch','watching','watching'],['/api/my-cart','my-cart','in_my_cart']]) {
+    assert.deepEqual(await (await post(path,{id,active:true})).json(),{ok:true,count:1});
+    const dashboard = await (await fetch(base+'/api/dashboard?list='+list)).json();
+    assert.equal(dashboard.items[0][field],true);
+    assert.equal(dashboard.items[0].price,15000);
+    assert.deepEqual(await (await post(path,{id,active:false})).json(),{ok:true,count:0});
+    assert.equal((await (await fetch(base+'/api/dashboard?list='+list)).json()).items.length,0);
+  }
+});
+
 test('CSV distinguishes a failed attempt from the date of the last known price', async t => {
   const {base, tracker, id} = await setup(t);
   const priceAt = tracker.db.rows('cart')[0].price_at;

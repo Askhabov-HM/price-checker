@@ -10,6 +10,44 @@ import {temporary,cleanup,item} from './helpers.js';
 
 const stamp = new Date().toISOString();
 const plain = value => JSON.parse(JSON.stringify(value));
+test('local membership edits remain visible during collection without publishing partial prices',t => {
+  const db = new Database(join(temporary(t),'prices.sqlite3'));cleanup(t,() => db.close());
+  const id = db.variant(item());db.syncList('favorites',[[id,1]],stamp);
+  db.observation(id,item(),'public',null,stamp);
+  db.observation(id,item({price_kopecks:13000}),'cart',null,stamp);
+  const before = plain(db.publishedDashboard('favorites','public'));
+  const check = db.startCheck('manual',stamp);
+  db.observation(id,item({price_kopecks:19000}),'public',check,stamp);
+  db.syncList('favorites',[],stamp);
+  db.watch(id);db.personalCart(id);
+  const favorites = db.publishedDashboard('favorites','public');
+  assert.equal(favorites.items[0].watching,true);
+  assert.equal(favorites.items[0].in_my_cart,true);
+  assert.equal(favorites.counts.favorites,1);
+  assert.equal(favorites.counts.watching,1);
+  assert.deepEqual(favorites.history,before.history);
+  for (const list of ['watching','my-cart']) {
+    assert.equal(db.publishedDashboard(list,'public').items[0].price,15000);
+    assert.equal(db.publishedDashboard(list,'cart').items[0].price,13000);
+  }
+  db.watch(id,false);
+  assert.equal(db.publishedDashboard('watching','public').items.length,0);
+  assert.equal(db.publishedDashboard('favorites','public').items[0].watching,false);
+  db.updateCheck(check,{status:'success',finished_at:stamp});
+  assert.equal(db.publishedDashboard('my-cart','public').items[0].price,19000);
+});
+
+test('removing and re-adding a sole local membership retains the frozen product',t => {
+  const db = new Database(join(temporary(t),'prices.sqlite3'));cleanup(t,() => db.close());
+  const id = db.variant(item());db.watch(id);db.observation(id,item(),'public',null,stamp);
+  const check = db.startCheck('manual',stamp);
+  db.observation(id,item({price_kopecks:19000}),'public',check,stamp);
+  db.watch(id,false);db.watch(id,true);
+  const data = db.publishedDashboard('watching','public');
+  assert.equal(data.items.length,1);assert.equal(data.items[0].price,15000);
+  assert.equal(data.items[0].watching,true);assert.equal(data.counts.watching,1);
+});
+
 for (const outcome of ['success','partial','error','interrupted']) test(`Randewoo publishes previous data until ${outcome}, including membership and detail history`,t => {
   const db = new Database(join(temporary(t),'prices.sqlite3'));cleanup(t,() => db.close());
   const id = db.variant(item());db.syncList('favorites',[[id,1]],stamp);

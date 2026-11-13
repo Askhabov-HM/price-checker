@@ -1,4 +1,4 @@
-import {createContext, lazy, Suspense, useContext, useMemo, type ReactNode} from 'react';
+import {createContext, lazy, memo, Suspense, useContext, useMemo, type ReactNode} from 'react';
 import {usePreferences} from '@/lib/store';
 import type {ChartScale, PricePoint} from '@/lib/types';
 import {Button} from '@/components/ui/button';
@@ -51,7 +51,7 @@ function ScaleControls({detail = false}: {detail?: boolean}) {
   </div>;
 }
 const LazyPlot = lazy(() => import('./price-chart-plot'));
-function Plot(props: {id?: string; small?: boolean}) {
+const Plot = memo(function Plot(props: {id?: string; small?: boolean}) {
   return <Suspense fallback={<div className={props.small ? 'sparkline' : 'chart-empty'} role="status">{props.small ? null : 'Загружаем график…'}</div>}><LazyPlot {...props} /></Suspense>;
-}
+});
 export const PriceChart = {Root, ScaleControls, Plot};

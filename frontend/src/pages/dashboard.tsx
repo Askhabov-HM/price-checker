@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {useNavigate, useParams, useSearch} from '@tanstack/react-router';
 import {useMutation, useQuery} from '@tanstack/react-query';
 import {RefreshCw} from 'lucide-react';
@@ -23,7 +23,9 @@ export function Dashboard() {
   const ready = useCollectionData('randewoo');
   const dashboard = useQuery({...dashboardOptions(list, context),enabled:ready}), statusQuery = useQuery(statusOptions);
   const data = dashboard.data, status = statusQuery.data || data?.status;
-  const nowMs = useNow(), changes = recentChangeCounts(data?.items || [], search.changeDays, nowMs);
+  const clock = useNow();
+  const nowMs = useMemo(() => clock, [data, Math.floor(clock / 60000)]);
+  const changes = recentChangeCounts(data?.items || [], search.changeDays, nowMs);
   const [detailId, setDetailId] = useState<number | null>(null);
   useEffect(() => {setDetailId(null);}, [list]);
   const refresh = useMutation({mutationFn: () => mutate('/api/refresh', {}), onSuccess: invalidatePrices});
@@ -34,7 +36,7 @@ export function Dashboard() {
   const latest = data?.items.map(item => item.checked_at).filter((value): value is string => !!value).sort().pop();
   const check = status?.checks[0], latestFinished = status?.checks.find(item => item.trigger !== 'import' && item.finished_at);
   const notice = ['expired', 'error'].includes(status?.auth_status || '') ? `${status?.auth_message}. Список товаров сохранён; публичные цены продолжают проверяться.` : latestFinished && ['error', 'partial', 'interrupted'].includes(latestFinished.status) ? latestFinished.message : null;
-  const overview = data?.history.map(point => ({...point, price: point.priced_count ? point.known_total : null})) || [];
+  const overview = useMemo(() => data?.history.map(point => ({...point, price: point.priced_count ? point.known_total : null})) || [], [data?.history]);
   const measured = overview.filter(point => point.price != null), lastPoint = measured.at(-1);
   const statusLabels: Record<string, string> = {success: 'Готово', partial: 'Частично', error: 'Ошибка', running: 'Проверка', imported: 'Импорт истории', interrupted: 'Прервана'};
   const triggerLabels: Record<string, string> = {manual: 'Вручную', schedule: 'По расписанию', initial: 'Первая проверка', cli: 'Из командной строки', import: 'Реальный снимок'};
