@@ -104,8 +104,35 @@ export class Database {
   localMember(listId, id, active = true) {
     if (!['watching', 'my-cart'].includes(listId)) throw new ValidationError('Этот список обновляется с Randewoo');
     if (!this.get('SELECT id FROM variants WHERE id=?', id)) throw new ValidationError('Товар не найден');
-    if (active) this.run('INSERT OR IGNORE INTO memberships(list_id,variant_id,joined_at) VALUES(?,?,?)', listId, id, now());
-    else this.run('UPDATE memberships SET left_at=? WHERE list_id=? AND variant_id=? AND left_at IS NULL', now(), listId, id);
+    this.transaction(() => {
+      if (active) this.run('INSERT OR IGNORE INTO memberships(list_id,variant_id,joined_at) VALUES(?,?,?)', listId, id, now());
+      else this.run('UPDATE memberships SET left_at=? WHERE list_id=? AND variant_id=? AND left_at IS NULL', now(), listId, id);
+      if (!this.published.running()) return;
+      const flags = Object.fromEntries([['watching','watching'],['in_my_cart','my-cart']].map(([field,list]) =>
+        [field,!!this.get('SELECT 1 FROM memberships WHERE variant_id=? AND list_id=? AND left_at IS NULL',id,list)]));
+      const count = this.counts()[listId];
+      const snapshots = this.all('SELECT scope,payload,boundary FROM collection_snapshot')
+        .map(row => ({...row,data:JSON.parse(row.payload),boundary:JSON.parse(row.boundary)}));
+      const write = this.statement('UPDATE collection_snapshot SET payload=?,boundary=? WHERE scope=?');
+      for (const snapshot of snapshots) {
+        const data = snapshot.data;
+        // Retain the old row privately so removing and re-adding the only local
+        // membership cannot lose its pre-collection prices.
+        const saved = data.items.find(item => item.id === id);
+        if (saved) snapshot.boundary.localItems = {...snapshot.boundary.localItems,[id]:saved};
+        data.items = data.items.map(item => item.id === id ? {...item,...flags} : item);
+        if (data.list === listId) {
+          if (!active) data.items = data.items.filter(item => item.id !== id);
+          else if (!data.items.some(item => item.id === id)) {
+            const source = snapshots.find(row => row.data.context === data.context && (row.data.items.some(item => item.id === id) || row.boundary.localItems?.[id]));
+            const item = source?.data.items.find(item => item.id === id) || source?.boundary.localItems?.[id];
+            if (item) data.items.push({...item,...flags,quantity:1});
+          }
+        }
+        data.counts[listId] = count;
+        write.run(JSON.stringify(data),JSON.stringify(snapshot.boundary),snapshot.scope);
+      }
+    });
   }
   watch(id, active = true) {this.localMember('watching', id, active);}
   personalCart(id, active = true) {this.localMember('my-cart', id, active);}

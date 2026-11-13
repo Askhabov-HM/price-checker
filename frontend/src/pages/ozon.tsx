@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {memo, useMemo, useState} from 'react';
 import {useCollectionData} from '@/hooks/use-collection-data';
 import {useNavigate, useSearch} from '@tanstack/react-router';
 import {useMutation, useQuery} from '@tanstack/react-query';
@@ -6,6 +6,7 @@ import {RefreshCw, Plus, Pause, Play, Settings} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription} from '@/components/ui/dialog';
+import {HistoryRows} from '@/components/history-rows';
 import {PriceChart} from '@/components/price-chart';
 import {PriceChange, ProductFilters} from '@/components/product-table';
 import {OzonSettingsDialog} from '@/components/forms';
@@ -13,7 +14,8 @@ import {date, rub} from '@/lib/format';
 import {useNow} from '@/hooks/use-now';
 import {CollectionNotice} from '@/components/collection-notice';
 import {invalidateOzon, ozonDashboardOptions, ozonDetailOptions, ozonMutate, ozonStatusOptions, ozonPrice, ozonProductPoints, ozonOverviewPoints, ozonUnavailable, selectOzonProducts} from '@/lib/ozon';
-import type {OzonList, OzonPrice} from '@/lib/ozon';
+import type {ChangePeriod} from '@/lib/types';
+import type {OzonItem, OzonList, OzonPrice} from '@/lib/ozon';
 
 const labels: Record<OzonList,string> = {favorites:'Избранное',watching:'Наблюдение',cart:'Корзина Ozon'};
 const stock: Record<string,string> = {available:'В наличии',out_of_stock:'Нет в наличии',unavailable:'Недоступен',unknown:'Наличие не подтверждено'};
@@ -21,7 +23,8 @@ export function OzonDashboard() {
   const search = useSearch({from:'/ozon'}), navigate = useNavigate({from:'/ozon'});
   const ready = useCollectionData('ozon');
   const statusQuery = useQuery(ozonStatusOptions), dashboard = useQuery({...ozonDashboardOptions(search.ozonList),enabled:ready});
-  const status = statusQuery.data, now = useNow();
+  const status = statusQuery.data, clock = useNow();
+  const now = useMemo(() => clock, [dashboard.data, Math.floor(clock / 60000)]);
   const latestCheck = status?.checks?.[0];
   const [url,setUrl] = useState(''), [selected,setSelected] = useState<string | null>(null), [days,setDays] = useState(30);
   const [settingsOpen,setSettingsOpen] = useState(false);
@@ -36,8 +39,8 @@ export function OzonDashboard() {
   const items = dashboard.data?.items || [], displayed = selectOzonProducts(items,search.q,search.filter,search.sort,search.price,search.changeDays,now);
   const priced = items.filter(item => ozonPrice(item,search.price) !== null).length;
   const priceLabel = search.price === 'listed' ? 'Цена Ozon' : search.price === 'regular' ? 'Обычная цена' : 'Ozon Карта';
-  const points = ozonProductPoints(detail.data?.points || [],search.price);
-  const overview = ozonOverviewPoints(dashboard.data?.history || [],search.price);
+  const points = useMemo(() => ozonProductPoints(detail.data?.points || [],search.price), [detail.data?.points,search.price]);
+  const overview = useMemo(() => ozonOverviewPoints(dashboard.data?.history || [],search.price), [dashboard.data?.history,search.price]);
   const lastPoint = overview.at(-1), measured = overview.filter(point => point.price != null && point.status !== 'error');
   const selectPrice = <label className="context-label"><span>Тип цены</span><select aria-label="Тип цены Ozon" value={search.price} onChange={event => {void navigate({search:previous => ({...previous,price:event.target.value as OzonPrice})});}}><option value="listed">Цена Ozon</option><option value="ozon_card">По Ozon Карте</option><option value="regular">Обычная цена</option></select></label>;
   return <div data-ozon-dashboard><CollectionNotice status={status}/><section className="page-heading"><div><div className="eyebrow">OZON · ЛЮБЫЕ КАТЕГОРИИ</div><h1>Ozon<span className="title-dot">.</span></h1><p>История цен избранных товаров</p></div><div className="heading-actions"><div className="next-check"><span>Следующая проверка</span><strong>{status?.schedule_enabled ? date(status.next_check) : 'На паузе'}</strong></div><Button disabled={blocked} onClick={() => refresh.mutate(null)}><RefreshCw size={15} className={status?.running && !status.queued ? 'rotating' : ''}/>{status?.queued ? 'В очереди…' : status?.running ? 'Проверяем…' : 'Обновить избранное и цены'}</Button></div></section>
@@ -62,15 +65,7 @@ export function OzonDashboard() {
       <ProductFilters idPrefix="ozon-" searchLabel="Найти товар Ozon" searchPlaceholder="Название или артикул" unavailableLabel="Нет в наличии / недоступны" search={search.q} filter={search.filter} sort={search.sort} changeDays={search.changeDays} onChange={values => {void navigate({replace:true,search:previous => ({...previous,q:values.search ?? previous.q,filter:values.filter ?? previous.filter,sort:values.sort ?? previous.sort,changeDays:values.changeDays ?? previous.changeDays})});}}/>
       {dashboard.isPending ? <p role="status" className="notice">Загружаем товары Ozon…</p> : <div className="ozon-table-wrap"><table className="history-table ozon-table">
         <thead><tr><th>Товар</th><th>{priceLabel}</th>{search.price === 'listed' && <th>Зачёркнутая цена</th>}<th>Последнее изменение</th><th>История</th><th>Проверка</th><th>Действия</th></tr></thead>
-        <tbody>{displayed.map(item => <tr key={item.id}>
-          <td><button type="button" className="ozon-product" onClick={() => setSelected(item.id)}>{item.image_url && <img src={item.image_url} alt="" loading="lazy"/>}<span><strong>{item.title}</strong><small>Арт. {item.sku} · <span className={ozonUnavailable(item) ? 'availability-unavailable' : undefined}>{stock[item.availability] || stock.unknown}</span></small></span></button></td>
-          <td className={ozonUnavailable(item) ? 'ozon-price-unavailable' : undefined}><strong>{rub(ozonPrice(item,search.price))}</strong>{ozonUnavailable(item) && ozonPrice(item,search.price) !== null && <small>Последняя известная · {date(item.price_at)}</small>}</td>
-          {search.price === 'listed' && <td className={ozonUnavailable(item) ? 'ozon-price-unavailable' : undefined}>{item.original_price_kopecks === null ? '—' : <s>{rub(item.original_price_kopecks)}</s>}</td>}
-          <td className="ozon-price-change"><PriceChange item={{status:item.status,last_change:item.price_summary?.[search.price].last_change ?? null,observations:item.price_summary?.[search.price].observations ?? 0}} changeDays={search.changeDays} nowMs={now} unavailable={ozonUnavailable(item)}/></td>
-          <td className="ozon-sparkline"><PriceChart.Root points={ozonProductPoints(item.sparkline,search.price)} total><PriceChart.Plot small/></PriceChart.Root><small className="sparkline-label">{item.sparkline.length ? `${item.sparkline.length} проверок` : 'Проверок ещё нет'}</small></td>
-          <td>{date(item.checked_at)}{item.status === 'error' && <small className="ozon-error">{item.message} Цена от {date(item.price_at)}</small>}{item.status === 'pending' && <small>Ожидает проверки</small>}</td>
-          <td><div className="ozon-row-actions"><Button variant="outline" size="sm" onClick={() => setSelected(item.id)}>История</Button>{search.ozonList !== 'favorites' && <Button variant="ghost" size="sm" disabled={blocked} onClick={() => refresh.mutate(item.id)}>Проверить карточку</Button>}{search.ozonList === 'watching' && <Button variant="ghost" size="sm" disabled={remove.isPending || status?.running} aria-label={`Убрать из наблюдения: ${item.title}`} onClick={() => remove.mutate(item.id)}>Убрать</Button>}</div></td>
-        </tr>)}{!displayed.length && <tr><td colSpan={search.price === 'listed' ? 7 : 6} className="empty-state">{items.length ? 'Товары не найдены.' : 'Обновите избранное аккаунта. Здесь появятся товары и их цены.'}</td></tr>}</tbody>
+        <tbody>{displayed.map(item => <OzonRow key={item.id} item={item} price={search.price} list={search.ozonList} changeDays={search.changeDays} now={now} blocked={blocked} removing={!!remove.isPending || !!status?.running} onSelect={setSelected} onRefresh={refresh.mutate} onRemove={remove.mutate}/>)}{!displayed.length && <tr><td colSpan={search.price === 'listed' ? 7 : 6} className="empty-state">{items.length ? 'Товары не найдены.' : 'Обновите избранное аккаунта. Здесь появятся товары и их цены.'}</td></tr>}</tbody>
       </table></div>}
       <div className="table-footer"><span>Показано {displayed.length} из {items.length} товаров</span><span>Цены в рублях · время по Москве</span></div>
     </section>
@@ -78,9 +73,25 @@ export function OzonDashboard() {
     <OzonSettingsDialog status={status} open={settingsOpen} onClose={() => setSettingsOpen(false)}/>
     <Dialog open={selected !== null} onOpenChange={open => {if (!open) setSelected(null);}}><DialogContent className="max-h-[90vh] overflow-y-auto p-0 sm:max-w-[950px]"><DialogHeader className="dialog-top"><div className="eyebrow">OZON · ИСТОРИЯ ЦЕНЫ</div><DialogTitle>{detail.data?.product.title || 'История товара'}</DialogTitle><DialogDescription>Цена сохраняется при обновлении избранного. Прежние цены из карточек доступны через выбор типа цены.</DialogDescription></DialogHeader>
       {detail.error ? <p role="alert" className="notice">{detail.error.message}</p> : detail.isPending ? <p role="status" className="notice">Загружаем историю…</p> : <><div className="detail-toolbar"><div className="period-tabs">{[7,30,90,0].map((period,index) => <Button variant="ghost" key={period} className={days === period ? 'active' : ''} aria-pressed={days === period} onClick={() => setDays(period)}>{['Неделя','Месяц','3 месяца','Всё время'][index]}</Button>)}</div>{selectPrice}<a href={detail.data?.product.url} target="_blank" rel="noopener noreferrer">На Ozon ↗</a></div>
-        <PriceChart.Root points={points} total><PriceChart.ScaleControls detail/><div className="detail-chart-wrap"><PriceChart.Plot id="ozon-detail-chart"/></div></PriceChart.Root><p className="detail-note">{points.filter(point => point.status === 'ok').length === 1 ? 'Первая реальная проверка сохранена. Линия появится после следующей.' : 'График разделяется при смене продавца. Ошибки не заменяют последнюю известную цену.'}</p>
+        <PriceChart.Root points={points} total><PriceChart.ScaleControls detail/><div className="detail-chart-wrap"><PriceChart.Plot key={`${selected}:${days}`} id="ozon-detail-chart"/></div></PriceChart.Root><p className="detail-note">{points.filter(point => point.status === 'ok').length === 1 ? 'Первая реальная проверка сохранена. Линия появится после следующей.' : 'График разделяется при смене продавца. Ошибки не заменяют последнюю известную цену.'}</p>
         {!!detail.data?.seller_events.length && <div className="notice">{detail.data.seller_events.map((event,index) => <p key={index}>{date(event.checked_at)} · Продавец изменился: {event.old_name || 'Прежний'} → {event.new_name || 'Новый'}</p>)}</div>}
-        <div className="detail-table-wrap"><table className="history-table"><thead><tr><th>Дата</th><th>{priceLabel}</th>{search.price === 'listed' && <th>Зачёркнутая цена</th>}<th>Результат</th></tr></thead><tbody>{detail.data?.points.toReversed().map((point,index) => <tr key={index}><td>{date(point.checked_at,{second:'2-digit'})}</td><td className={ozonUnavailable(point) ? 'ozon-price-unavailable' : undefined}>{rub(ozonPrice(point,search.price))}</td>{search.price === 'listed' && <td className={ozonUnavailable(point) ? 'ozon-price-unavailable' : undefined}>{point.original_price_kopecks === null ? '—' : <s>{rub(point.original_price_kopecks)}</s>}</td>}<td className={ozonUnavailable(point) ? 'availability-unavailable' : undefined}>{point.status === 'error' ? point.message : stock[point.availability] || stock.unknown}</td></tr>)}{!points.length && <tr><td colSpan={search.price === 'listed' ? 4 : 3} className="empty-state">В выбранном периоде проверок нет.</td></tr>}</tbody></table></div></>}
+        <div className="detail-table-wrap"><table className="history-table"><thead><tr><th>Дата</th><th>{priceLabel}</th>{search.price === 'listed' && <th>Зачёркнутая цена</th>}<th>Результат</th></tr></thead><HistoryRows key={`${selected}:${days}`} points={detail.data?.points || []} columns={search.price === 'listed' ? 4 : 3}>{(point,index) => <tr key={index}><td>{date(point.checked_at,{second:'2-digit'})}</td><td className={ozonUnavailable(point) ? 'ozon-price-unavailable' : undefined}>{rub(ozonPrice(point,search.price))}</td>{search.price === 'listed' && <td className={ozonUnavailable(point) ? 'ozon-price-unavailable' : undefined}>{point.original_price_kopecks === null ? '—' : <s>{rub(point.original_price_kopecks)}</s>}</td>}<td className={ozonUnavailable(point) ? 'availability-unavailable' : undefined}>{point.status === 'error' ? point.message : stock[point.availability] || stock.unknown}</td></tr>}</HistoryRows></table></div></>}
     </DialogContent></Dialog>
   </div>;
 }
+
+const OzonRow = memo(function OzonRow({item,price,list,changeDays,now,blocked,removing,onSelect,onRefresh,onRemove}: {
+  item:OzonItem; price:OzonPrice; list:OzonList; changeDays:ChangePeriod; now:number; blocked:boolean; removing:boolean;
+  onSelect:(id:string)=>void; onRefresh:(id:string)=>void; onRemove:(id:string)=>void;
+}) {
+  const sparkline = useMemo(() => ozonProductPoints(item.sparkline,price),[item.sparkline,price]);
+  return <tr>
+          <td><button type="button" className="ozon-product" onClick={() => onSelect(item.id)}>{item.image_url && <img src={item.image_url} alt="" loading="lazy"/>}<span><strong>{item.title}</strong><small>Арт. {item.sku} · <span className={ozonUnavailable(item) ? 'availability-unavailable' : undefined}>{stock[item.availability] || stock.unknown}</span></small></span></button></td>
+          <td className={ozonUnavailable(item) ? 'ozon-price-unavailable' : undefined}><strong>{rub(ozonPrice(item,price))}</strong>{ozonUnavailable(item) && ozonPrice(item,price) !== null && <small>Последняя известная · {date(item.price_at)}</small>}</td>
+          {price === 'listed' && <td className={ozonUnavailable(item) ? 'ozon-price-unavailable' : undefined}>{item.original_price_kopecks === null ? '—' : <s>{rub(item.original_price_kopecks)}</s>}</td>}
+          <td className="ozon-price-change"><PriceChange item={{status:item.status,last_change:item.price_summary?.[price].last_change ?? null,observations:item.price_summary?.[price].observations ?? 0}} changeDays={changeDays} nowMs={now} unavailable={ozonUnavailable(item)}/></td>
+          <td className="ozon-sparkline"><PriceChart.Root points={sparkline} total><PriceChart.Plot small/></PriceChart.Root><small className="sparkline-label">{item.sparkline.length ? `${item.sparkline.length} проверок` : 'Проверок ещё нет'}</small></td>
+          <td>{date(item.checked_at)}{item.status === 'error' && <small className="ozon-error">{item.message} Цена от {date(item.price_at)}</small>}{item.status === 'pending' && <small>Ожидает проверки</small>}</td>
+          <td><div className="ozon-row-actions"><Button variant="outline" size="sm" onClick={() => onSelect(item.id)}>История</Button>{list !== 'favorites' && <Button variant="ghost" size="sm" disabled={blocked} onClick={() => onRefresh(item.id)}>Проверить карточку</Button>}{list === 'watching' && <Button variant="ghost" size="sm" disabled={removing} aria-label={`Убрать из наблюдения: ${item.title}`} onClick={() => onRemove(item.id)}>Убрать</Button>}</div></td>
+  </tr>;
+});

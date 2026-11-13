@@ -386,13 +386,13 @@ export function makeServer(tracker, {onShutdown, testMode = false, auth = loadAu
       if (url.pathname === '/api/watch') {
         if (typeof data.active !== 'boolean' || !Number.isSafeInteger(data.id) || data.id < 1) throw new ValidationError('Некорректное действие');
         tracker.db.watch(data.id, data.active);
-        return send(response, 200, {ok: true});
+        return send(response, 200, {ok: true, count: tracker.db.counts().watching});
       }
       if (url.pathname === '/api/watch/add') return send(response, 200, {id: await tracker.addUrl(data.url)});
       if (url.pathname === '/api/my-cart') {
         if (typeof data.active !== 'boolean' || !Number.isSafeInteger(data.id) || data.id < 1) throw new ValidationError('Некорректное действие');
         tracker.db.personalCart(data.id, data.active);
-        return send(response, 200, {ok: true});
+        return send(response, 200, {ok: true, count: tracker.db.counts()['my-cart']});
       }
       if (url.pathname === '/api/my-cart/add') return send(response, 200, {id: await tracker.addUrl(data.url, 'my-cart')});
       if (url.pathname === '/api/settings') {tracker.saveSettings(data); return send(response, 200, {ok: true});}

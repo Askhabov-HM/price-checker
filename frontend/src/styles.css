@@ -287,6 +287,12 @@ input::placeholder{color:var(--muted);opacity:1}
   .logout-button {flex-shrink:0;}
   @media(max-width:520px) {.auth-screen {padding:20px 16px;}.auth-card {padding:28px 24px;}.auth-heading h1 {font-size:23px;}.logout-button {padding-inline:8px;}}
   .price-chart {width:100%;height:180px;min-width:0;display:flex;}
+  .price-chart-paged {position:relative;padding-top:36px;}
+  .chart-pagination {position:absolute;top:0;left:0;right:0;display:flex;justify-content:center;align-items:center;gap:8px;font-size:10px;}
+  .chart-pagination button {font-size:10px;padding:4px 8px;height:28px;}
+  .chart-pagination span {white-space:nowrap;}
+  @media(max-width:520px) {.price-chart-paged {padding-top:52px;}.chart-pagination {flex-wrap:wrap;gap:4px;}.chart-pagination span {order:-1;flex-basis:100%;text-align:center;}}
+  .history-pagination {display:flex;align-items:center;justify-content:center;gap:12px;}
   .chart-fixed-axis {flex:0 0 78px;height:calc(100% - 16px);}
   .price-chart-scroll {flex:1;min-width:0;height:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-color:var(--chart-line) var(--chart-grid);scrollbar-width:auto;}
   .price-chart-scroll:focus-visible {outline:2px solid var(--chart-line);outline-offset:2px;}

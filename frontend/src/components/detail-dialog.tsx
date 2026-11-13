@@ -2,6 +2,7 @@ import {createContext, useContext, useMemo, type ReactNode} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle} from '@/components/ui/dialog';
 import {Button} from '@/components/ui/button';
+import {HistoryRows} from './history-rows';
 import {PriceChart} from './price-chart';
 import {detailOptions} from '@/lib/api';
 import {date, rub} from '@/lib/format';
@@ -30,11 +31,11 @@ function Toolbar() {
   return <div className="detail-toolbar"><div className="period-tabs" id="period-tabs">{([7, 30, 90, 0] as const).map((period, index) => <Button variant="ghost" key={period} data-days={period} className={days === period ? 'active' : ''} aria-pressed={days === period} onClick={() => onPeriod(period)}>{['Неделя', 'Месяц', '3 месяца', 'Всё время'][index]}</Button>)}</div><a id="detail-link" href={data?.product.url} target="_blank" rel="noopener noreferrer">На Randewoo ↗</a></div>;
 }
 function Chart() {
-  const {data} = useDetail(), points = data?.points || [], valid = points.filter(point => point.price != null);
-  return <PriceChart.Root points={points}><PriceChart.ScaleControls detail /><div className="detail-chart-wrap"><PriceChart.Plot id="detail-chart" /></div><p className="detail-note">{valid.length === 1 ? 'Пока сохранена одна реальная цена. История будет расти после следующих проверок.' : valid.length ? `Минимум: ${rub(Math.min(...valid.map(point => point.price!)))} · Максимум: ${rub(Math.max(...valid.map(point => point.price!)))} · Измерений: ${valid.length}` : 'Для этого типа цены пока нет измерений. Данные других объёмов сюда не подставляются.'}</p></PriceChart.Root>;
+  const {data, id, days, context} = useDetail(), points = data?.points || [], valid = points.filter(point => point.price != null);
+  return <PriceChart.Root points={points}><PriceChart.ScaleControls detail /><div className="detail-chart-wrap"><PriceChart.Plot key={`${id}:${context}:${days}`} id="detail-chart" /></div><p className="detail-note">{valid.length === 1 ? 'Пока сохранена одна реальная цена. История будет расти после следующих проверок.' : valid.length ? `Минимум: ${rub(Math.min(...valid.map(point => point.price!)))} · Максимум: ${rub(Math.max(...valid.map(point => point.price!)))} · Измерений: ${valid.length}` : 'Для этого типа цены пока нет измерений. Данные других объёмов сюда не подставляются.'}</p></PriceChart.Root>;
 }
 function History() {
-  const {data} = useDetail();
-  return <div className="detail-table-wrap"><table className="history-table"><thead><tr><th>Проверка</th><th>Цена</th><th>Наличие / результат</th></tr></thead><tbody id="detail-history">{data?.points.toReversed().map((point, index) => <tr key={index}><td>{date(point.checked_at, {second: '2-digit'})}</td><td className={isUnavailable(point) ? 'price-unavailable' : undefined}><strong>{rub(point.price)}</strong></td><td className={isUnavailable(point) ? 'availability-unavailable' : undefined}>{point.status === 'error' ? point.message : point.status === 'missing' ? 'Вариант 1,5 мл не найден' : point.in_stock ? 'В наличии' : 'Нет в наличии'}</td></tr>)}{!data?.points.length && <tr><td colSpan={3} className="empty-state">В этом периоде ещё нет проверок.</td></tr>}</tbody></table></div>;
+  const {data, id, days, context} = useDetail();
+  return <div className="detail-table-wrap"><table className="history-table"><thead><tr><th>Проверка</th><th>Цена</th><th>Наличие / результат</th></tr></thead><HistoryRows key={`${id}:${days}:${context}`} id="detail-history" points={data?.points || []} columns={3}>{(point, index) => <tr key={index}><td>{date(point.checked_at, {second: '2-digit'})}</td><td className={isUnavailable(point) ? 'price-unavailable' : undefined}><strong>{rub(point.price)}</strong></td><td className={isUnavailable(point) ? 'availability-unavailable' : undefined}>{point.status === 'error' ? point.message : point.status === 'missing' ? 'Вариант 1,5 мл не найден' : point.in_stock ? 'В наличии' : 'Нет в наличии'}</td></tr>}</HistoryRows></table></div>;
 }
 export const DetailDialog = {Root, Content, Toolbar, Chart, History};
